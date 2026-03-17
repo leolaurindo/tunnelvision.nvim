@@ -1,76 +1,128 @@
 # tunnelvision.nvim
 
-Low-light everything except the data path for the symbol under cursor.
+
+Focus on one symbol at a time.
+
+`tunnelvision.nvim` dims everything except the code path related to the symbol under your cursor, so you can follow logic without visual noise.
+
+![screenshot](aseets/screenshot.png)
 
 ## Features
 
-- Toggle tunnel view from symbol under cursor
-- Auto scope selection (function/method when possible, file fallback)
-- Local transformation chain approximation (assignments and dependent usages)
-- Optional LSP document highlights blended into the path
-- Path navigation with `n`/`N` when tunnel mode is active
+- Dims non-relevant lines and keeps related lines visible.
+- Tracks inside function scope when possible (falls back to file scope).
+- Includes optional LSP `documentHighlight` matches.
+- Supports 3 modes: `static`,`dynamic` and `flow` (experimental).
+- Builtin path jumps with `]h` / `[h`.
+- Handy defaults: `<leader>hh` on/remap, `<leader>hs|hd|hf` mode toggles, `<Esc>` to exit.
 
-## Commands
+## Requirements
 
-- `:TunnelVisionToggle`
-- `:TunnelVisionNext`
-- `:TunnelVisionPrev`
-- `:TunnelVisionRefresh`
-- `:TunnelVisionMode [strict|flow|toggle]`
-- `:TunnelVisionFlowDirection [forward|both|toggle]`
+- Neovim `>= 0.9`
+- Optional but recommended:
+  - Tree-sitter (better function/method scope detection)
+  - LSP (extra highlight accuracy)
 
-## Modes
+## Dependencies
 
-- `strict` (default): only highlights real references/usages of the symbol under cursor (plus LSP highlights, when available).
-- `flow` (experimental): adds heuristic transformation tracking (assignment-based data flow in the current scope).
+- No external plugin dependencies.
+- Uses built-in Neovim APIs only.
+- Optional integrations:
+  - Tree-sitter (scope detection quality)
+  - LSP `documentHighlight` (extra relevant lines)
 
-### How Flow Heuristics Work
+## Installation
 
-- Works inside the chosen scope (`function`/`method` when found, otherwise file).
-- Parses each line and extracts identifiers and simple assignments (`=`, `+=`, `-=`, `*=`, `/=`, `%=`).
-- Starts from the symbol under cursor, then expands a tracked set when a tracked identifier appears on the right-hand side of an assignment.
-- In `flow_direction = "both"`, it also expands backward from assignment targets to their inputs (broader provenance).
-- Uses lightweight parsing (not full AST/SSA dataflow), so complex control flow, aliasing, mutation, and dynamic patterns can produce misses or extra lines.
-
-### Flow Direction
-
-- `forward` (default): follows how the symbol influences later values.
-- `both`: follows forward influence and backward provenance; this is broader and can include sibling/provenance lines.
-
-### Recommended Usage
-
-- Use `strict` when you want predictable, low-noise symbol tracking.
-- Switch to `flow` when exploring value propagation and you accept heuristic, experimental results.
-- Start with `flow_direction = "forward"`; use `both` only when you intentionally want wider context.
-
-## Setup (lazy.nvim)
+### lazy.nvim
 
 ```lua
 {
-  "tunnelvision.nvim",
-  dir = vim.fn.expand("~/projects/tunnelvision"),
-  config = function()
-    require("tunnelvision").setup({
-      scope = "auto",
-      mode = "strict",
-      use_nN = true,
-    })
-  end,
+  "leolaurindo/tunnelvision.nvim",
+  opts = {},
 }
 ```
 
-## Default options
+### mini.deps
 
 ```lua
-{
+local add = MiniDeps.add
+add({ source = "leolaurindo/tunnelvision.nvim" })
+
+require("tunnelvision").setup()
+```
+
+### packer.nvim
+
+```lua
+use({
+  "leolaurindo/tunnelvision.nvim",
+  config = function()
+    require("tunnelvision").setup()
+  end,
+})
+```
+
+### vim-plug
+
+```vim
+Plug 'leolaurindo/tunnelvision.nvim'
+```
+
+```lua
+require("tunnelvision").setup()
+```
+
+## Quick start
+
+- `:TunnelVisionOn` - turn on (or remap to current symbol if already on).
+- `:TunnelVisionOff` - turn off.
+- `:TunnelVisionToggle` - toggle tunnel mode at cursor symbol.
+- `:TunnelVisionForward` - retarget to current symbol without turning it off.
+- `:TunnelVisionDynamic` - switch to dynamic mode and start tracking.
+- `:TunnelVisionNext` / `:TunnelVisionPrev` - jump path lines.
+- `:TunnelVisionRefresh` - recompute path.
+- `:TunnelVisionMode [static|flow|dynamic|toggle]`
+- `:TunnelVisionFlowDirection [forward|both|toggle]`
+
+Default keymaps:
+
+- `]h` / `[h` jump to next/previous path line.
+- `<leader>hh` turns on TunnelVision (or remaps to symbol under cursor if already on).
+- `<leader>hs` toggles `static` mode.
+- `<leader>hd` toggles `dynamic` mode.
+- `<leader>hf` toggles `flow` mode.
+- `<leader>ho` turns TunnelVision off.
+- `<Esc>` exits TunnelVision if active (`use_esc = true`).
+- `n` / `N` can be enabled as optional path navigation (`use_nN = true`).
+- `:TunnelVisionToggle` is available if you prefer a single toggle keymap.
+
+## Modes
+
+- `static` (default): symbol usages/references only (plus optional LSP highlights).
+- `flow` (experimental): adds lightweight assignment-based propagation.
+- `dynamic`: static tracking, but automatically retargets as cursor symbol changes.
+
+For `flow` mode:
+
+- `flow_direction = "forward"` follows influence forward.
+- `flow_direction = "both"` also pulls backward provenance (broader, noisier).
+
+## Configuration
+
+```lua
+require("tunnelvision").setup({
   scope = "auto", -- auto | function | file
-  mode = "strict", -- strict | flow
-  flow_direction = "forward", -- forward | both (used in flow mode)
+  mode = "static", -- static | flow | dynamic
+  flow_direction = "forward", -- forward | both
   include_lsp_highlights = true,
   lsp_timeout_ms = 150,
   dim_hl = "TunnelVisionDim",
   max_dim_lines = 6000,
-  use_nN = true,
+  use_bracket_h = true,
+  use_nN = false,
+  use_leader_h = true,
+  use_esc = true,
   notify = true,
-}
+})
 ```
+

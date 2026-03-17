@@ -2,13 +2,16 @@ local M = {}
 
 local defaults = {
   scope = "auto",
-  mode = "strict",
+  mode = "static",
   flow_direction = "forward",
   include_lsp_highlights = true,
   lsp_timeout_ms = 150,
   dim_hl = "TunnelVisionDim",
   max_dim_lines = 6000,
-  use_nN = true,
+  use_bracket_h = true,
+  use_nN = false,
+  use_leader_h = true,
+  use_esc = true,
   notify = true,
 }
 
@@ -21,73 +24,17 @@ local state = {
   augroup = nil,
 }
 
-local keywords = {
-  ["and"] = true,
-  ["break"] = true,
-  ["case"] = true,
-  ["catch"] = true,
-  ["class"] = true,
-  ["const"] = true,
-  ["continue"] = true,
-  ["default"] = true,
-  ["defer"] = true,
-  ["do"] = true,
-  ["else"] = true,
-  ["elseif"] = true,
-  ["end"] = true,
-  ["enum"] = true,
-  ["except"] = true,
-  ["export"] = true,
-  ["false"] = true,
-  ["finally"] = true,
-  ["fn"] = true,
-  ["for"] = true,
-  ["func"] = true,
-  ["function"] = true,
-  ["if"] = true,
-  ["implements"] = true,
-  ["import"] = true,
-  ["in"] = true,
-  ["interface"] = true,
-  ["is"] = true,
-  ["lambda"] = true,
-  ["let"] = true,
-  ["local"] = true,
-  ["match"] = true,
-  ["mod"] = true,
-  ["namespace"] = true,
-  ["new"] = true,
-  ["nil"] = true,
-  ["not"] = true,
-  ["null"] = true,
-  ["of"] = true,
-  ["or"] = true,
-  ["package"] = true,
-  ["private"] = true,
-  ["protected"] = true,
-  ["public"] = true,
-  ["return"] = true,
-  ["self"] = true,
-  ["static"] = true,
-  ["struct"] = true,
-  ["super"] = true,
-  ["switch"] = true,
-  ["then"] = true,
-  ["this"] = true,
-  ["throw"] = true,
-  ["true"] = true,
-  ["try"] = true,
-  ["type"] = true,
-  ["typeof"] = true,
-  ["union"] = true,
-  ["until"] = true,
-  ["use"] = true,
-  ["var"] = true,
-  ["void"] = true,
-  ["while"] = true,
-  ["with"] = true,
-  ["yield"] = true,
-}
+local keywords = {}
+for keyword in ([[
+and break case catch class const continue default defer do else elseif end enum except export
+false finally fn for func function if implements import in interface is lambda let local match mod
+namespace new nil not null of or package private protected public return self static struct super
+switch then this throw true try type typeof union until use var void while with yield
+]]):gmatch("%S+") do
+  keywords[keyword] = true
+end
+
+local assign_ops = { "+=", "-=", "*=", "/=", "%=", "=" }
 
 local function notify(msg, level)
   if state.config.notify then
@@ -133,6 +80,15 @@ local function line_has_word(line, word)
   return line:find("%f[%w_]" .. escaped .. "%f[^%w_]") ~= nil
 end
 
+local function get_line_target_col(line, symbol)
+  local symbol_col = line and symbol and symbol ~= "" and line:find("%f[%w_]" .. vim.pesc(symbol) .. "%f[^%w_]")
+  if symbol_col then
+    return symbol_col - 1
+  end
+  local first_nonblank = line and line:find("%S")
+  return first_nonblank and first_nonblank - 1 or 0
+end
+
 local function strip_strings_and_comments(line)
   local s = line
   s = s:gsub('".-"', '""')
@@ -174,7 +130,7 @@ local function add_set(dst, src)
 end
 
 local function find_assign(line)
-  for _, op in ipairs({ "+=", "-=", "*=", "/=", "%=", "=" }) do
+  for _, op in ipairs(assign_ops) do
     local start_col = line:find(op, 1, true)
     if start_col then
       if op == "=" then
@@ -224,9 +180,6 @@ local function is_function_like(node_type)
     or node_type:find("lambda", 1, true)
     or node_type:find("arrow", 1, true)
     or node_type == "func_literal"
-    or node_type == "method_declaration"
-    or node_type == "function_declaration"
-    or node_type == "function_definition"
 end
 
 local function get_scope_range(bufnr, anchor, scope_mode)
@@ -301,7 +254,7 @@ local function sorted_lines(path_set)
 end
 
 local function is_valid_mode(mode)
-  return mode == "strict" or mode == "flow"
+  return mode == "static" or mode == "flow" or mode == "dynamic"
 end
 
 local function is_valid_flow_direction(direction)
@@ -310,17 +263,22 @@ end
 
 local function normalize_config(cfg)
   if cfg.transformations ~= nil then
-    cfg.mode = cfg.transformations and "flow" or "strict"
+    cfg.mode = cfg.transformations and "flow" or "static"
   end
   if cfg.propagate_backwards ~= nil then
     cfg.flow_direction = cfg.propagate_backwards and "both" or "forward"
   end
 
+  if cfg.use_leader_H ~= nil and cfg.use_leader_h == nil then
+    cfg.use_leader_h = cfg.use_leader_H
+  end
+
   cfg.transformations = nil
   cfg.propagate_backwards = nil
+  cfg.use_leader_H = nil
 
   if not is_valid_mode(cfg.mode) then
-    cfg.mode = "strict"
+    cfg.mode = "static"
   end
   if not is_valid_flow_direction(cfg.flow_direction) then
     cfg.flow_direction = "forward"
@@ -330,7 +288,7 @@ end
 local function compute_path(bufnr, symbol, anchor, scope)
   local path_set = {}
   local lines = vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
-  local use_transformations = state.config.mode == "flow"
+  local use_flow = state.config.mode == "flow"
   local tracked = { [symbol] = true }
   local line_info = {}
 
@@ -342,7 +300,7 @@ local function compute_path(bufnr, symbol, anchor, scope)
       path_set[lnum] = true
     end
 
-    if use_transformations then
+    if use_flow then
       local ids = collect_identifiers(cleaned)
       local lhs, rhs = parse_assignment(cleaned)
       line_info[#line_info + 1] = {
@@ -357,7 +315,7 @@ local function compute_path(bufnr, symbol, anchor, scope)
   local lsp_lines = get_lsp_highlight_lines(bufnr, anchor, scope)
   add_set(path_set, lsp_lines)
 
-  if not use_transformations then
+  if not use_flow then
     path_set[anchor.row + 1] = true
     return path_set, sorted_lines(path_set)
   end
@@ -417,10 +375,13 @@ local function apply_dim(bufnr)
   end
 end
 
-local function activate(bufnr)
+local function activate(bufnr, opts)
+  opts = opts or {}
   local symbol = vim.fn.expand("<cword>")
   if not symbol or symbol == "" then
-    notify("TunnelVision: no symbol under cursor", vim.log.levels.WARN)
+    if not opts.silent then
+      notify("TunnelVision: no symbol under cursor", vim.log.levels.WARN)
+    end
     return
   end
 
@@ -447,7 +408,6 @@ local function activate(bufnr)
   bs.path_order = path_order
 
   apply_dim(bufnr)
-  notify(("TunnelVision ON: %s (%s scope, %d lines)"):format(symbol, scope.kind, #path_order))
 end
 
 local function deactivate(bufnr)
@@ -459,7 +419,6 @@ local function deactivate(bufnr)
   bs.path_set = {}
   bs.path_order = {}
   vim.api.nvim_buf_clear_namespace(bufnr, state.ns, 0, -1)
-  notify("TunnelVision OFF")
 end
 
 local function jump_in_path(direction, count)
@@ -496,7 +455,9 @@ local function jump_in_path(direction, count)
     line = target
   end
 
-  vim.api.nvim_win_set_cursor(0, { line, 0 })
+  local target_line = vim.api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1] or ""
+  local col = get_line_target_col(target_line, bs.symbol)
+  vim.api.nvim_win_set_cursor(0, { line, col })
   return true
 end
 
@@ -515,40 +476,60 @@ function M.toggle()
   end
 end
 
-function M.next(count)
-  if not jump_in_path(1, count) then
-    notify("TunnelVision: not active in this buffer", vim.log.levels.WARN)
+function M.on()
+  activate(vim.api.nvim_get_current_buf())
+end
+
+function M.off()
+  deactivate(vim.api.nvim_get_current_buf())
+end
+
+function M.forward()
+  M.on()
+end
+
+function M.dynamic()
+  M.set_mode("dynamic")
+  activate(vim.api.nvim_get_current_buf())
+end
+
+local function jump_or_notify(direction, count)
+  if jump_in_path(direction, count) then
+    return
   end
+  notify("TunnelVision: not active in this buffer", vim.log.levels.WARN)
+end
+
+function M.next(count)
+  jump_or_notify(1, count)
 end
 
 function M.prev(count)
-  if not jump_in_path(-1, count) then
-    notify("TunnelVision: not active in this buffer", vim.log.levels.WARN)
-  end
+  jump_or_notify(-1, count)
+end
+
+local function refresh_buffer(bufnr, bs)
+  local path_set, path_order = compute_path(bufnr, bs.symbol, bs.anchor, bs.scope)
+  bs.path_set = path_set
+  bs.path_order = path_order
+  apply_dim(bufnr)
+  return #path_order
 end
 
 function M.refresh()
   local bufnr = vim.api.nvim_get_current_buf()
   local bs = state.bufs[bufnr]
   if not bs or not bs.active then
-    notify("TunnelVision: nothing to refresh", vim.log.levels.INFO)
     return
   end
 
-  local path_set, path_order = compute_path(bufnr, bs.symbol, bs.anchor, bs.scope)
-  bs.path_set = path_set
-  bs.path_order = path_order
-  apply_dim(bufnr)
-  notify(("TunnelVision refreshed: %d lines"):format(#path_order))
+  refresh_buffer(bufnr, bs)
 end
 
 local function refresh_active_buffers()
   for bufnr, bs in pairs(state.bufs) do
     if bs.active and vim.api.nvim_buf_is_valid(bufnr) then
-      local path_set, path_order = compute_path(bufnr, bs.symbol, bs.anchor, bs.scope)
-      bs.path_set = path_set
-      bs.path_order = path_order
-      apply_dim(bufnr)
+      refresh_buffer(bufnr, bs)
     end
   end
 end
@@ -560,17 +541,16 @@ end
 function M.set_mode(mode)
   local next_mode = mode
   if next_mode == "toggle" then
-    next_mode = state.config.mode == "strict" and "flow" or "strict"
+    next_mode = state.config.mode == "static" and "flow" or "static"
   end
 
   if not is_valid_mode(next_mode) then
-    notify("TunnelVision: mode must be strict, flow, or toggle", vim.log.levels.ERROR)
+    notify("TunnelVision: mode must be static, flow, dynamic, or toggle", vim.log.levels.ERROR)
     return
   end
 
   state.config.mode = next_mode
   refresh_active_buffers()
-  notify(("TunnelVision mode: %s"):format(next_mode))
 end
 
 function M.get_flow_direction()
@@ -592,7 +572,6 @@ function M.set_flow_direction(direction)
   if state.config.mode == "flow" then
     refresh_active_buffers()
   end
-  notify(("TunnelVision flow direction: %s"):format(next_direction))
 end
 
 local function ensure_commands()
@@ -601,74 +580,112 @@ local function ensure_commands()
   end
   state.commands_set = true
 
-  vim.api.nvim_create_user_command("TunnelVisionToggle", function()
-    M.toggle()
-  end, { desc = "Toggle tunnel vision for symbol under cursor" })
+  for _, cmd in ipairs({
+    { "TunnelVisionOn", M.on, "Turn on tunnel vision for symbol under cursor" },
+    { "TunnelVisionOff", M.off, "Turn off tunnel vision in current buffer" },
+    { "TunnelVisionToggle", M.toggle, "Toggle tunnel vision for symbol under cursor" },
+    { "TunnelVisionForward", M.forward, "Track symbol under cursor without toggling" },
+    { "TunnelVisionDynamic", M.dynamic, "Set dynamic mode and track symbol under cursor" },
+    { "TunnelVisionNext", function() M.next(vim.v.count1) end, "Jump to next tunnel vision line" },
+    { "TunnelVisionPrev", function() M.prev(vim.v.count1) end, "Jump to previous tunnel vision line" },
+    { "TunnelVisionRefresh", M.refresh, "Recompute tunnel vision path" },
+  }) do
+    vim.api.nvim_create_user_command(cmd[1], cmd[2], { desc = cmd[3] })
+  end
 
-  vim.api.nvim_create_user_command("TunnelVisionNext", function()
-    M.next(vim.v.count1)
-  end, { desc = "Jump to next tunnel vision line" })
+  local function create_query_command(name, get_value, set_value, choices, label, desc)
+    vim.api.nvim_create_user_command(name, function(opts)
+      local arg = vim.trim(opts.args or "")
+      if arg == "" then
+        notify(("TunnelVision %s: %s"):format(label, get_value()))
+        return
+      end
+      set_value(arg)
+    end, {
+      nargs = "?",
+      complete = function()
+        return choices
+      end,
+      desc = desc,
+    })
+  end
 
-  vim.api.nvim_create_user_command("TunnelVisionPrev", function()
-    M.prev(vim.v.count1)
-  end, { desc = "Jump to previous tunnel vision line" })
-
-  vim.api.nvim_create_user_command("TunnelVisionRefresh", function()
-    M.refresh()
-  end, { desc = "Recompute tunnel vision path" })
-
-  vim.api.nvim_create_user_command("TunnelVisionMode", function(opts)
-    local arg = vim.trim(opts.args or "")
-    if arg == "" then
-      notify(("TunnelVision mode: %s"):format(M.get_mode()))
-      return
-    end
-    M.set_mode(arg)
-  end, {
-    nargs = "?",
-    complete = function()
-      return { "strict", "flow", "toggle" }
-    end,
-    desc = "Set tunnel vision mode (strict|flow|toggle)",
-  })
-
-  vim.api.nvim_create_user_command("TunnelVisionFlowDirection", function(opts)
-    local arg = vim.trim(opts.args or "")
-    if arg == "" then
-      notify(("TunnelVision flow direction: %s"):format(M.get_flow_direction()))
-      return
-    end
-    M.set_flow_direction(arg)
-  end, {
-    nargs = "?",
-    complete = function()
-      return { "forward", "both", "toggle" }
-    end,
-    desc = "Set flow direction (forward|both|toggle)",
-  })
+  create_query_command("TunnelVisionMode", M.get_mode, M.set_mode, { "static", "flow", "dynamic", "toggle" }, "mode", "Set tunnel vision mode (static|flow|dynamic|toggle)")
+  create_query_command("TunnelVisionFlowDirection", M.get_flow_direction, M.set_flow_direction, { "forward", "both", "toggle" }, "flow direction", "Set flow direction (forward|both|toggle)")
 end
 
-local function ensure_n_mappings()
-  if state.mappings_set or not state.config.use_nN then
+local function ensure_mappings()
+  if state.mappings_set then
     return
   end
   state.mappings_set = true
 
-  vim.keymap.set("n", "n", function()
-    if M.is_active(0) then
-      jump_in_path(1, vim.v.count1)
-      return ""
+  if state.config.use_nN then
+    local function set_path_mapping(key, direction, desc)
+      vim.keymap.set("n", key, function()
+        if M.is_active(0) then
+          jump_in_path(direction, vim.v.count1)
+          return ""
+        end
+        return key
+      end, { expr = true, silent = true, desc = desc })
     end
-    return "n"
-  end, { expr = true, silent = true, desc = "Next search (TunnelVision aware)" })
 
-  vim.keymap.set("n", "N", function()
-    if M.is_active(0) then
-      jump_in_path(-1, vim.v.count1)
-      return ""
+    set_path_mapping("n", 1, "Next search (TunnelVision aware)")
+    set_path_mapping("N", -1, "Prev search (TunnelVision aware)")
+  end
+
+  if state.config.use_bracket_h then
+    vim.keymap.set("n", "]h", function()
+      if M.is_active(0) then
+        jump_in_path(1, vim.v.count1)
+      end
+    end, { silent = true, desc = "TunnelVision next" })
+
+    vim.keymap.set("n", "[h", function()
+      if M.is_active(0) then
+        jump_in_path(-1, vim.v.count1)
+      end
+    end, { silent = true, desc = "TunnelVision prev" })
+  end
+
+  if state.config.use_esc then
+    vim.keymap.set("n", "<Esc>", function()
+      if M.is_active(0) then
+        deactivate(vim.api.nvim_get_current_buf())
+        return ""
+      end
+      return "<Esc>"
+    end, { expr = true, silent = true, desc = "Exit TunnelVision on Esc" })
+  end
+
+  if state.config.use_leader_h then
+    local function toggle_mode_mapping(mode)
+      local bufnr = vim.api.nvim_get_current_buf()
+      if M.is_active(bufnr) then
+        if state.config.mode == mode then
+          deactivate(bufnr)
+        else
+          M.set_mode(mode)
+        end
+      else
+        M.set_mode(mode)
+        activate(bufnr)
+      end
     end
-    return "N"
-  end, { expr = true, silent = true, desc = "Prev search (TunnelVision aware)" })
+
+    vim.keymap.set("n", "<leader>hh", M.on, { silent = true, desc = "TunnelVision on/remap" })
+    vim.keymap.set("n", "<leader>hs", function()
+      toggle_mode_mapping("static")
+    end, { silent = true, desc = "TunnelVision toggle static" })
+    vim.keymap.set("n", "<leader>hd", function()
+      toggle_mode_mapping("dynamic")
+    end, { silent = true, desc = "TunnelVision toggle dynamic" })
+    vim.keymap.set("n", "<leader>hf", function()
+      toggle_mode_mapping("flow")
+    end, { silent = true, desc = "TunnelVision toggle flow" })
+    vim.keymap.set("n", "<leader>ho", M.off, { silent = true, desc = "TunnelVision off" })
+  end
 end
 
 local function ensure_autocmds()
@@ -696,6 +713,26 @@ local function ensure_autocmds()
       end
     end,
   })
+
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    group = state.augroup,
+    callback = function(args)
+      if state.config.mode ~= "dynamic" then
+        return
+      end
+      local bs = state.bufs[args.buf]
+      if not bs or not bs.active then
+        return
+      end
+
+      local symbol = vim.fn.expand("<cword>")
+      if not symbol or symbol == "" or symbol == bs.symbol then
+        return
+      end
+
+      activate(args.buf, { silent = true })
+    end,
+  })
 end
 
 function M.setup(opts)
@@ -703,7 +740,7 @@ function M.setup(opts)
   normalize_config(state.config)
   ensure_highlights()
   ensure_commands()
-  ensure_n_mappings()
+  ensure_mappings()
   ensure_autocmds()
 end
 
