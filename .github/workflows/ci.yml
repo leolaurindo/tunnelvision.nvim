@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    name: Neovim ${{ matrix.nvim }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nvim: [stable, nightly]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Lua
+        uses: leafo/gh-actions-lua@v11
+        with:
+          luaVersion: "5.1"
+
+      - name: Setup LuaRocks
+        uses: leafo/gh-actions-luarocks@v4
+
+      - name: Install luacheck
+        run: luarocks install luacheck
+
+      - name: Setup Stylua
+        uses: JohnnyMorganz/stylua-action@v4
+        with:
+          version: latest
+
+      - name: Setup Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.nvim }}
+
+      - name: Format check
+        run: stylua --check .
+
+      - name: Lint
+        run: luacheck lua tests
+
+      - name: Lua syntax check
+        run: |
+          for f in $(git ls-files '*.lua'); do
+            luac -p "$f"
+          done
+
+      - name: Headless smoke test
+        run: nvim --headless -u NONE -c "luafile tests/smoke.lua" -c "qa!"

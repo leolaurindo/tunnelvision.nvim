@@ -65,8 +65,6 @@ function M.set_symbol_source(source)
   core.set_symbol_source(source)
 end
 
---- Public entrypoint called by user config; applies opts via core.configure(opts)
---- and wires the exported API table into ui.setup(M).
 function M.setup(opts)
   core.configure(opts)
   ui.setup(M)

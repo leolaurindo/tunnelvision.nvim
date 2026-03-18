@@ -1,0 +1,17 @@
+# Neovim/Vim
+*.swp
+*.swo
+*~
+.nvimlog
+
+# LuaRocks / local deps
+.luarocks/
+.rocks/
+rocks/
+
+# Generated tags / docs
+tags
+doc/tags
+
+# OS noise
+.DS_Store

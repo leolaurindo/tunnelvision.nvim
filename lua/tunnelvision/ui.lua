@@ -4,24 +4,44 @@ local M = {}
 
 local state = {
   commands_set = false,
-  mappings_set = false,
   augroup = nil,
+  user_dim_hl = nil,
 }
 
+local function has_highlight(name)
+  local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
+  if ok and type(hl) == "table" and next(hl) ~= nil then
+    return hl
+  end
+  return nil
+end
+
 function M.ensure_highlights()
+  local name = core.state.config.dim_hl
+  local existing = has_highlight(name)
+  if existing then
+    state.user_dim_hl = vim.deepcopy(existing)
+    return
+  end
+
+  if state.user_dim_hl then
+    vim.api.nvim_set_hl(0, name, state.user_dim_hl)
+    return
+  end
+
   local ok, comment = pcall(vim.api.nvim_get_hl, 0, { name = "Comment", link = false })
   if ok and comment and comment.fg then
-    vim.api.nvim_set_hl(0, core.state.config.dim_hl, { fg = comment.fg, italic = true })
+    vim.api.nvim_set_hl(0, name, { fg = comment.fg, italic = true })
   else
-    vim.api.nvim_set_hl(0, core.state.config.dim_hl, { link = "Comment", default = true })
+    vim.api.nvim_set_hl(0, name, { link = "Comment", default = true })
   end
 end
 
 function M.apply_dim(bufnr)
-  ---@type TunnelVisionBufState|nil
+  pcall(vim.api.nvim_buf_clear_namespace, bufnr, core.state.ns, 0, -1)
+
   local bs = core.state.bufs[bufnr]
-  vim.api.nvim_buf_clear_namespace(bufnr, core.state.ns, 0, -1)
-  if not bs or not bs.active then
+  if not bs or not bs.active or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
 
@@ -31,9 +51,10 @@ function M.apply_dim(bufnr)
     return
   end
 
-  for idx, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for idx, line in ipairs(lines) do
     if not bs.path_set[idx] then
-      vim.api.nvim_buf_set_extmark(bufnr, core.state.ns, idx - 1, 0, {
+      pcall(vim.api.nvim_buf_set_extmark, bufnr, core.state.ns, idx - 1, 0, {
         end_row = idx - 1,
         end_col = #line,
         hl_group = core.state.config.dim_hl,
@@ -50,16 +71,18 @@ local function ensure_commands(api)
   end
   state.commands_set = true
 
-  for _, cmd in ipairs({
+  local commands = {
     { "TunnelVisionOn", function() core.activate(vim.api.nvim_get_current_buf()) end, "Turn on tunnel vision for symbol under cursor" },
     { "TunnelVisionOff", function() core.deactivate(vim.api.nvim_get_current_buf()) end, "Turn off tunnel vision in current buffer" },
     { "TunnelVisionToggle", api.toggle, "Toggle tunnel vision for symbol under cursor" },
-    { "TunnelVisionForward", api.forward, "Track symbol under cursor without toggling" },
-    { "TunnelVisionDynamic", api.dynamic, "Set dynamic mode and track symbol under cursor" },
-    { "TunnelVisionNext", function() api.next(vim.v.count1) end, "Jump to next tunnel vision line" },
-    { "TunnelVisionPrev", function() api.prev(vim.v.count1) end, "Jump to previous tunnel vision line" },
-    { "TunnelVisionRefresh", api.refresh, "Recompute tunnel vision path" },
-  }) do
+    { "TunnelVisionForward", api.forward, "Retarget to symbol under cursor without toggling off" },
+    { "TunnelVisionDynamic", api.dynamic, "Switch to dynamic mode and track symbol under cursor" },
+    { "TunnelVisionNext", function() api.next(vim.v.count1) end, "Jump to next path line" },
+    { "TunnelVisionPrev", function() api.prev(vim.v.count1) end, "Jump to previous path line" },
+    { "TunnelVisionRefresh", api.refresh, "Recompute tunnel vision path for this buffer" },
+  }
+
+  for _, cmd in ipairs(commands) do
     vim.api.nvim_create_user_command(cmd[1], cmd[2], { desc = cmd[3] })
   end
 
@@ -80,86 +103,32 @@ local function ensure_commands(api)
     })
   end
 
-  create_query_command("TunnelVisionMode", api.get_mode, api.set_mode, { "static", "flow", "dynamic", "toggle" }, "mode", "Set tunnel vision mode (static|flow|dynamic|toggle)")
-  create_query_command("TunnelVisionFlowDirection", api.get_flow_direction, api.set_flow_direction, { "forward", "both", "toggle" }, "flow direction", "Set flow direction (forward|both|toggle)")
+  create_query_command(
+    "TunnelVisionMode",
+    api.get_mode,
+    api.set_mode,
+    { "static", "flow", "dynamic", "toggle" },
+    "mode",
+    "Set tunnel vision mode (static|flow|dynamic|toggle)"
+  )
+
+  create_query_command(
+    "TunnelVisionFlowDirection",
+    api.get_flow_direction,
+    api.set_flow_direction,
+    { "forward", "both", "toggle" },
+    "flow direction",
+    "Set flow direction (forward|both|toggle)"
+  )
+
   create_query_command(
     "TunnelVisionSymbolSource",
     api.get_symbol_source,
     api.set_symbol_source,
-    { "lsp_strict_fallback", "hybrid", "lexical" },
+    { "lsp_strict_fallback", "hybrid", "lexical", "toggle" },
     "symbol source",
-    "Set symbol source (lsp_strict_fallback|hybrid|lexical)"
+    "Set symbol source (lsp_strict_fallback|hybrid|lexical|toggle)"
   )
-end
-
-local function ensure_mappings(api)
-  if state.mappings_set then
-    return
-  end
-  state.mappings_set = true
-
-  local cfg = core.state.config
-
-  if cfg.use_nN then
-    local function set_path_mapping(key, direction, desc)
-      vim.keymap.set("n", key, function()
-        if core.is_active(0) then
-          core.jump_in_path(direction, vim.v.count1)
-          return ""
-        end
-        return key
-      end, { expr = true, silent = true, desc = desc })
-    end
-
-    set_path_mapping("n", 1, "Next search (TunnelVision aware)")
-    set_path_mapping("N", -1, "Prev search (TunnelVision aware)")
-  end
-
-  if cfg.use_bracket_h then
-    vim.keymap.set("n", "]h", function()
-      if core.is_active(0) then
-        core.jump_in_path(1, vim.v.count1)
-      end
-    end, { silent = true, desc = "TunnelVision next" })
-
-    vim.keymap.set("n", "[h", function()
-      if core.is_active(0) then
-        core.jump_in_path(-1, vim.v.count1)
-      end
-    end, { silent = true, desc = "TunnelVision prev" })
-  end
-
-  if cfg.use_esc then
-    vim.keymap.set("n", "<Esc>", function()
-      if core.is_active(0) then
-        core.deactivate(vim.api.nvim_get_current_buf())
-        return ""
-      end
-      return "<Esc>"
-    end, { expr = true, silent = true, desc = "Exit TunnelVision on Esc" })
-  end
-
-  if cfg.use_leader_h then
-    local function toggle_mode_mapping(mode)
-      local bufnr = vim.api.nvim_get_current_buf()
-      if core.is_active(bufnr) then
-        if core.get_mode() == mode then
-          core.deactivate(bufnr)
-        else
-          core.set_mode(mode)
-        end
-      else
-        core.set_mode(mode)
-        core.activate(bufnr)
-      end
-    end
-
-    vim.keymap.set("n", "<leader>hh", function() core.activate(vim.api.nvim_get_current_buf()) end, { silent = true, desc = "TunnelVision on/remap" })
-    vim.keymap.set("n", "<leader>hs", function() toggle_mode_mapping("static") end, { silent = true, desc = "TunnelVision toggle static" })
-    vim.keymap.set("n", "<leader>hd", function() toggle_mode_mapping("dynamic") end, { silent = true, desc = "TunnelVision toggle dynamic" })
-    vim.keymap.set("n", "<leader>hf", function() toggle_mode_mapping("flow") end, { silent = true, desc = "TunnelVision toggle flow" })
-    vim.keymap.set("n", "<leader>ho", function() core.deactivate(vim.api.nvim_get_current_buf()) end, { silent = true, desc = "TunnelVision off" })
-  end
 end
 
 local function ensure_autocmds()
@@ -180,39 +149,36 @@ local function ensure_autocmds()
     group = state.augroup,
     callback = function()
       M.ensure_highlights()
-      core.each_active_buffer(M.apply_dim)
+      core.refresh_all()
     end,
   })
 
   vim.api.nvim_create_autocmd("CursorMoved", {
     group = state.augroup,
     callback = function(args)
-      if core.get_mode() ~= "dynamic" then
-        return
-      end
-
-      ---@type TunnelVisionBufState|nil
       local bs = core.state.bufs[args.buf]
-      if not bs or not bs.active then
-        return
+      if core.get_mode() == "dynamic" and bs and bs.active then
+        local symbol = vim.fn.expand("<cword>")
+        if symbol and symbol ~= "" and symbol ~= bs.symbol then
+          core.activate(args.buf, { silent = true })
+        end
       end
+    end,
+  })
 
-      local symbol = vim.fn.expand("<cword>")
-      if not symbol or symbol == "" or symbol == bs.symbol then
-        return
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = state.augroup,
+    callback = function(args)
+      if core.is_active(args.buf) then
+        core.refresh(args.buf)
       end
-
-      core.activate(args.buf, { silent = true })
     end,
   })
 end
 
---- Registers highlights, commands, keymaps, and autocmds using the public API
---- table exported from init.lua.
 function M.setup(api)
   M.ensure_highlights()
   ensure_commands(api)
-  ensure_mappings(api)
   ensure_autocmds()
 end
 
