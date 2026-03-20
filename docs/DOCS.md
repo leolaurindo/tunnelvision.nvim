@@ -50,6 +50,13 @@ vim.keymap.set("n", "]h", "<cmd>TunnelVisionNext<CR>", { desc = "TunnelVision ne
 vim.keymap.set("n", "[h", "<cmd>TunnelVisionPrev<CR>", { desc = "TunnelVision prev" })
 vim.keymap.set("n", "<leader>hd", "<cmd>TunnelVisionDynamic<CR>", { desc = "TunnelVision dynamic" })
 vim.keymap.set("n", "<leader>hm", "<cmd>TunnelVisionMode toggle<CR>", { desc = "TunnelVision cycle mode" })
+vim.keymap.set("n", "<Esc>", function()
+  if require("tunnelvision.core").is_active(0) then
+    vim.cmd.TunnelVisionOff()
+    return ""
+  end
+  return "<Esc>"
+end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
 ```
 
 ## Lua API
@@ -86,4 +93,4 @@ Checks:
 - Fallback warnings in strict source: set `fallback_warn = "never"` or use `symbol_source = "lexical"`.
 - Dynamic mode too noisy: use `symbol_source = "lexical"`.
 - Activation says no symbol under cursor: move cursor to a word identifier.
-- Custom dim colors: define `TunnelVisionDim` before `setup()`.
+- Dim color follows your colorscheme `Comment` highlight.

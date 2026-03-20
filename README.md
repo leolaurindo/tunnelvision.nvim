@@ -11,15 +11,6 @@ Focus one symbol path at a time.
 
 TunnelVision dims unrelated lines and keeps attention on the symbol under cursor.
 
-- `static` (default): track the symbol selected on activation.
-- `dynamic`: retarget as cursor moves.
-- `flow`: expand to assignment-related lines to follow value flow.
-
-`flow_direction` only affects `flow` mode:
-
-- `forward` (default): follow forward influence.
-- `both`: include backward influence too.
-
 ## Requirements
 
 - Neovim `>= 0.9`
@@ -63,25 +54,36 @@ use({
 3. Jump with `:TunnelVisionNext` / `:TunnelVisionPrev`.
 4. Run `:TunnelVisionOff`.
 
-## Commands
+See [suggested keymaps](#suggested-keymaps)
 
-- `:TunnelVisionOn` activate or remap tracking in current buffer.
-- `:TunnelVisionOff` deactivate in current buffer.
-- `:TunnelVisionToggle` toggle active state at cursor symbol.
-- `:TunnelVisionForward` retarget to cursor symbol without toggling off.
-- `:TunnelVisionDynamic` set dynamic mode and activate.
-- `:TunnelVisionNext` jump to next path line.
-- `:TunnelVisionPrev` jump to previous path line.
-- `:TunnelVisionRefresh` recompute path and redraw.
-- `:TunnelVisionMode [static|flow|dynamic|toggle]` query/set mode.
-- `:TunnelVisionFlowDirection [forward|both|toggle]` query/set flow direction.
-- `:TunnelVisionSymbolSource [lsp_strict_fallback|hybrid|lexical|toggle]` query/set symbol source.
+## Modes
 
-## Keymaps
+- `static` (default): tracks the symbol selected on activation.
+- `dynamic`: retargets as cursor moves.
+- `flow` (experimental): expands to assignment-related lines to follow value flow.
 
-TunnelVision does not set keymaps automatically.
+`flow_direction` (used only in `flow`):
 
-Suggested defaults:
+- `forward` (default): follow forward influence.
+- `both`: include backward influence.
+
+## Symbol behavior (LSP vs lexical)
+
+`symbol_source` controls how path lines are found:
+
+- `lsp_strict_fallback` (default): use LSP highlights first, fallback to lexical.
+- `hybrid`: union of lexical + LSP matches.
+- `lexical`: lexical matching only.
+
+`fallback_warn` controls strict fallback warnings:
+
+- `once` (default): warn once per buffer lifetime.
+- `always`: warn every fallback.
+- `never`: never warn.
+
+## Suggested keymaps
+
+TunnelVision does not set keymaps automatically. The suggested convention is the `<leader>h` family (`h` for "highlight").
 
 ```lua
 vim.keymap.set("n", "<leader>hh", "<cmd>TunnelVisionOn<CR>", { desc = "TunnelVision on" })
@@ -90,6 +92,13 @@ vim.keymap.set("n", "]h", "<cmd>TunnelVisionNext<CR>", { desc = "TunnelVision ne
 vim.keymap.set("n", "[h", "<cmd>TunnelVisionPrev<CR>", { desc = "TunnelVision prev" })
 vim.keymap.set("n", "<leader>hd", "<cmd>TunnelVisionDynamic<CR>", { desc = "TunnelVision dynamic" })
 vim.keymap.set("n", "<leader>hm", "<cmd>TunnelVisionMode toggle<CR>", { desc = "TunnelVision cycle mode" })
+vim.keymap.set("n", "<Esc>", function()
+  if require("tunnelvision.core").is_active(0) then
+    vim.cmd.TunnelVisionOff()
+    return ""
+  end
+  return "<Esc>"
+end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
 ```
 
 ## Configuration
@@ -107,18 +116,14 @@ require("tunnelvision").setup({
 })
 ```
 
-## Notes
+## Commands
 
-- `fallback_warn = "once"` warns once per buffer lifetime.
-- User-defined `TunnelVisionDim` is preserved.
-- On `ColorScheme`, TunnelVision reapplies highlights and redraws active buffers.
-
-## Troubleshooting
-
-- Strict fallback warnings: set `fallback_warn = "never"` or use `symbol_source = "lexical"`.
-- Dynamic mode feels noisy: use `symbol_source = "lexical"`.
-- No symbol warning: place cursor on an identifier.
-- Custom dim color: define `TunnelVisionDim` before `setup()`.
+- `:TunnelVisionOn`, `:TunnelVisionOff`, `:TunnelVisionToggle`
+- `:TunnelVisionForward`, `:TunnelVisionDynamic`
+- `:TunnelVisionNext`, `:TunnelVisionPrev`, `:TunnelVisionRefresh`
+- `:TunnelVisionMode [static|flow|dynamic|toggle]`
+- `:TunnelVisionFlowDirection [forward|both|toggle]`
+- `:TunnelVisionSymbolSource [lsp_strict_fallback|hybrid|lexical|toggle]`
 
 ## More docs
 

@@ -23,8 +23,11 @@ M.state = state
 
 local render = function() end
 
+-- Ignore language keywords when collecting identifiers so lexical/flow
+-- matching focuses on user symbols instead of syntax tokens.
 local keywords = {}
-for word in ([[
+for word in
+  ([[
 and break case catch class const continue defer do else elseif end enum except export
 false finally fn for func function if implements import in interface is lambda let local match mod
 namespace new nil not null of or package private public return self static struct super
@@ -33,7 +36,8 @@ repeat goto def pass as global nonlocal raise assert del True False None async a
 delete instanceof extends abstract final throws typedef sizeof extern
 inline constexpr mutable noexcept static_assert thread_local
 range chan go impl trait mut ref where unsafe dyn crate pub
-]]):gmatch("%S+") do
+]]):gmatch("%S+")
+do
   keywords[word] = true
 end
 
@@ -187,6 +191,10 @@ local function is_function_like(node_type)
     or node_type == "func_literal"
 end
 
+-- Resolve the analysis window for the current anchor.
+--
+-- If Tree-sitter is available, constrain to the nearest function-like node;
+-- otherwise fall back to the full buffer range.
 local function get_scope_range(bufnr, anchor)
   local total = vim.api.nvim_buf_line_count(bufnr)
   local ok_parser, parser = pcall(vim.treesitter.get_parser, bufnr)
@@ -204,6 +212,28 @@ local function get_scope_range(bufnr, anchor)
     end
   end
   return 1, total
+end
+
+local function scope_contains_line(scope, line)
+  return scope and line >= scope.start_line and line <= scope.end_line or false
+end
+
+local function scopes_equal(a, b)
+  return a and b and a.start_line == b.start_line and a.end_line == b.end_line or false
+end
+
+local function anchors_equal(a, b)
+  return a and b and a.row == b.row and a.col == b.col or false
+end
+
+local function resolve_scope(bufnr, anchor, current_scope)
+  local line = anchor.row + 1
+  if scope_contains_line(current_scope, line) then
+    return current_scope
+  end
+
+  local start_line, end_line = get_scope_range(bufnr, anchor)
+  return { start_line = start_line, end_line = end_line }
 end
 
 local function get_attached_clients(bufnr)
@@ -244,6 +274,10 @@ local function collect_lsp_lines(responses, scope)
   return lines
 end
 
+-- Query LSP documentHighlight for the anchor and normalize its status.
+--
+-- Returns a structured result with matched lines plus a reason code used by
+-- strict-fallback warnings (ok, no_clients, unsupported, request_failed).
 local function get_lsp_highlight_result(bufnr, anchor, scope)
   local out = { lines = {}, used = false, reason = "disabled" }
 
@@ -262,7 +296,8 @@ local function get_lsp_highlight_result(bufnr, anchor, scope)
     position = { line = anchor.row, character = anchor.col },
   }
 
-  local responses = vim.lsp.buf_request_sync(bufnr, "textDocument/documentHighlight", params, state.config.lsp_timeout_ms)
+  local responses =
+    vim.lsp.buf_request_sync(bufnr, "textDocument/documentHighlight", params, state.config.lsp_timeout_ms)
   if not responses then
     out.reason = "request_failed"
     return out
@@ -305,6 +340,20 @@ function M.configure(opts)
   M.normalize_config(state.config)
 end
 
+-- Build the tracked path for a symbol within the current scope.
+--
+-- Strategy selection:
+-- - lexical: pure word-boundary matching
+-- - hybrid: lexical union LSP documentHighlight
+-- - lsp_strict_fallback: LSP first, lexical only on failure
+--
+-- In flow mode, this also propagates dependencies through simple
+-- assignment relations until convergence (bounded by FLOW_MAX_ITER).
+--
+-- Returns:
+--   path_set   : set of line numbers to keep visible
+--   path_order : sorted path_set line numbers
+--   meta       : source usage/fallback information for notifications
 local function compute_path(bufnr, symbol, anchor, scope)
   local path_set = {}
   local lexical_set = {}
@@ -418,29 +467,45 @@ local function fallback_warn_msg(reason)
   return ("TunnelVision: falling back to lexical matching (%s)"):format(cause)
 end
 
+-- Activate tracking for the symbol under cursor and recompute buffer state.
+--
+-- This captures anchor/scope, computes the path, stores per-buffer runtime
+-- data, and triggers rendering. In strict mode it can warn when LSP lookup
+-- fails and lexical fallback is used.
 function M.activate(bufnr, opts)
   opts = opts or {}
-  local symbol = vim.fn.expand("<cword>")
+  local symbol = opts.symbol
+  if symbol == nil then
+    symbol = vim.fn.expand("<cword>")
+  end
   if not symbol or symbol == "" then
     if not opts.silent then
       M.notify("TunnelVision: no symbol under cursor", vim.log.levels.WARN)
     end
-    return
+    return false
   end
 
-  local cursor = vim.api.nvim_win_get_cursor(0)
+  local cursor = opts.cursor or vim.api.nvim_win_get_cursor(0)
   local anchor = { row = cursor[1] - 1, col = cursor[2] }
-  local start_line, end_line = get_scope_range(bufnr, anchor)
-  local scope = { start_line = start_line, end_line = end_line }
 
   local bs = M.get_buf_state(bufnr)
+  local scope = resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil)
+  if bs.active and bs.symbol == symbol and anchors_equal(bs.anchor, anchor) and scopes_equal(bs.scope, scope) then
+    return false
+  end
+
   bs.active = true
   bs.symbol = symbol
   bs.anchor = anchor
   bs.scope = scope
   bs.path_set, bs.path_order, bs.last_compute_meta = compute_path(bufnr, symbol, anchor, scope)
 
-  if state.config.symbol_source == "lsp_strict_fallback" and bs.last_compute_meta and bs.last_compute_meta.used_fallback and not opts.silent then
+  if
+    state.config.symbol_source == "lsp_strict_fallback"
+    and bs.last_compute_meta
+    and bs.last_compute_meta.used_fallback
+    and not opts.silent
+  then
     local fw = state.config.fallback_warn
     if fw == "always" or (fw == "once" and not bs.warned_lsp_fallback) then
       M.notify(fallback_warn_msg(bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
@@ -449,6 +514,7 @@ function M.activate(bufnr, opts)
   end
 
   render(bufnr)
+  return true
 end
 
 function M.deactivate(bufnr)
@@ -474,6 +540,12 @@ function M.is_active(bufnr)
   return bs and bs.active or false
 end
 
+-- Jump across the precomputed path with wrap-around behavior.
+--
+-- direction > 0 moves forward, direction < 0 moves backward.
+-- count repeats the jump step count times.
+-- Cursor lands on the symbol column when available, otherwise first nonblank.
+-- Returns false when tracking is inactive or no path is available.
 function M.jump_in_path(direction, count)
   local bufnr = vim.api.nvim_get_current_buf()
   local bs = M.get_buf_state(bufnr)
@@ -526,6 +598,19 @@ function M.refresh_all()
   refresh_active_buffers()
 end
 
+function M.should_dynamic_retarget(bufnr, symbol, cursor)
+  local bs = state.bufs[bufnr]
+  if not bs or not bs.active or not symbol or symbol == "" then
+    return false
+  end
+
+  if symbol ~= bs.symbol then
+    return true
+  end
+
+  return not scope_contains_line(bs.scope, cursor[1])
+end
+
 function M.get_mode()
   return state.config.mode
 end
@@ -549,7 +634,8 @@ function M.get_flow_direction()
 end
 
 function M.set_flow_direction(direction)
-  local next_direction = direction == "toggle" and (state.config.flow_direction == "forward" and "both" or "forward") or direction
+  local next_direction = direction == "toggle" and (state.config.flow_direction == "forward" and "both" or "forward")
+    or direction
   if not valid_flow_directions[next_direction] then
     M.notify("TunnelVision: flow direction must be forward, both, or toggle", vim.log.levels.ERROR)
     return
@@ -570,7 +656,10 @@ function M.set_symbol_source(source)
     source = cycle[state.config.symbol_source] or "lsp_strict_fallback"
   end
   if not valid_symbol_sources[source] then
-    M.notify("TunnelVision: symbol source must be lsp_strict_fallback, hybrid, lexical, or toggle", vim.log.levels.ERROR)
+    M.notify(
+      "TunnelVision: symbol source must be lsp_strict_fallback, hybrid, lexical, or toggle",
+      vim.log.levels.ERROR
+    )
     return
   end
   state.config.symbol_source = source

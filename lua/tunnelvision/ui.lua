@@ -1,39 +1,81 @@
 local core = require("tunnelvision.core")
+local uv = vim.uv or vim.loop
 
 local M = {}
+
+local DYNAMIC_DEBOUNCE_MS = 35
 
 local state = {
   commands_set = false,
   augroup = nil,
-  user_dim_hl = nil,
+  dynamic_timers = {},
+  dynamic_pending = {},
 }
 
-local function has_highlight(name)
-  local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
-  if ok and type(hl) == "table" and next(hl) ~= nil then
-    return hl
+local function stop_dynamic_timer(bufnr, close)
+  state.dynamic_pending[bufnr] = nil
+
+  local timer = state.dynamic_timers[bufnr]
+  if not timer then
+    return
   end
-  return nil
+
+  timer:stop()
+  if close then
+    timer:close()
+    state.dynamic_timers[bufnr] = nil
+  end
+end
+
+local function schedule_dynamic_activate(bufnr, symbol, cursor)
+  local pending = { symbol = symbol, cursor = { cursor[1], cursor[2] } }
+
+  if not uv then
+    core.activate(bufnr, { silent = true, symbol = symbol, cursor = pending.cursor, reuse_scope = true })
+    return
+  end
+
+  state.dynamic_pending[bufnr] = pending
+
+  local timer = state.dynamic_timers[bufnr]
+  if not timer or timer:is_closing() then
+    timer = uv.new_timer()
+    state.dynamic_timers[bufnr] = timer
+  end
+
+  timer:stop()
+  timer:start(DYNAMIC_DEBOUNCE_MS, 0, vim.schedule_wrap(function()
+    local queued = state.dynamic_pending[bufnr]
+    state.dynamic_pending[bufnr] = nil
+
+    if not queued or not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+
+    local bs = core.state.bufs[bufnr]
+    if not bs or not bs.active or core.get_mode() ~= "dynamic" then
+      return
+    end
+
+    if not core.should_dynamic_retarget(bufnr, queued.symbol, queued.cursor) then
+      return
+    end
+
+    core.activate(bufnr, {
+      silent = true,
+      symbol = queued.symbol,
+      cursor = queued.cursor,
+      reuse_scope = true,
+    })
+  end))
 end
 
 function M.ensure_highlights()
-  local name = core.state.config.dim_hl
-  local existing = has_highlight(name)
-  if existing then
-    state.user_dim_hl = vim.deepcopy(existing)
-    return
-  end
-
-  if state.user_dim_hl then
-    vim.api.nvim_set_hl(0, name, state.user_dim_hl)
-    return
-  end
-
   local ok, comment = pcall(vim.api.nvim_get_hl, 0, { name = "Comment", link = false })
   if ok and comment and comment.fg then
-    vim.api.nvim_set_hl(0, name, { fg = comment.fg, italic = true })
+    vim.api.nvim_set_hl(0, core.state.config.dim_hl, { fg = comment.fg, italic = true })
   else
-    vim.api.nvim_set_hl(0, name, { link = "Comment", default = true })
+    vim.api.nvim_set_hl(0, core.state.config.dim_hl, { link = "Comment", default = true })
   end
 end
 
@@ -47,7 +89,10 @@ function M.apply_dim(bufnr)
 
   local total = vim.api.nvim_buf_line_count(bufnr)
   if total > core.state.config.max_dim_lines then
-    core.notify(("TunnelVision: file too large to dim (%d lines > %d)"):format(total, core.state.config.max_dim_lines), vim.log.levels.WARN)
+    core.notify(
+      ("TunnelVision: file too large to dim (%d lines > %d)"):format(total, core.state.config.max_dim_lines),
+      vim.log.levels.WARN
+    )
     return
   end
 
@@ -72,13 +117,37 @@ local function ensure_commands(api)
   state.commands_set = true
 
   local commands = {
-    { "TunnelVisionOn", function() core.activate(vim.api.nvim_get_current_buf()) end, "Turn on tunnel vision for symbol under cursor" },
-    { "TunnelVisionOff", function() core.deactivate(vim.api.nvim_get_current_buf()) end, "Turn off tunnel vision in current buffer" },
+    {
+      "TunnelVisionOn",
+      function()
+        core.activate(vim.api.nvim_get_current_buf())
+      end,
+      "Turn on tunnel vision for symbol under cursor",
+    },
+    {
+      "TunnelVisionOff",
+      function()
+        core.deactivate(vim.api.nvim_get_current_buf())
+      end,
+      "Turn off tunnel vision in current buffer",
+    },
     { "TunnelVisionToggle", api.toggle, "Toggle tunnel vision for symbol under cursor" },
     { "TunnelVisionForward", api.forward, "Retarget to symbol under cursor without toggling off" },
     { "TunnelVisionDynamic", api.dynamic, "Switch to dynamic mode and track symbol under cursor" },
-    { "TunnelVisionNext", function() api.next(vim.v.count1) end, "Jump to next path line" },
-    { "TunnelVisionPrev", function() api.prev(vim.v.count1) end, "Jump to previous path line" },
+    {
+      "TunnelVisionNext",
+      function()
+        api.next(vim.v.count1)
+      end,
+      "Jump to next path line",
+    },
+    {
+      "TunnelVisionPrev",
+      function()
+        api.prev(vim.v.count1)
+      end,
+      "Jump to previous path line",
+    },
     { "TunnelVisionRefresh", api.refresh, "Recompute tunnel vision path for this buffer" },
   }
 
@@ -141,6 +210,7 @@ local function ensure_autocmds()
   vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
     group = state.augroup,
     callback = function(args)
+      stop_dynamic_timer(args.buf, true)
       core.clear_buf_state(args.buf)
     end,
   })
@@ -159,8 +229,9 @@ local function ensure_autocmds()
       local bs = core.state.bufs[args.buf]
       if core.get_mode() == "dynamic" and bs and bs.active then
         local symbol = vim.fn.expand("<cword>")
-        if symbol and symbol ~= "" and symbol ~= bs.symbol then
-          core.activate(args.buf, { silent = true })
+        local cursor = vim.api.nvim_win_get_cursor(0)
+        if core.should_dynamic_retarget(args.buf, symbol, cursor) then
+          schedule_dynamic_activate(args.buf, symbol, cursor)
         end
       end
     end,
@@ -169,6 +240,7 @@ local function ensure_autocmds()
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = state.augroup,
     callback = function(args)
+      stop_dynamic_timer(args.buf, false)
       if core.is_active(args.buf) then
         core.refresh(args.buf)
       end

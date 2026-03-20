@@ -52,7 +52,9 @@ function M.check()
   if ok_hl and type(hl) == "table" and next(hl) ~= nil then
     vim.health.ok(("Highlight group '%s' is defined"):format(core.state.config.dim_hl))
   else
-    vim.health.warn(("Highlight group '%s' is not currently defined; run setup() to initialize it"):format(core.state.config.dim_hl))
+    vim.health.warn(
+      ("Highlight group '%s' is not currently defined; run setup() to initialize it"):format(core.state.config.dim_hl)
+    )
   end
 end
 
