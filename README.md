@@ -15,7 +15,7 @@ TunnelVision dims unrelated lines and keeps attention on the symbol under cursor
 
 - Neovim `>= 0.9`
 - Optional (recommended):
-  - Tree-sitter (better scope detection)
+  - Tree-sitter for better scope detection
   - LSP with `documentHighlight`
 
 ## Installation
@@ -49,65 +49,79 @@ use({
 
 ## Quick start
 
-1. Put cursor on a symbol.
-2. Run `:TunnelVisionOn`.
-3. Jump with `:TunnelVisionNext` / `:TunnelVisionPrev`.
-4. Run `:TunnelVisionOff`.
+1. Put the cursor on a symbol.
+2. Run `:TunnelVision on`.
+3. Jump with `:TunnelVision next` and `:TunnelVision prev`.
+4. Run `:TunnelVision off`.
 
-See [suggested keymaps](#suggested-keymaps)
+Run `:help tunnelvision` for the full reference.
+
+## Commands
+
+```text
+:TunnelVision
+|- on
+|- retarget (alias of on)
+|- off
+|- toggle
+|- next
+|- prev
+|- refresh
+|- status
+|- mode [static|flow|dynamic]
+|- direction [forward|both]
+`- source [lsp_else_word|lsp|lsp_and_word|word]
+```
+
+- `:TunnelVision on`
+- `:TunnelVision retarget` (alias of `on`)
+- `:TunnelVision off`
+- `:TunnelVision toggle`
+- `:TunnelVision next`
+- `:TunnelVision prev`
+- `:TunnelVision refresh`
+- `:TunnelVision status`
+- `:TunnelVision mode [static|flow|dynamic]`
+- `:TunnelVision direction [forward|both]`
+- `:TunnelVision source [lsp_else_word|lsp|lsp_and_word|word]`
+
+With no value, `mode`, `direction`, and `source` show the current setting.
 
 ## Modes
 
-- `static` (default): tracks the symbol selected on activation.
-- `dynamic`: retargets as cursor moves.
-- `flow` (experimental): expands to assignment-related lines to follow value flow.
+- `static` (default): track the symbol selected on activation.
+- `dynamic`: retarget as the cursor moves.
+- `flow`: expand to assignment-related lines to follow value flow.
 
-`flow_direction` (used only in `flow`):
+## Flow settings
+
+`direction` matters only in `flow` mode (outside flow mode, TunnelVision warns and keeps the value unchanged in behavior):
 
 - `forward` (default): follow forward influence.
-- `both`: include backward influence.
+- `both`: include backward influence too.
 
-## Symbol behavior (LSP vs lexical)
+## Source
 
-`symbol_source` controls how path lines are found:
+`source` controls how TunnelVision finds related lines:
 
-- `lsp_strict_fallback` (default): use LSP highlights first, fallback to lexical.
-- `hybrid`: union of lexical + LSP matches.
-- `lexical`: lexical matching only.
+- `lsp_else_word` (default): use LSP highlights first, fallback to word matching on failure.
+- `lsp`: use LSP highlights only; no word fallback.
+- `lsp_and_word`: union of word matching and LSP matches.
+- `word`: word matching only.
 
-`fallback_warn` controls strict fallback warnings:
+`fallback_warn` controls `lsp_else_word` warnings:
 
 - `once` (default): warn once per buffer lifetime.
 - `always`: warn every fallback.
 - `never`: never warn.
-
-## Suggested keymaps
-
-TunnelVision does not set keymaps automatically. The suggested convention is the `<leader>h` family (`h` for "highlight").
-
-```lua
-vim.keymap.set("n", "<leader>hh", "<cmd>TunnelVisionOn<CR>", { desc = "TunnelVision on" })
-vim.keymap.set("n", "<leader>ho", "<cmd>TunnelVisionOff<CR>", { desc = "TunnelVision off" })
-vim.keymap.set("n", "]h", "<cmd>TunnelVisionNext<CR>", { desc = "TunnelVision next" })
-vim.keymap.set("n", "[h", "<cmd>TunnelVisionPrev<CR>", { desc = "TunnelVision prev" })
-vim.keymap.set("n", "<leader>hd", "<cmd>TunnelVisionDynamic<CR>", { desc = "TunnelVision dynamic" })
-vim.keymap.set("n", "<leader>hm", "<cmd>TunnelVisionMode toggle<CR>", { desc = "TunnelVision cycle mode" })
-vim.keymap.set("n", "<Esc>", function()
-  if require("tunnelvision.core").is_active(0) then
-    vim.cmd.TunnelVisionOff()
-    return ""
-  end
-  return "<Esc>"
-end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
-```
 
 ## Configuration
 
 ```lua
 require("tunnelvision").setup({
   mode = "static", -- static | flow | dynamic
-  flow_direction = "forward", -- forward | both
-  symbol_source = "lsp_strict_fallback", -- lsp_strict_fallback | hybrid | lexical
+  direction = "forward", -- forward | both
+  source = "lsp_else_word", -- lsp_else_word | lsp | lsp_and_word | word
   fallback_warn = "once", -- once | always | never
   lsp_timeout_ms = 150,
   dim_hl = "TunnelVisionDim",
@@ -116,18 +130,36 @@ require("tunnelvision").setup({
 })
 ```
 
-## Commands
+## Suggested keymaps
 
-- `:TunnelVisionOn`, `:TunnelVisionOff`, `:TunnelVisionToggle`
-- `:TunnelVisionForward`, `:TunnelVisionDynamic`
-- `:TunnelVisionNext`, `:TunnelVisionPrev`, `:TunnelVisionRefresh`
-- `:TunnelVisionMode [static|flow|dynamic|toggle]`
-- `:TunnelVisionFlowDirection [forward|both|toggle]`
-- `:TunnelVisionSymbolSource [lsp_strict_fallback|hybrid|lexical|toggle]`
+```lua
+local tv = require("tunnelvision")
 
-## More docs
+vim.keymap.set("n", "<leader>hh", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
+vim.keymap.set("n", "<leader>ho", "<cmd>TunnelVision off<CR>", { desc = "TunnelVision off" })
+vim.keymap.set("n", "]h", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
+vim.keymap.set("n", "[h", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
+vim.keymap.set("n", "<leader>hf", function()
+  tv.set_mode("flow")
+  tv.on()
+end, { desc = "TunnelVision flow" })
+vim.keymap.set("n", "<leader>hd", function()
+  tv.set_mode("dynamic")
+  tv.on()
+end, { desc = "TunnelVision dynamic" })
+vim.keymap.set("n", "<Esc>", function()
+  if tv.is_active() then
+    tv.off()
+    return ""
+  end
+  return "<Esc>"
+end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
+```
 
-- Full reference: `DOCS.md`
-- Health checks: `:checkhealth tunnelvision`
-- Contributing: `CONTRIBUTING.md`
-- License: `LICENSE`
+## Health
+
+- `:checkhealth tunnelvision`
+
+## Contributing
+
+- `CONTRIBUTING.md`

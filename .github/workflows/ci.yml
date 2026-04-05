@@ -53,3 +53,6 @@ jobs:
 
       - name: Headless smoke test
         run: nvim --headless -u NONE -c "luafile tests/smoke.lua" -c "qa!"
+
+      - name: Help tags
+        run: nvim --headless -u NONE -c "helptags doc" -c "qa!"

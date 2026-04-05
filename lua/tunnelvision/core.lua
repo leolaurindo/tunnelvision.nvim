@@ -2,8 +2,8 @@ local M = {}
 
 local defaults = {
   mode = "static",
-  flow_direction = "forward",
-  symbol_source = "lsp_strict_fallback",
+  direction = "forward",
+  source = "lsp_else_word",
   fallback_warn = "once",
   dim_hl = "TunnelVisionDim",
   max_dim_lines = 6000,
@@ -17,13 +17,14 @@ local state = {
   ns = vim.api.nvim_create_namespace("tunnelvision"),
   bufs = {},
   config = vim.deepcopy(defaults),
+  request_seq = 0,
 }
 
 M.state = state
 
 local render = function() end
 
--- Ignore language keywords when collecting identifiers so lexical/flow
+-- Ignore language keywords when collecting identifiers so word/flow
 -- matching focuses on user symbols instead of syntax tokens.
 local keywords = {}
 for word in
@@ -43,8 +44,8 @@ end
 
 local assign_ops = { "+=", "-=", "*=", "/=", "%=", "=" }
 local valid_modes = { static = true, flow = true, dynamic = true }
-local valid_flow_directions = { forward = true, both = true }
-local valid_symbol_sources = { lsp_strict_fallback = true, hybrid = true, lexical = true }
+local valid_directions = { forward = true, both = true }
+local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
 
 function M.notify(msg, level)
@@ -75,7 +76,10 @@ function M.get_buf_state(bufnr)
     path_set = {},
     path_order = {},
     warned_lsp_fallback = false,
+    warned_lsp_strict = false,
     last_compute_meta = nil,
+    pending = false,
+    request_id = nil,
   }
   state.bufs[bufnr] = s
   return s
@@ -253,6 +257,14 @@ local function has_document_highlight_provider(bufnr)
   return false
 end
 
+local function make_lsp_result(reason, lines, used)
+  return {
+    lines = lines or {},
+    used = used or false,
+    reason = reason or "disabled",
+  }
+end
+
 local function collect_lsp_lines(responses, scope)
   local lines = {}
   for _, resp in pairs(responses or {}) do
@@ -274,39 +286,58 @@ local function collect_lsp_lines(responses, scope)
   return lines
 end
 
--- Query LSP documentHighlight for the anchor and normalize its status.
---
--- Returns a structured result with matched lines plus a reason code used by
--- strict-fallback warnings (ok, no_clients, unsupported, request_failed).
-local function get_lsp_highlight_result(bufnr, anchor, scope)
-  local out = { lines = {}, used = false, reason = "disabled" }
+local function has_lsp_results(responses)
+  for _, resp in pairs(responses or {}) do
+    if resp and resp.result ~= nil then
+      return true
+    end
+  end
+  return false
+end
 
+local function get_lsp_status(bufnr)
   if vim.tbl_isempty(get_attached_clients(bufnr)) then
-    out.reason = "no_clients"
-    return out
+    return false, "no_clients"
   end
 
   if not has_document_highlight_provider(bufnr) then
-    out.reason = "unsupported"
-    return out
+    return false, "unsupported"
   end
 
+  return true, "ok"
+end
+
+local function request_lsp_highlight(bufnr, anchor, scope, on_done)
+  local done = false
   local params = {
     textDocument = vim.lsp.util.make_text_document_params(bufnr),
     position = { line = anchor.row, character = anchor.col },
   }
 
-  local responses =
-    vim.lsp.buf_request_sync(bufnr, "textDocument/documentHighlight", params, state.config.lsp_timeout_ms)
-  if not responses then
-    out.reason = "request_failed"
-    return out
+  local function finish(result)
+    if done then
+      return
+    end
+    done = true
+    on_done(result)
   end
 
-  out.used = true
-  out.reason = "ok"
-  out.lines = collect_lsp_lines(responses, scope)
-  return out
+  local ok = pcall(vim.lsp.buf_request_all, bufnr, "textDocument/documentHighlight", params, function(responses)
+    if not responses or vim.tbl_isempty(responses) or not has_lsp_results(responses) then
+      finish(make_lsp_result("request_failed"))
+      return
+    end
+
+    finish(make_lsp_result("ok", collect_lsp_lines(responses, scope), true))
+  end)
+  if not ok then
+    finish(make_lsp_result("request_failed"))
+    return
+  end
+
+  vim.defer_fn(function()
+    finish(make_lsp_result("request_failed"))
+  end, state.config.lsp_timeout_ms)
 end
 
 local function sorted_lines(path_set)
@@ -322,11 +353,11 @@ function M.normalize_config(cfg)
   if not valid_modes[cfg.mode] then
     cfg.mode = defaults.mode
   end
-  if not valid_flow_directions[cfg.flow_direction] then
-    cfg.flow_direction = defaults.flow_direction
+  if not valid_directions[cfg.direction] then
+    cfg.direction = defaults.direction
   end
-  if not valid_symbol_sources[cfg.symbol_source] then
-    cfg.symbol_source = defaults.symbol_source
+  if not valid_sources[cfg.source] then
+    cfg.source = defaults.source
   end
   if not valid_fallback_warn[cfg.fallback_warn] then
     cfg.fallback_warn = defaults.fallback_warn
@@ -343,9 +374,10 @@ end
 -- Build the tracked path for a symbol within the current scope.
 --
 -- Strategy selection:
--- - lexical: pure word-boundary matching
--- - hybrid: lexical union LSP documentHighlight
--- - lsp_strict_fallback: LSP first, lexical only on failure
+-- - word: pure word-boundary matching
+-- - lsp_and_word: word matching union LSP documentHighlight
+-- - lsp_else_word: LSP first, word matching only on failure
+-- - lsp: LSP only (no word fallback)
 --
 -- In flow mode, this also propagates dependencies through simple
 -- assignment relations until convergence (bounded by FLOW_MAX_ITER).
@@ -354,37 +386,33 @@ end
 --   path_set   : set of line numbers to keep visible
 --   path_order : sorted path_set line numbers
 --   meta       : source usage/fallback information for notifications
-local function compute_path(bufnr, symbol, anchor, scope)
+local function compute_path(bufnr, symbol, anchor, scope, lsp_result)
   local path_set = {}
-  local lexical_set = {}
-  local use_flow = state.config.mode == "flow"
-  local source = state.config.symbol_source
+  local word_set = {}
+  local source = state.config.source
+  local use_flow = state.config.mode == "flow" and source ~= "lsp"
   local tracked = { [symbol] = true }
   local line_info = {}
-  local lsp_result = { lines = {}, used = false, reason = "disabled" }
+  lsp_result = lsp_result or make_lsp_result("disabled")
 
-  if source ~= "lexical" then
-    lsp_result = get_lsp_highlight_result(bufnr, anchor, scope)
-  end
-
-  local need_lexical = source ~= "lsp_strict_fallback" or not lsp_result.used
+  local need_word = source ~= "lsp" and (source ~= "lsp_else_word" or not lsp_result.used)
   local meta = { used_lsp = false, used_fallback = false, fallback_reason = nil }
 
-  if source == "lsp_strict_fallback" and lsp_result.used and not use_flow then
+  if source == "lsp_else_word" and lsp_result.used and not use_flow then
     add_set(path_set, lsp_result.lines)
     path_set[anchor.row + 1] = true
     meta.used_lsp = true
     return path_set, sorted_lines(path_set), meta
   end
 
-  if use_flow or need_lexical then
+  if use_flow or need_word then
     local lines = vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
     for idx, raw in ipairs(lines) do
       local lnum = scope.start_line + idx - 1
       local cleaned = strip_strings_and_comments(raw)
 
-      if need_lexical and line_has_word(cleaned, symbol) then
-        lexical_set[lnum] = true
+      if need_word and line_has_word(cleaned, symbol) then
+        word_set[lnum] = true
       end
 
       if use_flow then
@@ -399,17 +427,23 @@ local function compute_path(bufnr, symbol, anchor, scope)
     end
   end
 
-  if source == "lexical" then
-    add_set(path_set, lexical_set)
-  elseif source == "hybrid" then
-    add_set(path_set, lexical_set)
+  if source == "word" then
+    add_set(path_set, word_set)
+  elseif source == "lsp_and_word" then
+    add_set(path_set, word_set)
     add_set(path_set, lsp_result.lines)
     meta.used_lsp = lsp_result.used
+  elseif source == "lsp" then
+    add_set(path_set, lsp_result.lines)
+    meta.used_lsp = lsp_result.used
+    if not lsp_result.used then
+      meta.fallback_reason = lsp_result.reason
+    end
   elseif lsp_result.used then
     add_set(path_set, lsp_result.lines)
     meta.used_lsp = true
   else
-    add_set(path_set, lexical_set)
+    add_set(path_set, word_set)
     meta.used_fallback = true
     meta.fallback_reason = lsp_result.reason
   end
@@ -430,7 +464,7 @@ local function compute_path(bufnr, symbol, anchor, scope)
         if rhs_hit and info.lhs then
           changed = add_set(tracked, info.lhs) or changed
         end
-        if state.config.flow_direction == "both" and lhs_hit and info.rhs then
+        if state.config.direction == "both" and lhs_hit and info.rhs then
           changed = add_set(tracked, info.rhs) or changed
         end
       end
@@ -445,8 +479,13 @@ local function refresh_buffer(bufnr, bs)
   if not bs.active or not bs.symbol or not bs.anchor or not bs.scope then
     return
   end
-  bs.path_set, bs.path_order, bs.last_compute_meta = compute_path(bufnr, bs.symbol, bs.anchor, bs.scope)
-  render(bufnr)
+  M.activate(bufnr, {
+    cursor = { bs.anchor.row + 1, bs.anchor.col },
+    force = true,
+    reuse_scope = true,
+    silent = true,
+    symbol = bs.symbol,
+  })
 end
 
 local function refresh_active_buffers()
@@ -464,14 +503,61 @@ local function fallback_warn_msg(reason)
     request_failed = "LSP highlight request failed or timed out",
     disabled = "LSP data unavailable",
   })[reason] or "LSP data unavailable"
-  return ("TunnelVision: falling back to lexical matching (%s)"):format(cause)
+  return ("TunnelVision: falling back to word matching (%s)"):format(cause)
+end
+
+local function strict_lsp_warn_msg(reason)
+  local cause = ({
+    no_clients = "no LSP client attached",
+    unsupported = "LSP server has no documentHighlight support",
+    request_failed = "LSP highlight request failed or timed out",
+    disabled = "LSP data unavailable",
+  })[reason] or "LSP data unavailable"
+  return ("TunnelVision: strict LSP source has no highlights (%s)"):format(cause)
+end
+
+local function maybe_warn_fallback(bs, silent)
+  if state.config.source ~= "lsp_else_word" or not bs.last_compute_meta or not bs.last_compute_meta.used_fallback then
+    return
+  end
+
+  if silent then
+    return
+  end
+
+  local fw = state.config.fallback_warn
+  if fw == "always" or (fw == "once" and not bs.warned_lsp_fallback) then
+    M.notify(fallback_warn_msg(bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
+    bs.warned_lsp_fallback = true
+  end
+end
+
+local function maybe_warn_strict_lsp(bs, silent)
+  if state.config.source ~= "lsp" or not bs.last_compute_meta or bs.last_compute_meta.used_lsp then
+    return
+  end
+
+  if silent or bs.warned_lsp_strict then
+    return
+  end
+
+  M.notify(strict_lsp_warn_msg(bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
+  bs.warned_lsp_strict = true
+end
+
+local function apply_path(bufnr, bs, symbol, anchor, scope, opts, lsp_result)
+  bs.pending = false
+  bs.request_id = nil
+  bs.path_set, bs.path_order, bs.last_compute_meta = compute_path(bufnr, symbol, anchor, scope, lsp_result)
+  maybe_warn_fallback(bs, opts.silent)
+  maybe_warn_strict_lsp(bs, opts.silent)
+  render(bufnr)
 end
 
 -- Activate tracking for the symbol under cursor and recompute buffer state.
 --
 -- This captures anchor/scope, computes the path, stores per-buffer runtime
--- data, and triggers rendering. In strict mode it can warn when LSP lookup
--- fails and lexical fallback is used.
+-- data, and triggers rendering.
 function M.activate(bufnr, opts)
   opts = opts or {}
   local symbol = opts.symbol
@@ -490,30 +576,62 @@ function M.activate(bufnr, opts)
 
   local bs = M.get_buf_state(bufnr)
   local scope = resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil)
-  if bs.active and bs.symbol == symbol and anchors_equal(bs.anchor, anchor) and scopes_equal(bs.scope, scope) then
+  local keep_render = bs.active and not bs.pending and next(bs.path_set) ~= nil
+  if
+    bs.active
+    and bs.symbol == symbol
+    and anchors_equal(bs.anchor, anchor)
+    and scopes_equal(bs.scope, scope)
+    and not opts.force
+  then
     return false
   end
 
   bs.active = true
+  bs.pending = false
   bs.symbol = symbol
   bs.anchor = anchor
   bs.scope = scope
-  bs.path_set, bs.path_order, bs.last_compute_meta = compute_path(bufnr, symbol, anchor, scope)
-
-  if
-    state.config.symbol_source == "lsp_strict_fallback"
-    and bs.last_compute_meta
-    and bs.last_compute_meta.used_fallback
-    and not opts.silent
-  then
-    local fw = state.config.fallback_warn
-    if fw == "always" or (fw == "once" and not bs.warned_lsp_fallback) then
-      M.notify(fallback_warn_msg(bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
-      bs.warned_lsp_fallback = true
-    end
+  bs.request_id = nil
+  if not keep_render then
+    bs.path_set = {}
+    bs.path_order = {}
+    bs.last_compute_meta = nil
+    bs.warned_lsp_strict = false
   end
 
-  render(bufnr)
+  if state.config.source == "word" then
+    apply_path(bufnr, bs, symbol, anchor, scope, opts, make_lsp_result("disabled"))
+    return true
+  end
+
+  local available, reason = get_lsp_status(bufnr)
+  if not available then
+    apply_path(bufnr, bs, symbol, anchor, scope, opts, make_lsp_result(reason))
+    return true
+  end
+
+  state.request_seq = state.request_seq + 1
+  bs.pending = true
+  bs.request_id = state.request_seq
+
+  local request_id = bs.request_id
+  request_lsp_highlight(bufnr, anchor, scope, function(lsp_result)
+    local current = state.bufs[bufnr]
+    if
+      not current
+      or not current.active
+      or current.request_id ~= request_id
+      or current.symbol ~= symbol
+      or not anchors_equal(current.anchor, anchor)
+      or not scopes_equal(current.scope, scope)
+    then
+      return
+    end
+
+    apply_path(bufnr, current, symbol, anchor, scope, opts, lsp_result)
+  end)
+
   return true
 end
 
@@ -521,6 +639,8 @@ function M.deactivate(bufnr)
   local bs = state.bufs[bufnr]
   if bs then
     bs.active = false
+    bs.pending = false
+    bs.request_id = nil
     bs.symbol = nil
     bs.anchor = nil
     bs.scope = nil
@@ -549,7 +669,7 @@ end
 function M.jump_in_path(direction, count)
   local bufnr = vim.api.nvim_get_current_buf()
   local bs = M.get_buf_state(bufnr)
-  if not bs.active or #bs.path_order == 0 then
+  if not bs.active or bs.pending or #bs.path_order == 0 then
     return false
   end
 
@@ -589,7 +709,7 @@ end
 function M.refresh(bufnr)
   local b = bufnr or vim.api.nvim_get_current_buf()
   local bs = state.bufs[b]
-  if bs and bs.active and vim.api.nvim_buf_is_valid(b) then
+  if bs and bs.active and bs.anchor and vim.api.nvim_buf_is_valid(b) then
     refresh_buffer(b, bs)
   end
 end
@@ -616,54 +736,57 @@ function M.get_mode()
 end
 
 function M.set_mode(mode)
-  local next_mode = mode
-  if mode == "toggle" then
-    local cycle = { static = "flow", flow = "dynamic", dynamic = "static" }
-    next_mode = cycle[state.config.mode] or "static"
-  end
-  if not valid_modes[next_mode] then
-    M.notify("TunnelVision: mode must be static, flow, dynamic, or toggle", vim.log.levels.ERROR)
+  if not valid_modes[mode] then
+    M.notify("TunnelVision: mode must be static, flow, or dynamic", vim.log.levels.ERROR)
     return
   end
-  state.config.mode = next_mode
+  state.config.mode = mode
   refresh_active_buffers()
 end
 
-function M.get_flow_direction()
-  return state.config.flow_direction
+function M.get_direction()
+  return state.config.direction
 end
 
-function M.set_flow_direction(direction)
-  local next_direction = direction == "toggle" and (state.config.flow_direction == "forward" and "both" or "forward")
-    or direction
-  if not valid_flow_directions[next_direction] then
-    M.notify("TunnelVision: flow direction must be forward, both, or toggle", vim.log.levels.ERROR)
+function M.set_direction(direction)
+  if not valid_directions[direction] then
+    M.notify("TunnelVision: direction must be forward or both", vim.log.levels.ERROR)
     return
   end
-  state.config.flow_direction = next_direction
+  state.config.direction = direction
   if state.config.mode == "flow" then
     refresh_active_buffers()
   end
 end
 
-function M.get_symbol_source()
-  return state.config.symbol_source
+function M.get_source()
+  return state.config.source
 end
 
-function M.set_symbol_source(source)
-  if source == "toggle" then
-    local cycle = { lsp_strict_fallback = "hybrid", hybrid = "lexical", lexical = "lsp_strict_fallback" }
-    source = cycle[state.config.symbol_source] or "lsp_strict_fallback"
-  end
-  if not valid_symbol_sources[source] then
-    M.notify(
-      "TunnelVision: symbol source must be lsp_strict_fallback, hybrid, lexical, or toggle",
-      vim.log.levels.ERROR
-    )
+function M.set_source(source)
+  if not valid_sources[source] then
+    M.notify("TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, or word", vim.log.levels.ERROR)
     return
   end
-  state.config.symbol_source = source
+  state.config.source = source
   refresh_active_buffers()
+end
+
+function M.get_status(bufnr)
+  local b = bufnr
+  if not b or b == 0 then
+    b = vim.api.nvim_get_current_buf()
+  end
+
+  local bs = state.bufs[b]
+  return {
+    active = bs and bs.active or false,
+    pending = bs and bs.pending or false,
+    symbol = bs and bs.symbol or nil,
+    mode = state.config.mode,
+    direction = state.config.direction,
+    source = state.config.source,
+  }
 end
 
 return M

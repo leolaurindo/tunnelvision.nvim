@@ -44,30 +44,34 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
   end
 
   timer:stop()
-  timer:start(DYNAMIC_DEBOUNCE_MS, 0, vim.schedule_wrap(function()
-    local queued = state.dynamic_pending[bufnr]
-    state.dynamic_pending[bufnr] = nil
+  timer:start(
+    DYNAMIC_DEBOUNCE_MS,
+    0,
+    vim.schedule_wrap(function()
+      local queued = state.dynamic_pending[bufnr]
+      state.dynamic_pending[bufnr] = nil
 
-    if not queued or not vim.api.nvim_buf_is_valid(bufnr) then
-      return
-    end
+      if not queued or not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+      end
 
-    local bs = core.state.bufs[bufnr]
-    if not bs or not bs.active or core.get_mode() ~= "dynamic" then
-      return
-    end
+      local bs = core.state.bufs[bufnr]
+      if not bs or not bs.active or core.get_mode() ~= "dynamic" then
+        return
+      end
 
-    if not core.should_dynamic_retarget(bufnr, queued.symbol, queued.cursor) then
-      return
-    end
+      if not core.should_dynamic_retarget(bufnr, queued.symbol, queued.cursor) then
+        return
+      end
 
-    core.activate(bufnr, {
-      silent = true,
-      symbol = queued.symbol,
-      cursor = queued.cursor,
-      reuse_scope = true,
-    })
-  end))
+      core.activate(bufnr, {
+        silent = true,
+        symbol = queued.symbol,
+        cursor = queued.cursor,
+        reuse_scope = true,
+      })
+    end)
+  )
 end
 
 function M.ensure_highlights()
@@ -83,7 +87,7 @@ function M.apply_dim(bufnr)
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, core.state.ns, 0, -1)
 
   local bs = core.state.bufs[bufnr]
-  if not bs or not bs.active or not vim.api.nvim_buf_is_valid(bufnr) then
+  if not bs or not bs.active or bs.pending or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
 
@@ -96,14 +100,10 @@ function M.apply_dim(bufnr)
     return
   end
 
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  for idx, line in ipairs(lines) do
+  for idx = 1, total do
     if not bs.path_set[idx] then
       pcall(vim.api.nvim_buf_set_extmark, bufnr, core.state.ns, idx - 1, 0, {
-        end_row = idx - 1,
-        end_col = #line,
-        hl_group = core.state.config.dim_hl,
-        hl_eol = true,
+        line_hl_group = core.state.config.dim_hl,
         priority = 1000,
       })
     end
@@ -116,88 +116,140 @@ local function ensure_commands(api)
   end
   state.commands_set = true
 
-  local commands = {
-    {
-      "TunnelVisionOn",
-      function()
-        core.activate(vim.api.nvim_get_current_buf())
-      end,
-      "Turn on tunnel vision for symbol under cursor",
+  local subcommands = {
+    on = {
+      desc = "Activate tunnel vision for symbol under cursor",
+      run = api.on,
     },
-    {
-      "TunnelVisionOff",
-      function()
-        core.deactivate(vim.api.nvim_get_current_buf())
-      end,
-      "Turn off tunnel vision in current buffer",
+    retarget = {
+      desc = "Alias of on; retarget to symbol under cursor",
+      run = api.on,
     },
-    { "TunnelVisionToggle", api.toggle, "Toggle tunnel vision for symbol under cursor" },
-    { "TunnelVisionForward", api.forward, "Retarget to symbol under cursor without toggling off" },
-    { "TunnelVisionDynamic", api.dynamic, "Switch to dynamic mode and track symbol under cursor" },
-    {
-      "TunnelVisionNext",
-      function()
+    off = {
+      desc = "Deactivate tunnel vision in current buffer",
+      run = api.off,
+    },
+    toggle = {
+      desc = "Toggle tunnel vision for symbol under cursor",
+      run = api.toggle,
+    },
+    next = {
+      desc = "Jump to next path line",
+      run = function()
         api.next(vim.v.count1)
       end,
-      "Jump to next path line",
     },
-    {
-      "TunnelVisionPrev",
-      function()
+    prev = {
+      desc = "Jump to previous path line",
+      run = function()
         api.prev(vim.v.count1)
       end,
-      "Jump to previous path line",
     },
-    { "TunnelVisionRefresh", api.refresh, "Recompute tunnel vision path for this buffer" },
+    refresh = {
+      desc = "Recompute tunnel vision path for this buffer",
+      run = api.refresh,
+    },
+    mode = {
+      desc = "Query or set tunnel vision mode",
+      get = api.get_mode,
+      label = "mode",
+      set = api.set_mode,
+      values = { "static", "flow", "dynamic" },
+    },
+    direction = {
+      desc = "Query or set tunnel vision direction",
+      get = api.get_direction,
+      label = "direction",
+      set = api.set_direction,
+      values = { "forward", "both" },
+    },
+    source = {
+      desc = "Query or set tunnel vision source",
+      get = api.get_source,
+      label = "source",
+      set = api.set_source,
+      values = { "lsp_else_word", "lsp", "lsp_and_word", "word" },
+    },
+    status = {
+      desc = "Show tunnel vision status",
+      run = function()
+        local status = api.status()
+        local state_label = status.pending and "pending" or (status.active and "on" or "off")
+        local symbol = status.symbol and (" symbol=" .. status.symbol) or ""
+        core.notify(
+          ("TunnelVision: %s mode=%s direction=%s source=%s%s"):format(
+            state_label,
+            status.mode,
+            status.direction,
+            status.source,
+            symbol
+          )
+        )
+      end,
+    },
   }
 
-  for _, cmd in ipairs(commands) do
-    vim.api.nvim_create_user_command(cmd[1], cmd[2], { desc = cmd[3] })
+  local names = vim.tbl_keys(subcommands)
+  table.sort(names)
+
+  local function complete(arglead, cmdline)
+    local parts = vim.split(vim.trim(cmdline), "%s+", { trimempty = true })
+    if #parts <= 1 or (#parts == 2 and cmdline:sub(-1) ~= " ") then
+      return vim.tbl_filter(function(name)
+        return name:find("^" .. vim.pesc(arglead)) ~= nil
+      end, names)
+    end
+
+    local sub = subcommands[parts[2]]
+    if not sub or not sub.values then
+      return {}
+    end
+
+    return vim.tbl_filter(function(value)
+      return value:find("^" .. vim.pesc(arglead)) ~= nil
+    end, sub.values)
   end
 
-  local function create_query_command(name, get_value, set_value, choices, label, desc)
-    vim.api.nvim_create_user_command(name, function(opts)
-      local arg = vim.trim(opts.args or "")
-      if arg == "" then
-        core.notify(("TunnelVision %s: %s"):format(label, get_value()))
-      else
-        set_value(arg)
+  vim.api.nvim_create_user_command("TunnelVision", function(opts)
+    local args = vim.split(vim.trim(opts.args or ""), "%s+", { trimempty = true })
+    local sub = subcommands[args[1]]
+    if not sub then
+      core.notify(
+        "TunnelVision: use one of on, retarget, off, toggle, next, prev, refresh, mode, direction, source, status",
+        vim.log.levels.ERROR
+      )
+      return
+    end
+
+    if sub.values then
+      if sub.label == "direction" and api.get_mode() ~= "flow" then
+        core.notify("TunnelVision: direction is used only in flow mode", vim.log.levels.WARN)
       end
-    end, {
-      nargs = "?",
-      complete = function()
-        return choices
-      end,
-      desc = desc,
-    })
-  end
 
-  create_query_command(
-    "TunnelVisionMode",
-    api.get_mode,
-    api.set_mode,
-    { "static", "flow", "dynamic", "toggle" },
-    "mode",
-    "Set tunnel vision mode (static|flow|dynamic|toggle)"
-  )
+      local value = args[2]
+      if not value or value == "" then
+        core.notify(("TunnelVision %s: %s"):format(sub.label, sub.get()))
+        return
+      end
+      if args[3] then
+        core.notify(("TunnelVision: '%s' takes a single value"):format(args[1]), vim.log.levels.ERROR)
+        return
+      end
+      sub.set(value)
+      return
+    end
 
-  create_query_command(
-    "TunnelVisionFlowDirection",
-    api.get_flow_direction,
-    api.set_flow_direction,
-    { "forward", "both", "toggle" },
-    "flow direction",
-    "Set flow direction (forward|both|toggle)"
-  )
+    if args[2] then
+      core.notify(("TunnelVision: '%s' does not take arguments"):format(args[1]), vim.log.levels.ERROR)
+      return
+    end
 
-  create_query_command(
-    "TunnelVisionSymbolSource",
-    api.get_symbol_source,
-    api.set_symbol_source,
-    { "lsp_strict_fallback", "hybrid", "lexical", "toggle" },
-    "symbol source",
-    "Set symbol source (lsp_strict_fallback|hybrid|lexical|toggle)"
-  )
+    sub.run()
+  end, {
+    complete = complete,
+    desc = "Control tunnel vision",
+    nargs = "*",
+  })
 end
 
 local function ensure_autocmds()
