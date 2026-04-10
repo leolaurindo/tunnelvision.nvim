@@ -64,6 +64,12 @@ assert_true(core.get_direction() == "both", "direction both not applied")
 vim.cmd("TunnelVision direction forward")
 assert_true(core.get_direction() == "forward", "direction forward not applied")
 
+assert_true(core.get_scope() == "function", "default scope should be function")
+vim.cmd("TunnelVision scope buffer")
+assert_true(core.get_scope() == "buffer", "scope buffer not applied")
+vim.cmd("TunnelVision scope function")
+assert_true(core.get_scope() == "function", "scope function not applied")
+
 vim.cmd("TunnelVision source lsp_else_word")
 assert_true(core.get_source() == "lsp_else_word", "source lsp_else_word not applied")
 vim.cmd("TunnelVision source lsp")
@@ -72,6 +78,33 @@ vim.cmd("TunnelVision source lsp_and_word")
 assert_true(core.get_source() == "lsp_and_word", "source lsp_and_word not applied")
 vim.cmd("TunnelVision source word")
 assert_true(core.get_source() == "word", "source word not applied")
+
+tunnelvision.setup({ notify = false, source = "word", mode = "flow", scope = "buffer" })
+vim.cmd("enew")
+vim.bo.filetype = "lua"
+vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  "local alpha = 1",
+  "local sentinel = alpha + 1",
+  "local result = sentinel + 1",
+})
+local flow_keywords_buf = vim.api.nvim_get_current_buf()
+
+vim.api.nvim_win_set_cursor(0, { 1, 8 })
+vim.cmd("TunnelVision on")
+assert_true(core.get_buf_state(flow_keywords_buf).path_set[3], "flow baseline should propagate through sentinel")
+
+vim.cmd("TunnelVision off")
+assert_true(tunnelvision.add_keywords({ "sentinel" }), "add_keywords should append new identifiers")
+assert_true(not tunnelvision.add_keywords({ "sentinel" }), "add_keywords should ignore duplicates")
+vim.api.nvim_win_set_cursor(0, { 1, 8 })
+vim.cmd("TunnelVision on")
+assert_true(
+  not core.get_buf_state(flow_keywords_buf).path_set[3],
+  "add_keywords should stop propagation through ignored identifiers"
+)
+
+vim.cmd("TunnelVision off")
+tunnelvision.setup({ notify = false, source = "word" })
 
 local render_calls = 0
 core.set_renderer(function()

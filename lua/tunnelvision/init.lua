@@ -64,6 +64,18 @@ function M.set_direction(direction)
   core.set_direction(direction)
 end
 
+function M.get_scope()
+  return core.get_scope()
+end
+
+function M.set_scope(scope)
+  core.set_scope(scope)
+end
+
+function M.add_keywords(words)
+  return core.add_keywords(words)
+end
+
 function M.get_source()
   return core.get_source()
 end

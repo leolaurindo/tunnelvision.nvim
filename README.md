@@ -70,6 +70,7 @@ Run `:help tunnelvision` for the full reference.
 |- status
 |- mode [static|flow|dynamic]
 |- direction [forward|both]
+|- scope [function|buffer]
 `- source [lsp_else_word|lsp|lsp_and_word|word]
 ```
 
@@ -83,9 +84,10 @@ Run `:help tunnelvision` for the full reference.
 - `:TunnelVision status`
 - `:TunnelVision mode [static|flow|dynamic]`
 - `:TunnelVision direction [forward|both]`
+- `:TunnelVision scope [function|buffer]`
 - `:TunnelVision source [lsp_else_word|lsp|lsp_and_word|word]`
 
-With no value, `mode`, `direction`, and `source` show the current setting.
+With no value, `mode`, `direction`, `scope`, and `source` show the current setting.
 
 ## Modes
 
@@ -99,6 +101,26 @@ With no value, `mode`, `direction`, and `source` show the current setting.
 
 - `forward` (default): follow forward influence.
 - `both`: include backward influence too.
+
+`extra_keywords` (flow mode only) lets you add identifiers that flow analysis should
+ignore (on top of the built-in keyword set). This is useful for DSL-like names that
+should not participate in propagation.
+
+You can also add keywords at runtime (flow mode only):
+
+```lua
+require("tunnelvision").add_keywords({ "sentinel", "ctx" })
+```
+
+## Scope
+
+`scope` controls where TunnelVision searches for related lines:
+
+- `function` (default): limit search to the nearest function-like scope.
+- `buffer`: search the entire buffer.
+
+When `scope = "function"`, TunnelVision uses Tree-sitter when available. If Tree-sitter
+is unavailable (or no function-like node is found), it falls back to the full buffer.
 
 ## Source
 
@@ -121,6 +143,8 @@ With no value, `mode`, `direction`, and `source` show the current setting.
 require("tunnelvision").setup({
   mode = "static", -- static | flow | dynamic
   direction = "forward", -- forward | both
+  scope = "function", -- function | buffer
+  extra_keywords = {}, -- flow mode only: additional identifiers to ignore in flow analysis
   source = "lsp_else_word", -- lsp_else_word | lsp | lsp_and_word | word
   fallback_warn = "once", -- once | always | never
   lsp_timeout_ms = 150,
@@ -130,20 +154,41 @@ require("tunnelvision").setup({
 })
 ```
 
+
+
+
 ## Suggested keymaps
+
+### Minimal
+```lua
+local tv = require("tunnelvision")
+
+vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
+vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
+vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
+vim.keymap.set("n", "<Esc>", function()
+  if tv.is_active() then
+    tv.off()
+    return ""
+  end
+  return "<Esc>"
+end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
+```
+
+### Extended
 
 ```lua
 local tv = require("tunnelvision")
 
-vim.keymap.set("n", "<leader>hh", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
-vim.keymap.set("n", "<leader>ho", "<cmd>TunnelVision off<CR>", { desc = "TunnelVision off" })
-vim.keymap.set("n", "]h", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
-vim.keymap.set("n", "[h", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
-vim.keymap.set("n", "<leader>hf", function()
+vim.keymap.set("n", "<leader>vv", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
+vim.keymap.set("n", "<leader>vo", "<cmd>TunnelVision off<CR>", { desc = "TunnelVision off" })
+vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
+vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
+vim.keymap.set("n", "<leader>vf", function()
   tv.set_mode("flow")
   tv.on()
 end, { desc = "TunnelVision flow" })
-vim.keymap.set("n", "<leader>hd", function()
+vim.keymap.set("n", "<leader>vd", function()
   tv.set_mode("dynamic")
   tv.on()
 end, { desc = "TunnelVision dynamic" })

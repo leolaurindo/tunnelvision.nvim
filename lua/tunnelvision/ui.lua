@@ -163,6 +163,13 @@ local function ensure_commands(api)
       set = api.set_direction,
       values = { "forward", "both" },
     },
+    scope = {
+      desc = "Query or set tunnel vision scope",
+      get = api.get_scope,
+      label = "scope",
+      set = api.set_scope,
+      values = { "function", "buffer" },
+    },
     source = {
       desc = "Query or set tunnel vision source",
       get = api.get_source,
@@ -177,10 +184,11 @@ local function ensure_commands(api)
         local state_label = status.pending and "pending" or (status.active and "on" or "off")
         local symbol = status.symbol and (" symbol=" .. status.symbol) or ""
         core.notify(
-          ("TunnelVision: %s mode=%s direction=%s source=%s%s"):format(
+          ("TunnelVision: %s mode=%s direction=%s scope=%s source=%s%s"):format(
             state_label,
             status.mode,
             status.direction,
+            status.scope,
             status.source,
             symbol
           )
@@ -215,7 +223,7 @@ local function ensure_commands(api)
     local sub = subcommands[args[1]]
     if not sub then
       core.notify(
-        "TunnelVision: use one of on, retarget, off, toggle, next, prev, refresh, mode, direction, source, status",
+        "TunnelVision: use one of on, retarget, off, toggle, next, prev, refresh, mode, direction, scope, source, status",
         vim.log.levels.ERROR
       )
       return

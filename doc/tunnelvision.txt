@@ -29,6 +29,15 @@ Direction is used only in flow mode >
   both     Include backward influence too.
 <
 
+Flow keyword filtering (flow mode only) >
+  extra_keywords  Additional identifiers ignored by flow analysis.
+<
+
+Scope controls where matching is searched >
+  function  Use nearest function-like scope (Tree-sitter); fallback to buffer.
+  buffer    Use full buffer.
+<
+
 Source controls how matching lines are found >
   lsp_else_word  Use LSP first, fallback to word matching on failure.
   lsp            Use LSP only (no word fallback).
@@ -75,8 +84,8 @@ Requirements >
   :TunnelVision prev
   :TunnelVision off
 
-Use |:TunnelVision| with subcommands. `mode`, `direction`, and `source` show the
-current value when called without an argument.
+Use |:TunnelVision| with subcommands. `mode`, `direction`, `scope`, and `source`
+show the current value when called without an argument.
 
 ===============================================================================
 4. Commands                                               *tunnelvision-commands*
@@ -104,7 +113,7 @@ current value when called without an argument.
       Recompute the current path.
 
   :TunnelVision status
-      Show the current state, mode, direction, source, and symbol.
+      Show the current state, mode, direction, scope, source, and symbol.
 
   :TunnelVision mode [static|flow|dynamic]
       Query or set the current mode.
@@ -112,6 +121,10 @@ current value when called without an argument.
   :TunnelVision direction [forward|both]
       Query or set the current flow direction.
       Direction is used only in flow mode.
+
+  :TunnelVision scope [function|buffer]
+      Query or set the current search scope.
+      `function` uses Tree-sitter when available, else falls back to buffer.
 
   :TunnelVision source [lsp_else_word|lsp|lsp_and_word|word]
       Query or set the current symbol source.
@@ -123,6 +136,8 @@ current value when called without an argument.
   require("tunnelvision").setup({
     mode = "static",
     direction = "forward",
+    scope = "function",
+    extra_keywords = {},
     source = "lsp_else_word",
     fallback_warn = "once",
     lsp_timeout_ms = 150,
@@ -135,6 +150,8 @@ current value when called without an argument.
 Options >
   mode            static | flow | dynamic
   direction       forward | both
+  scope           function | buffer
+  extra_keywords  flow mode only: list of extra identifiers ignored in flow analysis
   source          lsp_else_word | lsp | lsp_and_word | word
   fallback_warn   once | always | never (for lsp_else_word)
   lsp_timeout_ms  timeout for async LSP documentHighlight requests
@@ -158,8 +175,13 @@ From `require("tunnelvision")` >
   status(bufnr?)
   get_mode() / set_mode(mode)
   get_direction() / set_direction(direction)
+  get_scope() / set_scope(scope)
+  add_keywords(words)
   get_source() / set_source(source)
 <
+
+`add_keywords(words)` appends identifiers to the `extra_keywords` ignore list at
+runtime. This affects flow analysis only.
 
 ===============================================================================
 7. Health                                                  *tunnelvision-health*
@@ -181,6 +203,7 @@ Checks >
 - No symbol under cursor: move to a word identifier before `:TunnelVision on`.
 - Slow or empty LSP mode: try `:TunnelVision source word` to compare.
 - No LSP highlights: use `lsp_else_word` for automatic word fallback.
+- Function scope behaving like buffer: check Tree-sitter health/status.
 - Flow mode is heuristic, not full dataflow analysis.
 
 vim:tw=78:ts=8:noet:ft=help:norl:
