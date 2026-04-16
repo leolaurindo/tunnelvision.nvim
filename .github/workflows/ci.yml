@@ -2,7 +2,21 @@ name: CI
 
 on:
   push:
+    paths:
+      - "lua/**"
+      - "tests/**"
+      - "doc/**"
+      - ".github/workflows/**"
+      - ".luacheckrc"
+      - "stylua.toml"
   pull_request:
+    paths:
+      - "lua/**"
+      - "tests/**"
+      - "doc/**"
+      - ".github/workflows/**"
+      - ".luacheckrc"
+      - "stylua.toml"
 
 jobs:
   checks:
