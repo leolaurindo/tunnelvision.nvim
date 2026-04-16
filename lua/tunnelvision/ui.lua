@@ -101,12 +101,17 @@ function M.apply_dim(bufnr)
   if total > core.state.config.max_dim_lines then
     -- Dimming is an O(total lines) extmark pass, so skip very large buffers
     -- instead of doing expensive redraw work on every refresh.
-    core.notify(
-      ("TunnelVision: file too large to dim (%d lines > %d)"):format(total, core.state.config.max_dim_lines),
-      vim.log.levels.WARN
-    )
+    if not bs.warned_large_buffer then
+      core.notify(
+        ("TunnelVision: file too large to dim (%d lines > %d)"):format(total, core.state.config.max_dim_lines),
+        vim.log.levels.WARN
+      )
+      bs.warned_large_buffer = true
+    end
     return
   end
+
+  bs.warned_large_buffer = false
 
   for idx = 1, total do
     if not bs.path_set[idx] then

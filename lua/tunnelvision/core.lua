@@ -81,6 +81,7 @@ function M.get_buf_state(bufnr)
     path_order = {},
     warned_lsp_fallback = false,
     warned_lsp_strict = false,
+    warned_large_buffer = false,
     last_compute_meta = nil,
     pending = false,
     request_id = nil,
@@ -337,6 +338,7 @@ function M.deactivate(bufnr)
     bs.path_set = {}
     bs.path_order = {}
     bs.last_compute_meta = nil
+    bs.warned_large_buffer = false
   end
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
 end
