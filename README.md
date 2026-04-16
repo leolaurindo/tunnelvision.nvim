@@ -68,10 +68,11 @@ use({
 
 ## Quick start
 
-1. Put the cursor on a symbol.
-2. Run `:TunnelVision on`.
-3. Jump with `:TunnelVision next` and `:TunnelVision prev`.
-4. Run `:TunnelVision off`.
+1. Call `require("tunnelvision").setup()` so the `:TunnelVision` command is registered.
+2. Put the cursor on a symbol.
+3. Run `:TunnelVision on`.
+4. Jump with `:TunnelVision next` and `:TunnelVision prev`.
+5. Run `:TunnelVision off`.
 
 ## Commands
 
@@ -128,7 +129,7 @@ Run `:help tunnelvision-config` for the full option reference.
 local tv = require("tunnelvision")
 
 vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
--- or vim.keymap.set("n", ""<leader>v", "<cmd>TunnelVision toggle<CR>", { desc = "TunnelVision toggle"})
+-- or vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision toggle<CR>", { desc = "TunnelVision toggle" })
 vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
 vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
 vim.keymap.set("n", "<Esc>", function()
@@ -152,3 +153,4 @@ Just make sure to:
 
 - include your rationale
 - update the documentation
+- update `CHANGELOG.md`
