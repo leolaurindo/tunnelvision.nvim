@@ -84,6 +84,8 @@ Requirements >
 ===============================================================================
 3. Quick start                                          *tunnelvision-quickstart*
 
+Call `require("tunnelvision").setup()` first so `:TunnelVision` is available.
+
   :TunnelVision on
   :TunnelVision retarget
   :TunnelVision next
