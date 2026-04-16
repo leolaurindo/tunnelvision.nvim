@@ -1,13 +1,11 @@
-std = "luajit"
+stf = "luajit"
 
 globals = {
   "vim",
 }
 
-read_globals = {
-  "jit",
-}
-
 exclude_files = {
   "doc/**",
 }
+
+max_line_length = 120
