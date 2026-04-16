@@ -31,6 +31,8 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
   local pending = { symbol = symbol, cursor = { cursor[1], cursor[2] } }
 
   if not uv then
+    -- Without libuv timers we still keep dynamic mode functional, just without
+    -- the debounce that normally coalesces bursts of CursorMoved events.
     core.activate(bufnr, { silent = true, symbol = symbol, cursor = pending.cursor, reuse_scope = true })
     return
   end
@@ -97,6 +99,8 @@ function M.apply_dim(bufnr)
 
   local total = vim.api.nvim_buf_line_count(bufnr)
   if total > core.state.config.max_dim_lines then
+    -- Dimming is an O(total lines) extmark pass, so skip very large buffers
+    -- instead of doing expensive redraw work on every refresh.
     core.notify(
       ("TunnelVision: file too large to dim (%d lines > %d)"):format(total, core.state.config.max_dim_lines),
       vim.log.levels.WARN

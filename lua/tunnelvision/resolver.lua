@@ -299,6 +299,8 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
   end
 
   vim.defer_fn(function()
+    -- Some servers never answer documentHighlight requests. The `done` guard keeps
+    -- the timeout path and the callback path from racing into duplicate updates.
     finish(M.make_lsp_result("request_failed"))
   end, timeout_ms)
 end
@@ -377,6 +379,9 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
 
   if use_flow then
     local changed, guard = true, 0
+    -- Flow mode grows the tracked identifier set until it reaches a fixed point
+    -- or hits a small safety bound. This keeps chained assignments like
+    -- `a = b; c = a` connected without letting pathological buffers loop forever.
     while changed and guard < FLOW_MAX_ITER do
       changed = false
       guard = guard + 1

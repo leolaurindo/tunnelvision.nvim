@@ -305,6 +305,9 @@ function M.activate(bufnr, opts)
   bs.request_id = state.request_seq
 
   local request_id = bs.request_id
+  -- Activation is async when LSP highlights are available. Track the request id
+  -- and re-check the buffer state on completion so older responses cannot clobber
+  -- a newer symbol, cursor position, or scope.
   resolver.request_lsp_highlight(bufnr, anchor, scope, state.config.lsp_timeout_ms, function(lsp_result)
     local current = state.bufs[bufnr]
     if not current or not current.active or current.request_id ~= request_id or current.symbol ~= symbol then
