@@ -3,13 +3,11 @@
 ![Neovim](https://img.shields.io/badge/Neovim-0.9%2B-57A143?logo=neovim&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-Focus one symbol path at a time.
+Focus on one thing at a time.
+
+TunnelVision dims unrelated lines and keeps attention on the targeted symbol.
 
 ![TunnelVision screenshot](assets/screenshot.png)
-
-## What it does
-
-TunnelVision dims unrelated lines and keeps attention on the symbol under cursor.
 
 ## Requirements
 
@@ -20,7 +18,8 @@ TunnelVision dims unrelated lines and keeps attention on the symbol under cursor
 
 ## Installation
 
-### lazy.nvim
+<details open>
+<summary><code>lazy.nvim</code></summary>
 
 ```lua
 {
@@ -29,14 +28,32 @@ TunnelVision dims unrelated lines and keeps attention on the symbol under cursor
 }
 ```
 
-### mini.deps
+</details>
+
+<details>
+<summary><code>vim.pack</code></summary>
+
+```lua
+vim.pack.add({ "https://github.com/leolaurindo/tunnelvision.nvim" })
+require("tunnelvision").setup()
+```
+
+`vim.pack` is Neovim's built-in plugin manager in newer versions, and it is still experimental upstream.
+
+</details>
+
+<details>
+<summary><code>mini.deps</code></summary>
 
 ```lua
 MiniDeps.add({ source = "leolaurindo/tunnelvision.nvim" })
 require("tunnelvision").setup()
 ```
 
-### packer.nvim
+</details>
+
+<details>
+<summary><code>packer.nvim</code></summary>
 
 ```lua
 use({
@@ -47,6 +64,8 @@ use({
 })
 ```
 
+</details>
+
 ## Quick start
 
 1. Put the cursor on a symbol.
@@ -54,144 +73,64 @@ use({
 3. Jump with `:TunnelVision next` and `:TunnelVision prev`.
 4. Run `:TunnelVision off`.
 
-Run `:help tunnelvision` for the full reference.
-
 ## Commands
 
 ```text
-:TunnelVision
-|- on
-|- retarget (alias of on)
-|- off
-|- toggle
-|- next
-|- prev
-|- refresh
-|- status
-|- mode [static|flow|dynamic]
-|- direction [forward|both]
-|- scope [function|buffer]
-`- source [lsp_else_word|lsp|lsp_and_word|word]
+:TunnelVision on|retarget|off|toggle|next|prev|refresh|status
+:TunnelVision mode [static|dynamic|flow]
+:TunnelVision scope [function|buffer]
+:TunnelVision source [lsp_else_word|lsp|lsp_and_word|word]
+:TunnelVision direction [forward|both]
 ```
 
-- `:TunnelVision on`
-- `:TunnelVision retarget` (alias of `on`)
-- `:TunnelVision off`
-- `:TunnelVision toggle`
-- `:TunnelVision next`
-- `:TunnelVision prev`
-- `:TunnelVision refresh`
-- `:TunnelVision status`
-- `:TunnelVision mode [static|flow|dynamic]`
-- `:TunnelVision direction [forward|both]`
-- `:TunnelVision scope [function|buffer]`
-- `:TunnelVision source [lsp_else_word|lsp|lsp_and_word|word]`
+With no value, `mode`, `scope`, `source`, and `direction` show the current setting.
 
-With no value, `mode`, `direction`, `scope`, and `source` show the current setting.
+Run `:help tunnelvision` for full command and option reference.
 
 ## Modes
 
 - `static` (default): track the symbol selected on activation.
 - `dynamic`: retarget as the cursor moves.
-- `flow`: expand to assignment-related lines to follow value flow.
+- `flow`: experimental mode that expands to assignment-related lines to follow value flow.
 
-## Flow settings
+`scope = "function"` uses Tree-sitter when available, otherwise TunnelVision falls back to the full buffer.
 
-`direction` matters only in `flow` mode (outside flow mode, TunnelVision warns and keeps the value unchanged in behavior):
-
-- `forward` (default): follow forward influence.
-- `both`: include backward influence too.
-
-`extra_keywords` (flow mode only) lets you add identifiers that flow analysis should
-ignore (on top of the built-in keyword set). This is useful for DSL-like names that
-should not participate in propagation.
-
-You can also add keywords at runtime (flow mode only):
-
-```lua
-require("tunnelvision").add_keywords({ "sentinel", "ctx" })
-```
-
-## Scope
-
-`scope` controls where TunnelVision searches for related lines:
-
-- `function` (default): limit search to the nearest function-like scope.
-- `buffer`: search the entire buffer.
-
-When `scope = "function"`, TunnelVision uses Tree-sitter when available. If Tree-sitter
-is unavailable (or no function-like node is found), it falls back to the full buffer.
-
-## Source
-
-`source` controls how TunnelVision finds related lines:
-
-- `lsp_else_word` (default): use LSP highlights first, fallback to word matching on failure.
-- `lsp`: use LSP highlights only; no word fallback.
-- `lsp_and_word`: union of word matching and LSP matches.
-- `word`: word matching only.
-
-`fallback_warn` controls `lsp_else_word` warnings:
-
-- `once` (default): warn once per buffer lifetime.
-- `always`: warn every fallback.
-- `never`: never warn.
+`source = "lsp_else_word"` is the default and works well as a general setting.
 
 ## Configuration
 
 ```lua
 require("tunnelvision").setup({
-  mode = "static", -- static | flow | dynamic
-  direction = "forward", -- forward | both
-  scope = "function", -- function | buffer
-  extra_keywords = {}, -- flow mode only: additional identifiers to ignore in flow analysis
-  source = "lsp_else_word", -- lsp_else_word | lsp | lsp_and_word | word
-  fallback_warn = "once", -- once | always | never
-  lsp_timeout_ms = 150,
-  dim_hl = "TunnelVisionDim",
-  max_dim_lines = 6000,
-  notify = true,
+  mode = "static",
+  scope = "function",
+  source = "lsp_else_word",
 })
 ```
 
+| Option | Default | Notes |
+| --- | --- | --- |
+| `mode` | `static` | `dynamic` retargets as you move; `flow` is experimental. |
+| `direction` | `forward` | Flow mode only. Use `both` to include backward influence. |
+| `scope` | `function` | Uses the nearest function-like scope when Tree-sitter is available. |
+| `source` | `lsp_else_word` | LSP first, then word matching when LSP data is unavailable. |
+| `fallback_warn` | `once` | Controls fallback warnings for `lsp_else_word`. |
+| `extra_keywords` | `{}` | Extra identifiers to ignore in flow analysis. |
+| `lsp_timeout_ms` | `150` | Timeout for async LSP `documentHighlight` requests. |
+| `dim_hl` | `TunnelVisionDim` | Highlight group used for dimmed lines. |
+| `max_dim_lines` | `6000` | Skip dimming in very large buffers. |
+| `notify` | `true` | Enable plugin notifications. |
 
-
+Run `:help tunnelvision-config` for the full option reference.
 
 ## Suggested keymaps
 
-### Minimal
 ```lua
 local tv = require("tunnelvision")
 
 vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
+-- or vim.keymap.set("n", ""<leader>v", "<cmd>TunnelVision toggle<CR>", { desc = "TunnelVision toggle"})
 vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
 vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
-vim.keymap.set("n", "<Esc>", function()
-  if tv.is_active() then
-    tv.off()
-    return ""
-  end
-  return "<Esc>"
-end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
-```
-
-### Extended
-
-```lua
-local tv = require("tunnelvision")
-
-vim.keymap.set("n", "<leader>vv", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
-vim.keymap.set("n", "<leader>vo", "<cmd>TunnelVision off<CR>", { desc = "TunnelVision off" })
-vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
-vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
-vim.keymap.set("n", "<leader>vf", function()
-  tv.set_mode("flow")
-  tv.on()
-end, { desc = "TunnelVision flow" })
-vim.keymap.set("n", "<leader>vd", function()
-  tv.set_mode("dynamic")
-  tv.on()
-end, { desc = "TunnelVision dynamic" })
 vim.keymap.set("n", "<Esc>", function()
   if tv.is_active() then
     tv.off()
@@ -207,4 +146,9 @@ end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
 
 ## Contributing
 
-- `CONTRIBUTING.md`
+Feel free to contribute.
+
+Just make sure to:
+
+- include your rationale
+- update the documentation

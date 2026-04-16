@@ -1,4 +1,4 @@
-*tunnelvision.txt*  Focus one symbol path at a time.      Last change: 2026 Mar 23
+*tunnelvision.txt*  Focus one symbol path at a time.      Last change: 2026 Apr 15
 
 ===============================================================================
 CONTENTS                                                    *tunnelvision*
@@ -21,7 +21,7 @@ cursor.
 Modes >
   static   Track the symbol selected on activation.
   dynamic  Retarget as the cursor moves.
-  flow     Expand to assignment-related lines to follow value flow.
+  flow     Experimental mode that expands to assignment-related lines.
 <
 
 Direction is used only in flow mode >
@@ -69,10 +69,16 @@ packer.nvim >lua
   })
 <
 
+vim.pack >lua
+  vim.pack.add({ "https://github.com/leolaurindo/tunnelvision.nvim" })
+  require("tunnelvision").setup()
+<
+
 Requirements >
   - Neovim 0.9+
   - Optional: Tree-sitter for better scope detection
   - Optional: LSP with documentHighlight support
+  - vim.pack users need a newer Neovim with vim.pack available
 <
 
 ===============================================================================
