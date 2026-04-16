@@ -1,3 +1,17 @@
+-- tunnelvision.resolver
+--
+-- Path analysis for TunnelVision.
+--
+-- Responsibilities:
+-- - define keyword filtering used by word and flow analysis
+-- - resolve the active analysis scope (function or buffer)
+-- - query LSP documentHighlight data and normalize it to line sets
+-- - compute the visible path from word matches, LSP matches, and flow heuristics
+--
+-- This module is intentionally stateless. It receives the current config-derived
+-- inputs from tunnelvision.core and returns computed results without owning
+-- buffer lifecycle or UI concerns.
+
 local M = {}
 
 local FLOW_MAX_ITER = 32

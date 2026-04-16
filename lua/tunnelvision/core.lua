@@ -1,4 +1,20 @@
-local analysis = require("tunnelvision.analysis")
+-- tunnelvision.core
+--
+-- Runtime orchestration for TunnelVision.
+--
+-- Responsibilities:
+-- - own global and per-buffer plugin state
+-- - validate and store user configuration
+-- - activate/deactivate tracking for the current symbol
+-- - coordinate async LSP requests and stale-response rejection
+-- - refresh active buffers and support path navigation
+-- - forward computed paths to the configured renderer
+--
+-- Non-goals:
+-- - path computation details live in tunnelvision.resolver
+-- - Neovim command/autocmd wiring lives in tunnelvision.ui
+
+local resolver = require("tunnelvision.resolver")
 
 local M = {}
 
@@ -22,7 +38,7 @@ local state = {
   request_seq = 0,
 }
 
-state.keywords = analysis.build_keywords(defaults.extra_keywords)
+state.keywords = resolver.build_keywords(defaults.extra_keywords)
 M.state = state
 
 local valid_modes = { static = true, flow = true, dynamic = true }
@@ -102,7 +118,7 @@ function M.normalize_config(cfg)
   if not valid_fallback_warn[cfg.fallback_warn] then
     cfg.fallback_warn = defaults.fallback_warn
   end
-  cfg.extra_keywords = analysis.sanitize_keywords(cfg.extra_keywords)
+  cfg.extra_keywords = resolver.sanitize_keywords(cfg.extra_keywords)
   cfg.max_dim_lines = math.max(1, tonumber(cfg.max_dim_lines) or defaults.max_dim_lines)
   cfg.lsp_timeout_ms = math.max(1, tonumber(cfg.lsp_timeout_ms) or defaults.lsp_timeout_ms)
 end
@@ -110,11 +126,11 @@ end
 function M.configure(opts)
   state.config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
   M.normalize_config(state.config)
-  state.keywords = analysis.build_keywords(state.config.extra_keywords)
+  state.keywords = resolver.build_keywords(state.config.extra_keywords)
 end
 
 function M.add_keywords(words)
-  local incoming = analysis.sanitize_keywords(words)
+  local incoming = resolver.sanitize_keywords(words)
   if #incoming == 0 then
     return false
   end
@@ -138,7 +154,7 @@ function M.add_keywords(words)
     return false
   end
 
-  state.keywords = analysis.build_keywords(state.config.extra_keywords)
+  state.keywords = resolver.build_keywords(state.config.extra_keywords)
   if state.config.mode == "flow" then
     refresh_active_buffers()
   end
@@ -219,7 +235,7 @@ end
 local function apply_path(bufnr, bs, symbol, anchor, scope, opts, lsp_result)
   bs.pending = false
   bs.request_id = nil
-  bs.path_set, bs.path_order, bs.last_compute_meta = analysis.compute_path(bufnr, symbol, anchor, scope, {
+  bs.path_set, bs.path_order, bs.last_compute_meta = resolver.compute_path(bufnr, symbol, anchor, scope, {
     direction = state.config.direction,
     keywords = state.keywords,
     lsp_result = lsp_result,
@@ -248,9 +264,15 @@ function M.activate(bufnr, opts)
   local anchor = { row = cursor[1] - 1, col = cursor[2] }
 
   local bs = M.get_buf_state(bufnr)
-  local scope = analysis.resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil, state.config.scope)
+  local scope = resolver.resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil, state.config.scope)
   local keep_render = bs.active and not bs.pending and next(bs.path_set) ~= nil
-  if bs.active and bs.symbol == symbol and analysis.anchors_equal(bs.anchor, anchor) and analysis.scopes_equal(bs.scope, scope) and not opts.force then
+  if
+    bs.active
+    and bs.symbol == symbol
+    and resolver.anchors_equal(bs.anchor, anchor)
+    and resolver.scopes_equal(bs.scope, scope)
+    and not opts.force
+  then
     return false
   end
 
@@ -268,13 +290,13 @@ function M.activate(bufnr, opts)
   end
 
   if state.config.source == "word" then
-    apply_path(bufnr, bs, symbol, anchor, scope, opts, analysis.make_lsp_result("disabled"))
+    apply_path(bufnr, bs, symbol, anchor, scope, opts, resolver.make_lsp_result("disabled"))
     return true
   end
 
-  local available, reason = analysis.get_lsp_status(bufnr)
+  local available, reason = resolver.get_lsp_status(bufnr)
   if not available then
-    apply_path(bufnr, bs, symbol, anchor, scope, opts, analysis.make_lsp_result(reason))
+    apply_path(bufnr, bs, symbol, anchor, scope, opts, resolver.make_lsp_result(reason))
     return true
   end
 
@@ -283,12 +305,12 @@ function M.activate(bufnr, opts)
   bs.request_id = state.request_seq
 
   local request_id = bs.request_id
-  analysis.request_lsp_highlight(bufnr, anchor, scope, state.config.lsp_timeout_ms, function(lsp_result)
+  resolver.request_lsp_highlight(bufnr, anchor, scope, state.config.lsp_timeout_ms, function(lsp_result)
     local current = state.bufs[bufnr]
     if not current or not current.active or current.request_id ~= request_id or current.symbol ~= symbol then
       return
     end
-    if not analysis.anchors_equal(current.anchor, anchor) or not analysis.scopes_equal(current.scope, scope) then
+    if not resolver.anchors_equal(current.anchor, anchor) or not resolver.scopes_equal(current.scope, scope) then
       return
     end
 
@@ -385,7 +407,7 @@ function M.should_dynamic_retarget(bufnr, symbol, cursor)
     return true
   end
 
-  return not analysis.scope_contains_line(bs.scope, cursor[1])
+  return not resolver.scope_contains_line(bs.scope, cursor[1])
 end
 
 function M.get_mode()

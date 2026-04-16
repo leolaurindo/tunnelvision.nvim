@@ -40,6 +40,10 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
   local timer = state.dynamic_timers[bufnr]
   if not timer or timer:is_closing() then
     timer = uv.new_timer()
+    if not timer then
+      core.activate(bufnr, { silent = true, symbol = symbol, cursor = pending.cursor, reuse_scope = true })
+      return
+    end
     state.dynamic_timers[bufnr] = timer
   end
 
@@ -223,7 +227,8 @@ local function ensure_commands(api)
     local sub = subcommands[args[1]]
     if not sub then
       core.notify(
-        "TunnelVision: use one of on, retarget, off, toggle, next, prev, refresh, mode, direction, scope, source, status",
+        "TunnelVision: use one of on, retarget, off, toggle, next, prev, refresh, "
+          .. "mode, direction, scope, source, status",
         vim.log.levels.ERROR
       )
       return
