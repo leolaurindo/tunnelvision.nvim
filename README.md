@@ -154,3 +154,9 @@ Just make sure to:
 - include your rationale
 - update the documentation
 - update `CHANGELOG.md`
+
+## Other approaches
+
+- [folke/twilight.nvim](https://github.com/folke/twilight.nvim)
+- [RRethy/vim-illuminate](https://github.com/RRethy/vim-illuminate)
+- [junegunn/limelight.vim](https://github.com/junegunn/limelight.vim)
