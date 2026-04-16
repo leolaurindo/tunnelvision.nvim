@@ -47,7 +47,8 @@ local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
 
-local render = function() end
+---@type fun(bufnr: integer)
+local render = function(_) end
 local refresh_active_buffers = function() end
 
 function M.notify(msg, level)
@@ -56,12 +57,13 @@ function M.notify(msg, level)
   end
 end
 
+---@param fn? fun(bufnr: integer)
 function M.set_renderer(fn)
   if fn ~= nil and type(fn) ~= "function" then
     M.notify("TunnelVision: renderer must be a function", vim.log.levels.ERROR)
     return
   end
-  render = fn or function() end
+  render = fn or function(_) end
 end
 
 function M.get_buf_state(bufnr)
