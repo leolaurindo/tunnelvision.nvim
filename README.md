@@ -84,8 +84,6 @@ use({
 :TunnelVision direction [forward|both]
 ```
 
-With no value, `mode`, `scope`, `source`, and `direction` show the current setting.
-
 Run `:help tunnelvision` for full command and option reference.
 
 ## Modes
