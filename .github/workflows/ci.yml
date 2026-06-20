@@ -61,12 +61,6 @@ jobs:
       - name: Lint
         run: luacheck lua tests
 
-      - name: Lua syntax check
-        run: |
-          for f in $(git ls-files '*.lua'); do
-            luac -p "$f"
-          done
-
       - name: Headless smoke test
         run: nvim --headless -u NONE -c "luafile tests/smoke.lua" -c "qa!"
 
