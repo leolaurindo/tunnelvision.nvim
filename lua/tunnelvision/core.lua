@@ -175,23 +175,18 @@ refresh_active_buffers = function()
   end
 end
 
-local function fallback_warn_msg(reason)
+local function lsp_warn_msg(kind, reason)
   local cause = ({
     no_clients = "no LSP client attached",
     unsupported = "LSP server has no documentHighlight support",
     request_failed = "LSP highlight request failed or timed out",
     disabled = "LSP data unavailable",
   })[reason] or "LSP data unavailable"
-  return ("TunnelVision: falling back to word matching (%s)"):format(cause)
-end
 
-local function strict_lsp_warn_msg(reason)
-  local cause = ({
-    no_clients = "no LSP client attached",
-    unsupported = "LSP server has no documentHighlight support",
-    request_failed = "LSP highlight request failed or timed out",
-    disabled = "LSP data unavailable",
-  })[reason] or "LSP data unavailable"
+  if kind == "fallback" then
+    return ("TunnelVision: falling back to word matching (%s)"):format(cause)
+  end
+
   return ("TunnelVision: strict LSP source has no highlights (%s)"):format(cause)
 end
 
@@ -206,7 +201,7 @@ local function maybe_warn_fallback(bs, silent)
 
   local fw = state.config.fallback_warn
   if fw == "always" or (fw == "once" and not bs.warned_lsp_fallback) then
-    M.notify(fallback_warn_msg(bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
+    M.notify(lsp_warn_msg("fallback", bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
     bs.warned_lsp_fallback = true
   end
 end
@@ -220,7 +215,7 @@ local function maybe_warn_strict_lsp(bs, silent)
     return
   end
 
-  M.notify(strict_lsp_warn_msg(bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
+  M.notify(lsp_warn_msg("strict", bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
   bs.warned_lsp_strict = true
 end
 
