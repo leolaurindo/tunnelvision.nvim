@@ -1,5 +1,4 @@
 local core = require("tunnelvision.core")
-local uv = vim.uv or vim.loop
 
 local M = {}
 
@@ -8,76 +7,40 @@ local DYNAMIC_DEBOUNCE_MS = 35
 local state = {
   commands_set = false,
   augroup = nil,
-  dynamic_timers = {},
-  dynamic_pending = {},
+  dynamic_seq = {},
 }
 
-local function stop_dynamic_timer(bufnr, close)
-  state.dynamic_pending[bufnr] = nil
-
-  local timer = state.dynamic_timers[bufnr]
-  if not timer then
-    return
-  end
-
-  timer:stop()
-  if close then
-    timer:close()
-    state.dynamic_timers[bufnr] = nil
-  end
+local function cancel_dynamic_activate(bufnr)
+  state.dynamic_seq[bufnr] = (state.dynamic_seq[bufnr] or 0) + 1
 end
 
 local function schedule_dynamic_activate(bufnr, symbol, cursor)
-  local pending = { symbol = symbol, cursor = { cursor[1], cursor[2] } }
+  cancel_dynamic_activate(bufnr)
+  local seq = state.dynamic_seq[bufnr]
+  local queued_symbol = symbol
+  local queued_cursor = { cursor[1], cursor[2] }
 
-  if not uv then
-    -- Without libuv timers we still keep dynamic mode functional, just without
-    -- the debounce that normally coalesces bursts of CursorMoved events.
-    core.activate(bufnr, { silent = true, symbol = symbol, cursor = pending.cursor, reuse_scope = true })
-    return
-  end
-
-  state.dynamic_pending[bufnr] = pending
-
-  local timer = state.dynamic_timers[bufnr]
-  if not timer or timer:is_closing() then
-    timer = uv.new_timer()
-    if not timer then
-      core.activate(bufnr, { silent = true, symbol = symbol, cursor = pending.cursor, reuse_scope = true })
+  vim.defer_fn(function()
+    if state.dynamic_seq[bufnr] ~= seq or not vim.api.nvim_buf_is_valid(bufnr) then
       return
     end
-    state.dynamic_timers[bufnr] = timer
-  end
 
-  timer:stop()
-  timer:start(
-    DYNAMIC_DEBOUNCE_MS,
-    0,
-    vim.schedule_wrap(function()
-      local queued = state.dynamic_pending[bufnr]
-      state.dynamic_pending[bufnr] = nil
+    local bs = core.state.bufs[bufnr]
+    if not bs or not bs.active or core.get_mode() ~= "dynamic" then
+      return
+    end
 
-      if not queued or not vim.api.nvim_buf_is_valid(bufnr) then
-        return
-      end
+    if not core.should_dynamic_retarget(bufnr, queued_symbol, queued_cursor) then
+      return
+    end
 
-      local bs = core.state.bufs[bufnr]
-      if not bs or not bs.active or core.get_mode() ~= "dynamic" then
-        return
-      end
-
-      if not core.should_dynamic_retarget(bufnr, queued.symbol, queued.cursor) then
-        return
-      end
-
-      core.activate(bufnr, {
-        silent = true,
-        symbol = queued.symbol,
-        cursor = queued.cursor,
-        reuse_scope = true,
-      })
-    end)
-  )
+    core.activate(bufnr, {
+      silent = true,
+      symbol = queued_symbol,
+      cursor = queued_cursor,
+      reuse_scope = true,
+    })
+  end, DYNAMIC_DEBOUNCE_MS)
 end
 
 function M.ensure_highlights()
@@ -284,7 +247,7 @@ local function ensure_autocmds()
   vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
     group = state.augroup,
     callback = function(args)
-      stop_dynamic_timer(args.buf, true)
+      state.dynamic_seq[args.buf] = nil
       core.clear_buf_state(args.buf)
     end,
   })
@@ -314,7 +277,7 @@ local function ensure_autocmds()
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = state.augroup,
     callback = function(args)
-      stop_dynamic_timer(args.buf, false)
+      cancel_dynamic_activate(args.buf)
       if core.is_active(args.buf) then
         core.refresh(args.buf)
       end
