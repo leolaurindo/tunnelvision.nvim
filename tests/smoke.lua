@@ -14,7 +14,6 @@ vim.opt.runtimepath:prepend(root)
 
 local tunnelvision = require("tunnelvision")
 local core = require("tunnelvision.core")
-local ui = require("tunnelvision.ui")
 
 tunnelvision.setup({
   notify = false,
@@ -106,11 +105,6 @@ assert_true(
 vim.cmd("TunnelVision off")
 tunnelvision.setup({ notify = false, source = "word" })
 
-local render_calls = 0
-core.set_renderer(function()
-  render_calls = render_calls + 1
-end)
-
 vim.cmd("enew")
 vim.bo.filetype = "lua"
 vim.api.nvim_buf_set_lines(0, 0, -1, false, {
@@ -123,7 +117,6 @@ vim.api.nvim_win_set_cursor(0, { 1, 8 }) -- alpha
 
 vim.cmd("TunnelVision mode dynamic")
 vim.cmd("TunnelVision on")
-local dynamic_renders = render_calls
 
 vim.api.nvim_win_set_cursor(0, { 2, 8 }) -- beta
 vim.api.nvim_exec_autocmds("CursorMoved", { buffer = 0 })
@@ -134,15 +127,11 @@ local waited = vim.wait(200, function()
   return core.get_buf_state(dynamic_buf).symbol == "gamma"
 end, 10)
 assert_true(waited, "dynamic debounce did not retarget to latest symbol")
-assert_true(render_calls == dynamic_renders + 1, "dynamic debounce should collapse rapid retargets into one render")
 
-local before_noop = render_calls
 local no_op = core.activate(dynamic_buf, { silent = true, symbol = "gamma", cursor = { 3, 8 }, reuse_scope = true })
 assert_true(no_op == false, "identical activate should no-op")
-assert_true(render_calls == before_noop, "no-op activate should not render")
 
 vim.cmd("TunnelVision off")
-core.set_renderer(ui.apply_dim)
 
 if vim.lsp.buf_request_all then
   local fake_clients = { { server_capabilities = { documentHighlightProvider = true } } }

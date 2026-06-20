@@ -3,8 +3,6 @@ local ui = require("tunnelvision.ui")
 
 local M = {}
 
-core.set_renderer(ui.apply_dim)
-
 function M.on()
   core.activate(vim.api.nvim_get_current_buf())
 end
