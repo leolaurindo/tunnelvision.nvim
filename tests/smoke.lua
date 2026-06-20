@@ -127,6 +127,7 @@ local waited = vim.wait(200, function()
   return core.get_buf_state(dynamic_buf).symbol == "gamma"
 end, 10)
 assert_true(waited, "dynamic debounce did not retarget to latest symbol")
+assert_true(core.get_buf_state(dynamic_buf).path_set[3], "dynamic retarget should recompute path for latest symbol")
 
 local no_op = core.activate(dynamic_buf, { silent = true, symbol = "gamma", cursor = { 3, 8 }, reuse_scope = true })
 assert_true(no_op == false, "identical activate should no-op")
