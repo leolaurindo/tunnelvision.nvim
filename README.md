@@ -111,7 +111,7 @@ require("tunnelvision").setup({
 })
 ```
 
-Set `dim` when you want to choose the color or style used for dimmed lines:
+The default config will essentially resolve to your colorscheme Comment color. Set `dim` when you want to choose the color or style used for dimmed lines yourself:
 
 ```lua
 require("tunnelvision").setup({
@@ -160,9 +160,6 @@ Run `:help tunnelvision-config` for the full option reference.
 local tv = require("tunnelvision")
 
 vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
-vim.keymap.set("n", "<leader>V", function()
-  tv.on({ scope = "buffer", source = "word" })
-end, { desc = "TunnelVision word in buffer" })
 -- or vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision toggle<CR>", { desc = "TunnelVision toggle" })
 vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
 vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
@@ -173,6 +170,11 @@ vim.keymap.set("n", "<Esc>", function()
   end
   return "<Esc>"
 end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
+
+-- as an example: a different activation as one-shot
+vim.keymap.set("n", "<leader>V", function()
+  tv.on({ scope = "buffer", source = "word" })
+end, { desc = "TunnelVision word in buffer" })
 ```
 
 ## Health
