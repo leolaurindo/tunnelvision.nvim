@@ -78,6 +78,23 @@ assert_true(core.get_source() == "lsp_and_word", "source lsp_and_word not applie
 vim.cmd("TunnelVision source word")
 assert_true(core.get_source() == "word", "source word not applied")
 
+tunnelvision.setup({ notify = false, source = "lsp", scope = "buffer" })
+vim.cmd("enew")
+vim.bo.filetype = "lua"
+vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  "local alpha = 1",
+  "local beta = 2",
+  "print(alpha)",
+})
+local one_shot_buf = vim.api.nvim_get_current_buf()
+vim.api.nvim_win_set_cursor(0, { 1, 7 })
+
+tunnelvision.on({ source = "word" })
+assert_true(core.get_buf_state(one_shot_buf).path_set[3], "one-shot source should override activation source")
+assert_true(core.get_source() == "lsp", "one-shot source should not mutate global source")
+assert_true(core.get_buf_state(one_shot_buf).config.source == "word", "active buffer should keep one-shot source")
+vim.cmd("TunnelVision off")
+
 tunnelvision.setup({ notify = false, source = "word", mode = "flow", scope = "buffer" })
 vim.cmd("enew")
 vim.bo.filetype = "lua"

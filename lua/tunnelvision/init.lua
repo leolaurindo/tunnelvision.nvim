@@ -3,8 +3,8 @@ local ui = require("tunnelvision.ui")
 
 local M = {}
 
-function M.on()
-  core.activate(vim.api.nvim_get_current_buf())
+function M.on(opts)
+  core.activate(vim.api.nvim_get_current_buf(), opts)
 end
 
 function M.off()

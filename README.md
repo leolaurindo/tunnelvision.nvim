@@ -106,6 +106,12 @@ require("tunnelvision").setup({
 })
 ```
 
+Use one-shot overrides for alternate keymaps without changing your defaults:
+
+```lua
+require("tunnelvision").on({ scope = "buffer", source = "word" })
+```
+
 | Option | Default | Notes |
 | --- | --- | --- |
 | `mode` | `static` | `dynamic` retargets as you move; `flow` is experimental. |

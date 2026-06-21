@@ -173,7 +173,7 @@ Options >
 
 From `require("tunnelvision")` >
   setup(opts?)
-  on()
+  on(opts?)
   off()
   toggle()
   next(count?)
@@ -187,6 +187,10 @@ From `require("tunnelvision")` >
   add_keywords(words)
   get_source() / set_source(source)
 <
+
+`on(opts)` accepts temporary activation overrides such as `scope`, `source`,
+`mode`, and `direction`. These overrides affect that activation without changing
+the defaults set by `setup()` or the runtime setters.
 
 `add_keywords(words)` appends identifiers to the `extra_keywords` ignore list at
 runtime. This affects flow analysis only.

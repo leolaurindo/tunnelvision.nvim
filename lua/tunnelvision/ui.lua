@@ -26,7 +26,7 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
     end
 
     local bs = core.state.bufs[bufnr]
-    if not bs or not bs.active or core.get_mode() ~= "dynamic" then
+    if not bs or not bs.active or core.get_active_mode(bufnr) ~= "dynamic" then
       return
     end
 
@@ -36,6 +36,7 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
 
     core.activate(bufnr, {
       silent = true,
+      config = bs.config,
       symbol = queued_symbol,
       cursor = queued_cursor,
       reuse_scope = true,
@@ -264,7 +265,7 @@ local function ensure_autocmds()
     group = state.augroup,
     callback = function(args)
       local bs = core.state.bufs[args.buf]
-      if core.get_mode() == "dynamic" and bs and bs.active then
+      if core.get_active_mode(args.buf) == "dynamic" and bs and bs.active then
         local symbol = vim.fn.expand("<cword>")
         local cursor = vim.api.nvim_win_get_cursor(0)
         if core.should_dynamic_retarget(args.buf, symbol, cursor) then

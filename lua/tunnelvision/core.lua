@@ -46,6 +46,7 @@ local valid_directions = { forward = true, both = true }
 local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
+local activation_keys = { "mode", "direction", "scope", "extra_keywords", "source", "fallback_warn", "lsp_timeout_ms" }
 
 local refresh_active_buffers = function() end
 
@@ -74,6 +75,7 @@ function M.get_buf_state(bufnr)
     last_compute_meta = nil,
     pending = false,
     request_id = nil,
+    config = nil,
   }
   state.bufs[bufnr] = s
   return s
@@ -121,6 +123,29 @@ function M.configure(opts)
   state.keywords = resolver.build_keywords(state.config.extra_keywords)
 end
 
+local function activation_config(opts)
+  local cfg = vim.deepcopy(opts.config or state.config)
+  for _, key in ipairs(activation_keys) do
+    if opts[key] ~= nil then
+      cfg[key] = opts[key]
+    end
+  end
+  M.normalize_config(cfg)
+  return cfg, resolver.build_keywords(cfg.extra_keywords)
+end
+
+local function configs_equal(a, b)
+  return a
+    and b
+    and a.mode == b.mode
+    and a.direction == b.direction
+    and a.scope == b.scope
+    and a.source == b.source
+    and a.fallback_warn == b.fallback_warn
+    and a.lsp_timeout_ms == b.lsp_timeout_ms
+    and vim.deep_equal(a.extra_keywords, b.extra_keywords)
+end
+
 function M.add_keywords(words)
   local incoming = resolver.sanitize_keywords(words)
   if #incoming == 0 then
@@ -153,12 +178,13 @@ function M.add_keywords(words)
   return true
 end
 
-local function refresh_buffer(bufnr, bs)
+local function refresh_buffer(bufnr, bs, config)
   if not bs.active or not bs.symbol or not bs.anchor or not bs.scope then
     return
   end
 
   M.activate(bufnr, {
+    config = config or bs.config,
     cursor = { bs.anchor.row + 1, bs.anchor.col },
     force = true,
     reuse_scope = true,
@@ -171,6 +197,14 @@ refresh_active_buffers = function()
   for bufnr, bs in pairs(state.bufs) do
     if bs.active and vim.api.nvim_buf_is_valid(bufnr) then
       refresh_buffer(bufnr, bs)
+    end
+  end
+end
+
+local function refresh_active_buffers_with(config)
+  for bufnr, bs in pairs(state.bufs) do
+    if bs.active and vim.api.nvim_buf_is_valid(bufnr) then
+      refresh_buffer(bufnr, bs, config)
     end
   end
 end
@@ -190,8 +224,8 @@ local function lsp_warn_msg(kind, reason)
   return ("TunnelVision: strict LSP source has no highlights (%s)"):format(cause)
 end
 
-local function maybe_warn_fallback(bs, silent)
-  if state.config.source ~= "lsp_else_word" or not bs.last_compute_meta or not bs.last_compute_meta.used_fallback then
+local function maybe_warn_fallback(bs, silent, config)
+  if config.source ~= "lsp_else_word" or not bs.last_compute_meta or not bs.last_compute_meta.used_fallback then
     return
   end
 
@@ -199,15 +233,15 @@ local function maybe_warn_fallback(bs, silent)
     return
   end
 
-  local fw = state.config.fallback_warn
+  local fw = config.fallback_warn
   if fw == "always" or (fw == "once" and not bs.warned_lsp_fallback) then
     M.notify(lsp_warn_msg("fallback", bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
     bs.warned_lsp_fallback = true
   end
 end
 
-local function maybe_warn_strict_lsp(bs, silent)
-  if state.config.source ~= "lsp" or not bs.last_compute_meta or bs.last_compute_meta.used_lsp then
+local function maybe_warn_strict_lsp(bs, silent, config)
+  if config.source ~= "lsp" or not bs.last_compute_meta or bs.last_compute_meta.used_lsp then
     return
   end
 
@@ -219,18 +253,18 @@ local function maybe_warn_strict_lsp(bs, silent)
   bs.warned_lsp_strict = true
 end
 
-local function apply_path(bufnr, bs, symbol, anchor, scope, opts, lsp_result)
+local function apply_path(bufnr, bs, symbol, anchor, scope, opts, config, keywords, lsp_result)
   bs.pending = false
   bs.request_id = nil
   bs.path_set, bs.path_order, bs.last_compute_meta = resolver.compute_path(bufnr, symbol, anchor, scope, {
-    direction = state.config.direction,
-    keywords = state.keywords,
+    direction = config.direction,
+    keywords = keywords,
     lsp_result = lsp_result,
-    mode = state.config.mode,
-    source = state.config.source,
+    mode = config.mode,
+    source = config.source,
   })
-  maybe_warn_fallback(bs, opts.silent)
-  maybe_warn_strict_lsp(bs, opts.silent)
+  maybe_warn_fallback(bs, opts.silent, config)
+  maybe_warn_strict_lsp(bs, opts.silent, config)
   require("tunnelvision.ui").apply_dim(bufnr)
 end
 
@@ -249,15 +283,17 @@ function M.activate(bufnr, opts)
 
   local cursor = opts.cursor or vim.api.nvim_win_get_cursor(0)
   local anchor = { row = cursor[1] - 1, col = cursor[2] }
+  local config, keywords = activation_config(opts)
 
   local bs = M.get_buf_state(bufnr)
-  local scope = resolver.resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil, state.config.scope)
+  local scope = resolver.resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil, config.scope)
   local keep_render = bs.active and not bs.pending and next(bs.path_set) ~= nil
   if
     bs.active
     and bs.symbol == symbol
     and resolver.anchors_equal(bs.anchor, anchor)
     and resolver.scopes_equal(bs.scope, scope)
+    and configs_equal(bs.config, config)
     and not opts.force
   then
     return false
@@ -269,6 +305,7 @@ function M.activate(bufnr, opts)
   bs.anchor = anchor
   bs.scope = scope
   bs.request_id = nil
+  bs.config = config
   if not keep_render then
     bs.path_set = {}
     bs.path_order = {}
@@ -276,14 +313,14 @@ function M.activate(bufnr, opts)
     bs.warned_lsp_strict = false
   end
 
-  if state.config.source == "word" then
-    apply_path(bufnr, bs, symbol, anchor, scope, opts, resolver.make_lsp_result("disabled"))
+  if config.source == "word" then
+    apply_path(bufnr, bs, symbol, anchor, scope, opts, config, keywords, resolver.make_lsp_result("disabled"))
     return true
   end
 
   local available, reason = resolver.get_lsp_status(bufnr)
   if not available then
-    apply_path(bufnr, bs, symbol, anchor, scope, opts, resolver.make_lsp_result(reason))
+    apply_path(bufnr, bs, symbol, anchor, scope, opts, config, keywords, resolver.make_lsp_result(reason))
     return true
   end
 
@@ -295,7 +332,7 @@ function M.activate(bufnr, opts)
   -- Activation is async when LSP highlights are available. Track the request id
   -- and re-check the buffer state on completion so older responses cannot clobber
   -- a newer symbol, cursor position, or scope.
-  resolver.request_lsp_highlight(bufnr, anchor, scope, state.config.lsp_timeout_ms, function(lsp_result)
+  resolver.request_lsp_highlight(bufnr, anchor, scope, config.lsp_timeout_ms, function(lsp_result)
     local current = state.bufs[bufnr]
     if not current or not current.active or current.request_id ~= request_id or current.symbol ~= symbol then
       return
@@ -304,7 +341,7 @@ function M.activate(bufnr, opts)
       return
     end
 
-    apply_path(bufnr, current, symbol, anchor, scope, opts, lsp_result)
+    apply_path(bufnr, current, symbol, anchor, scope, opts, config, keywords, lsp_result)
   end)
 
   return true
@@ -323,6 +360,7 @@ function M.deactivate(bufnr)
     bs.path_order = {}
     bs.last_compute_meta = nil
     bs.warned_large_buffer = false
+    bs.config = nil
   end
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
 end
@@ -401,6 +439,11 @@ function M.should_dynamic_retarget(bufnr, symbol, cursor)
   return not resolver.scope_contains_line(bs.scope, cursor[1])
 end
 
+function M.get_active_mode(bufnr)
+  local bs = state.bufs[bufnr]
+  return bs and bs.config and bs.config.mode or state.config.mode
+end
+
 function M.get_mode()
   return state.config.mode
 end
@@ -411,7 +454,7 @@ function M.set_mode(mode)
     return
   end
   state.config.mode = mode
-  refresh_active_buffers()
+  refresh_active_buffers_with(state.config)
 end
 
 function M.get_direction()
@@ -425,7 +468,7 @@ function M.set_direction(direction)
   end
   state.config.direction = direction
   if state.config.mode == "flow" then
-    refresh_active_buffers()
+    refresh_active_buffers_with(state.config)
   end
 end
 
@@ -439,7 +482,7 @@ function M.set_scope(scope)
     return
   end
   state.config.scope = scope
-  refresh_active_buffers()
+  refresh_active_buffers_with(state.config)
 end
 
 function M.get_source()
@@ -452,7 +495,7 @@ function M.set_source(source)
     return
   end
   state.config.source = source
-  refresh_active_buffers()
+  refresh_active_buffers_with(state.config)
 end
 
 function M.get_status(bufnr)
@@ -462,14 +505,15 @@ function M.get_status(bufnr)
   end
 
   local bs = state.bufs[b]
+  local config = bs and bs.config or state.config
   return {
     active = bs and bs.active or false,
     pending = bs and bs.pending or false,
     symbol = bs and bs.symbol or nil,
-    mode = state.config.mode,
-    direction = state.config.direction,
-    scope = state.config.scope,
-    source = state.config.source,
+    mode = config.mode,
+    direction = config.direction,
+    scope = config.scope,
+    source = config.source,
   }
 end
 
