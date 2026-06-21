@@ -25,6 +25,7 @@ local defaults = {
   extra_keywords = {},
   source = "lsp_else_word",
   fallback_warn = "once",
+  dim = nil,
   dim_hl = "TunnelVisionDim",
   max_dim_lines = 6000,
   lsp_timeout_ms = 150,
@@ -46,7 +47,8 @@ local valid_directions = { forward = true, both = true }
 local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
-local activation_keys = { "mode", "direction", "scope", "extra_keywords", "source", "fallback_warn", "lsp_timeout_ms" }
+local activation_keys =
+  { "mode", "direction", "scope", "extra_keywords", "source", "fallback_warn", "lsp_timeout_ms", "dim", "dim_hl" }
 
 local refresh_active_buffers = function() end
 
@@ -112,6 +114,9 @@ function M.normalize_config(cfg)
   if not valid_fallback_warn[cfg.fallback_warn] then
     cfg.fallback_warn = defaults.fallback_warn
   end
+  if cfg.dim ~= nil and type(cfg.dim) ~= "table" then
+    cfg.dim = nil
+  end
   cfg.extra_keywords = resolver.sanitize_keywords(cfg.extra_keywords)
   cfg.max_dim_lines = math.max(1, tonumber(cfg.max_dim_lines) or defaults.max_dim_lines)
   cfg.lsp_timeout_ms = math.max(1, tonumber(cfg.lsp_timeout_ms) or defaults.lsp_timeout_ms)
@@ -123,12 +128,15 @@ function M.configure(opts)
   state.keywords = resolver.build_keywords(state.config.extra_keywords)
 end
 
-local function activation_config(opts)
+local function activation_config(bufnr, opts)
   local cfg = vim.deepcopy(opts.config or state.config)
   for _, key in ipairs(activation_keys) do
     if opts[key] ~= nil then
       cfg[key] = opts[key]
     end
+  end
+  if opts.dim ~= nil and opts.dim_hl == nil and opts.config == nil then
+    cfg.dim_hl = ("TunnelVisionDim%d"):format(bufnr)
   end
   M.normalize_config(cfg)
   return cfg, resolver.build_keywords(cfg.extra_keywords)
@@ -143,6 +151,8 @@ local function configs_equal(a, b)
     and a.source == b.source
     and a.fallback_warn == b.fallback_warn
     and a.lsp_timeout_ms == b.lsp_timeout_ms
+    and a.dim_hl == b.dim_hl
+    and vim.deep_equal(a.dim, b.dim)
     and vim.deep_equal(a.extra_keywords, b.extra_keywords)
 end
 
@@ -283,7 +293,7 @@ function M.activate(bufnr, opts)
 
   local cursor = opts.cursor or vim.api.nvim_win_get_cursor(0)
   local anchor = { row = cursor[1] - 1, col = cursor[2] }
-  local config, keywords = activation_config(opts)
+  local config, keywords = activation_config(bufnr, opts)
 
   local bs = M.get_buf_state(bufnr)
   local scope = resolver.resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil, config.scope)

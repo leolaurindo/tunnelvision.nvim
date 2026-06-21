@@ -261,6 +261,29 @@ vim.cmd("colorscheme default")
 local dim_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
 assert_true(dim_hl and dim_hl.fg ~= custom_fg, "TunnelVisionDim should follow colorscheme comment color")
 
+local configured_fg = 0x445566
+tunnelvision.setup({ notify = false, source = "word", dim = { fg = configured_fg, italic = false } })
+local configured_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(configured_hl and configured_hl.fg == configured_fg, "custom dim highlight should apply")
+vim.cmd("colorscheme default")
+configured_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(
+  configured_hl and configured_hl.fg == configured_fg,
+  "custom dim highlight should survive colorscheme refresh"
+)
+
+vim.cmd("enew")
+vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  "local alpha = 1",
+  "print(alpha)",
+})
+local one_shot_dim_buf = vim.api.nvim_get_current_buf()
+local one_shot_fg = 0xAA33CC
+vim.api.nvim_win_set_cursor(0, { 1, 7 })
+tunnelvision.on({ source = "word", dim = { fg = one_shot_fg, italic = true } })
+local one_shot_hl = vim.api.nvim_get_hl(0, { name = core.get_buf_state(one_shot_dim_buf).config.dim_hl, link = false })
+assert_true(one_shot_hl and one_shot_hl.fg == one_shot_fg, "one-shot dim highlight should apply")
+
 vim.cmd("TunnelVision off")
 assert_true(not core.is_active(0), "deactivation failed")
 

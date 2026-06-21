@@ -111,6 +111,14 @@ require("tunnelvision").setup({
 })
 ```
 
+Set `dim` when you want to choose the color or style used for dimmed lines:
+
+```lua
+require("tunnelvision").setup({
+  dim = { fg = "#565f89", italic = true },
+})
+```
+
 ### One-shot activations
 
 Use one-shot overrides when you want a specific keymap or command to activate with
@@ -126,9 +134,9 @@ the full buffer.
 
 ### Options
 
-These options can be set as persistent defaults in `setup()`. Core behavior
-options such as `mode`, `scope`, `source`, and `direction` can also be passed to
-`on(opts)` for one-shot activations.
+These options can be set as persistent defaults in `setup()`. Core behavior and
+appearance options such as `mode`, `scope`, `source`, `direction`, and `dim` can
+also be passed to `on(opts)` for one-shot activations.
 
 | Option | Default | Notes |
 | --- | --- | --- |
@@ -139,6 +147,7 @@ options such as `mode`, `scope`, `source`, and `direction` can also be passed to
 | `fallback_warn` | `once` | Controls fallback warnings for `lsp_else_word`. |
 | `extra_keywords` | `{}` | Extra identifiers to ignore in flow analysis. |
 | `lsp_timeout_ms` | `150` | Timeout for async LSP `documentHighlight` requests. |
+| `dim` | `nil` | Optional color/style definition for dimmed lines. Defaults to the `Comment` foreground. |
 | `dim_hl` | `TunnelVisionDim` | Highlight group used for dimmed lines. |
 | `max_dim_lines` | `6000` | Skip dimming in very large buffers. |
 | `notify` | `true` | Enable plugin notifications. |

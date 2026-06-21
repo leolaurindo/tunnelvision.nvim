@@ -44,12 +44,21 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
   end, DYNAMIC_DEBOUNCE_MS)
 end
 
-function M.ensure_highlights()
+function M.ensure_highlights(config)
+  config = config or core.state.config
+  if not config.dim and config.dim_hl == core.state.config.dim_hl and core.state.config.dim then
+    config = core.state.config
+  end
+  if config.dim then
+    pcall(vim.api.nvim_set_hl, 0, config.dim_hl, config.dim)
+    return
+  end
+
   local ok, comment = pcall(vim.api.nvim_get_hl, 0, { name = "Comment", link = false })
   if ok and comment and comment.fg then
-    vim.api.nvim_set_hl(0, core.state.config.dim_hl, { fg = comment.fg, italic = true })
+    vim.api.nvim_set_hl(0, config.dim_hl, { fg = comment.fg, italic = true })
   else
-    vim.api.nvim_set_hl(0, core.state.config.dim_hl, { link = "Comment", default = true })
+    vim.api.nvim_set_hl(0, config.dim_hl, { link = "Comment", default = true })
   end
 end
 
@@ -61,13 +70,16 @@ function M.apply_dim(bufnr)
     return
   end
 
+  local config = bs.config or core.state.config
+  M.ensure_highlights(config)
+
   local total = vim.api.nvim_buf_line_count(bufnr)
-  if total > core.state.config.max_dim_lines then
+  if total > config.max_dim_lines then
     -- Dimming is an O(total lines) extmark pass, so skip very large buffers
     -- instead of doing expensive redraw work on every refresh.
     if not bs.warned_large_buffer then
       core.notify(
-        ("TunnelVision: file too large to dim (%d lines > %d)"):format(total, core.state.config.max_dim_lines),
+        ("TunnelVision: file too large to dim (%d lines > %d)"):format(total, config.max_dim_lines),
         vim.log.levels.WARN
       )
       bs.warned_large_buffer = true
@@ -80,7 +92,7 @@ function M.apply_dim(bufnr)
   for idx = 1, total do
     if not bs.path_set[idx] then
       pcall(vim.api.nvim_buf_set_extmark, bufnr, core.state.ns, idx - 1, 0, {
-        line_hl_group = core.state.config.dim_hl,
+        line_hl_group = config.dim_hl,
         priority = 1000,
       })
     end
@@ -257,6 +269,11 @@ local function ensure_autocmds()
     group = state.augroup,
     callback = function()
       M.ensure_highlights()
+      for _, bs in pairs(core.state.bufs) do
+        if bs.active and bs.config then
+          M.ensure_highlights(bs.config)
+        end
+      end
       core.refresh_all()
     end,
   })

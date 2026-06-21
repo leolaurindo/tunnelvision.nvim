@@ -149,6 +149,7 @@ show the current value when called without an argument.
     source = "lsp_else_word",
     fallback_warn = "once",
     lsp_timeout_ms = 150,
+    dim = nil,
     dim_hl = "TunnelVisionDim",
     max_dim_lines = 6000,
     notify = true,
@@ -163,6 +164,7 @@ Options >
   source          lsp_else_word | lsp | lsp_and_word | word
   fallback_warn   once | always | never (for lsp_else_word)
   lsp_timeout_ms  timeout for async LSP documentHighlight requests
+  dim             optional highlight definition for dimmed lines
   dim_hl          highlight group used for dimmed lines
   max_dim_lines   skip dimming in very large buffers
   notify          enable plugin notifications
@@ -189,8 +191,8 @@ From `require("tunnelvision")` >
 <
 
 `on(opts)` accepts temporary activation overrides such as `scope`, `source`,
-`mode`, and `direction`. These overrides affect that activation without changing
-the defaults set by `setup()` or the runtime setters.
+`mode`, `direction`, and `dim`. These overrides affect that activation without
+changing the defaults set by `setup()` or the runtime setters.
 
 `add_keywords(words)` appends identifiers to the `extra_keywords` ignore list at
 runtime. This affects flow analysis only.
