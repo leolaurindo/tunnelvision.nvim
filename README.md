@@ -98,6 +98,11 @@ Run `:help tunnelvision` for full command and option reference.
 
 ## Configuration
 
+### Defaults
+
+Use `setup()` to define the persistent defaults used by `:TunnelVision on`,
+`on()`, and runtime commands such as `:TunnelVision scope buffer`.
+
 ```lua
 require("tunnelvision").setup({
   mode = "static",
@@ -106,11 +111,24 @@ require("tunnelvision").setup({
 })
 ```
 
-Use one-shot overrides for alternate keymaps without changing your defaults:
+### One-shot activations
+
+Use one-shot overrides when you want a specific keymap or command to activate with
+different behavior without changing those defaults:
 
 ```lua
 require("tunnelvision").on({ scope = "buffer", source = "word" })
 ```
+
+This makes it easy to keep a stable default, such as LSP-first matching in the
+current function, while adding focused alternatives like plain word matching across
+the full buffer.
+
+### Options
+
+These options can be set as persistent defaults in `setup()`. Core behavior
+options such as `mode`, `scope`, `source`, and `direction` can also be passed to
+`on(opts)` for one-shot activations.
 
 | Option | Default | Notes |
 | --- | --- | --- |
@@ -133,6 +151,9 @@ Run `:help tunnelvision-config` for the full option reference.
 local tv = require("tunnelvision")
 
 vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
+vim.keymap.set("n", "<leader>V", function()
+  tv.on({ scope = "buffer", source = "word" })
+end, { desc = "TunnelVision word in buffer" })
 -- or vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision toggle<CR>", { desc = "TunnelVision toggle" })
 vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
 vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
