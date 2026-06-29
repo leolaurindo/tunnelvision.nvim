@@ -173,12 +173,12 @@ local function ensure_commands(api)
         local state_label = status.pending and "pending" or (status.active and "on" or "off")
         local symbol = status.symbol and (" symbol=" .. status.symbol) or ""
         core.notify(
-          ("TunnelVision: %s mode=%s direction=%s scope=%s source=%s%s"):format(
+          ("TunnelVision: %s mode=%s direction=%s scope=%s sources=%s%s"):format(
             state_label,
             status.mode,
             status.direction,
             status.scope,
-            status.source,
+            status.sources_label,
             symbol
           )
         )
@@ -226,7 +226,11 @@ local function ensure_commands(api)
 
       local value = args[2]
       if not value or value == "" then
-        core.notify(("TunnelVision %s: %s"):format(sub.label, sub.get()))
+        local current = sub.get()
+        if current == nil then
+          current = core.get_sources_label()
+        end
+        core.notify(("TunnelVision %s: %s"):format(sub.label, current))
         return
       end
       if args[3] then

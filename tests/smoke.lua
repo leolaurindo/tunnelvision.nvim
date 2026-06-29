@@ -14,6 +14,7 @@ vim.opt.runtimepath:prepend(root)
 
 local tunnelvision = require("tunnelvision")
 local core = require("tunnelvision.core")
+local config = require("tunnelvision.config")
 
 local function assert_sources(expected, msg)
   local got = tunnelvision.get_sources()
@@ -33,6 +34,17 @@ end
 
 tunnelvision.setup({ notify = false })
 assert_sources({ "lsp", "word" }, "default sources")
+assert_true(config.format_sources(core.state.config.sources) == "lsp,word", "format_sources default")
+assert_true(config.format_sources({ { kind = "single", name = "lsp" } }) == "lsp", "format_sources single")
+assert_true(
+  config.format_sources({ { kind = "combine", names = { "lsp", "word" } } }) == "combine(lsp,word)",
+  "format_sources combine"
+)
+assert_true(
+  config.format_sources({ { kind = "combine", names = { "lsp", "word" } }, { kind = "single", name = "word" } })
+    == "combine(lsp,word),word",
+  "format_sources mixed chain"
+)
 
 local source_copy = tunnelvision.get_sources()
 source_copy[1] = "word"
@@ -141,6 +153,11 @@ assert_true(
 tunnelvision.set_sources({ tunnelvision.combine("lsp", "word"), "word" })
 assert_true(tunnelvision.get_source() == nil, "get_source returns nil for unrepresentable chain")
 assert_true(tunnelvision.status().source == nil, "status source returns nil for unrepresentable chain")
+assert_true(tunnelvision.status().sources_label == "combine(lsp,word),word", "status sources_label for custom chain")
+assert_true(
+  core.get_sources_label() == "combine(lsp,word),word",
+  "get_sources_label returns global label for custom chain"
+)
 -- Restore to known state
 tunnelvision.setup({ notify = false, source = "lsp_else_word" })
 assert_true(tunnelvision.get_source() == "lsp_else_word", "restored to lsp_else_word")

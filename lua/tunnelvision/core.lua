@@ -15,52 +15,19 @@
 -- - Neovim command/autocmd wiring lives in tunnelvision.ui
 
 local resolver = require("tunnelvision.resolver")
+local config = require("tunnelvision.config")
 
 local M = {}
-
-local defaults = {
-  mode = "static",
-  direction = "forward",
-  scope = "function",
-  extra_keywords = {},
-  source = "lsp_else_word",
-  sources = { "lsp", "word" },
-  fallback_warn = "once",
-  dim = nil,
-  dim_hl = "TunnelVisionDim",
-  max_dim_lines = 6000,
-  lsp_timeout_ms = 150,
-  notify = true,
-}
 
 local state = {
   ns = vim.api.nvim_create_namespace("tunnelvision"),
   bufs = {},
-  config = vim.deepcopy(defaults),
+  config = vim.deepcopy(config.defaults),
   request_seq = 0,
 }
 
-state.keywords = resolver.build_keywords(defaults.extra_keywords)
+state.keywords = resolver.build_keywords(config.defaults.extra_keywords)
 M.state = state
-
-local valid_modes = { static = true, flow = true, dynamic = true }
-local valid_directions = { forward = true, both = true }
-local valid_scopes = { ["function"] = true, buffer = true }
-local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
-local valid_source_names = { lsp = true, word = true }
-local valid_fallback_warn = { once = true, always = true, never = true }
-local activation_keys = {
-  "mode",
-  "direction",
-  "scope",
-  "extra_keywords",
-  "source",
-  "sources",
-  "fallback_warn",
-  "lsp_timeout_ms",
-  "dim",
-  "dim_hl",
-}
 
 local refresh_active_buffers = function() end
 
@@ -110,163 +77,20 @@ local function get_line_target_col(line, symbol)
   return first_nonblank and first_nonblank - 1 or 0
 end
 
-local function source_step(step)
-  if type(step) == "string" and valid_source_names[step] then
-    return { kind = "single", name = step }
-  end
-
-  if type(step) == "table" and step.kind == "single" and valid_source_names[step.name] then
-    return { kind = "single", name = step.name }
-  end
-
-  if type(step) == "table" and step.kind == "combine" and type(step.names) == "table" and #step.names > 0 then
-    local names = {}
-    for _, name in ipairs(step.names) do
-      if not valid_source_names[name] then
-        return nil
-      end
-      names[#names + 1] = name
-    end
-    return { kind = "combine", names = names }
-  end
-end
-
--- Legacy source mapping (deprecated, intentionally supports old source values
--- without runtime warnings).
-local function legacy_sources(source)
-  if source == "word" or source == "lsp" then
-    return { source }
-  end
-  if source == "lsp_and_word" then
-    return { M.combine("lsp", "word") }
-  end
-  return { "lsp", "word" }
-end
-
-local function normalize_sources(sources)
-  local out = {}
-  if type(sources) ~= "table" then
-    return normalize_sources(defaults.sources)
-  end
-
-  for _, step in ipairs(sources) do
-    local normalized = source_step(step)
-    if not normalized then
-      return normalize_sources(defaults.sources)
-    end
-    out[#out + 1] = normalized
-  end
-
-  return #out > 0 and out or normalize_sources(defaults.sources)
-end
-
-local function sources_copy(sources)
-  local out = {}
-  for _, step in ipairs(sources or {}) do
-    if step.kind == "single" then
-      out[#out + 1] = step.name
-    elseif step.kind == "combine" then
-      out[#out + 1] = M.combine(unpack(step.names))
-    end
-  end
-  return out
-end
-
--- Inverse of legacy_sources: maps normalized sources back to a legacy value,
--- or returns nil for custom chains that cannot be represented.
-local function legacy_source_from_sources(sources)
-  if #sources == 1 and sources[1].kind == "single" then
-    return sources[1].name
-  end
-  if
-    #sources == 2
-    and sources[1].kind == "single"
-    and sources[1].name == "lsp"
-    and sources[2].kind == "single"
-    and sources[2].name == "word"
-  then
-    return "lsp_else_word"
-  end
-  if
-    #sources == 1
-    and sources[1].kind == "combine"
-    and #sources[1].names == 2
-    and sources[1].names[1] == "lsp"
-    and sources[1].names[2] == "word"
-  then
-    return "lsp_and_word"
-  end
-end
-
-local function sources_use_lsp(sources)
-  for _, step in ipairs(sources or {}) do
-    if step.name == "lsp" then
-      return true
-    end
-    for _, name in ipairs(step.names or {}) do
-      if name == "lsp" then
-        return true
-      end
-    end
-  end
-  return false
-end
-
-function M.combine(...)
-  return { kind = "combine", names = { ... } }
-end
-
-function M.normalize_config(cfg)
-  if not valid_modes[cfg.mode] then
-    cfg.mode = defaults.mode
-  end
-  if not valid_directions[cfg.direction] then
-    cfg.direction = defaults.direction
-  end
-  if not valid_scopes[cfg.scope] then
-    cfg.scope = defaults.scope
-  end
-  if cfg.sources ~= nil then
-    cfg.sources = normalize_sources(cfg.sources)
-  else
-    cfg.sources = normalize_sources(valid_sources[cfg.source] and legacy_sources(cfg.source) or defaults.sources)
-  end
-  cfg.source = legacy_source_from_sources(cfg.sources) or defaults.source
-  if not valid_fallback_warn[cfg.fallback_warn] then
-    cfg.fallback_warn = defaults.fallback_warn
-  end
-  if cfg.dim ~= nil and type(cfg.dim) ~= "table" then
-    cfg.dim = nil
-  end
-  cfg.extra_keywords = resolver.sanitize_keywords(cfg.extra_keywords)
-  cfg.max_dim_lines = math.max(1, tonumber(cfg.max_dim_lines) or defaults.max_dim_lines)
-  cfg.lsp_timeout_ms = math.max(1, tonumber(cfg.lsp_timeout_ms) or defaults.lsp_timeout_ms)
-end
+M.combine = config.combine
 
 function M.configure(opts)
   opts = opts or {}
-  state.config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts)
+  state.config = vim.tbl_deep_extend("force", vim.deepcopy(config.defaults), opts)
   if opts.sources == nil then
     state.config.sources = nil
   end
-  M.normalize_config(state.config)
+  config.normalize(state.config)
   state.keywords = resolver.build_keywords(state.config.extra_keywords)
 end
 
 local function activation_config(bufnr, opts)
-  local cfg = vim.deepcopy(opts.config or state.config)
-  for _, key in ipairs(activation_keys) do
-    if opts[key] ~= nil then
-      cfg[key] = opts[key]
-    end
-  end
-  if opts.source ~= nil and opts.sources == nil then
-    cfg.sources = nil
-  end
-  if opts.dim ~= nil and opts.dim_hl == nil and opts.config == nil then
-    cfg.dim_hl = ("TunnelVisionDim%d"):format(bufnr)
-  end
-  M.normalize_config(cfg)
+  local cfg = config.normalize_activation(opts.config or state.config, opts, bufnr)
   return cfg, resolver.build_keywords(cfg.extra_keywords)
 end
 
@@ -316,13 +140,13 @@ function M.add_keywords(words)
   return true
 end
 
-local function refresh_buffer(bufnr, bs, config)
+local function refresh_buffer(bufnr, bs, cfg)
   if not bs.active or not bs.symbol or not bs.anchor or not bs.scope then
     return
   end
 
   M.activate(bufnr, {
-    config = config or bs.config,
+    config = cfg or bs.config,
     cursor = { bs.anchor.row + 1, bs.anchor.col },
     force = true,
     reuse_scope = true,
@@ -339,10 +163,10 @@ refresh_active_buffers = function()
   end
 end
 
-local function refresh_active_buffers_with(config)
+local function refresh_active_buffers_with(cfg)
   for bufnr, bs in pairs(state.bufs) do
     if bs.active and vim.api.nvim_buf_is_valid(bufnr) then
-      refresh_buffer(bufnr, bs, config)
+      refresh_buffer(bufnr, bs, cfg)
     end
   end
 end
@@ -362,8 +186,8 @@ local function lsp_warn_msg(kind, reason)
   return ("TunnelVision: strict LSP source has no highlights (%s)"):format(cause)
 end
 
-local function maybe_warn_fallback(bs, silent, config)
-  if config.source ~= "lsp_else_word" or not bs.last_compute_meta or not bs.last_compute_meta.used_fallback then
+local function maybe_warn_fallback(bs, silent, cfg)
+  if cfg.source ~= "lsp_else_word" or not bs.last_compute_meta or not bs.last_compute_meta.used_fallback then
     return
   end
 
@@ -371,15 +195,15 @@ local function maybe_warn_fallback(bs, silent, config)
     return
   end
 
-  local fw = config.fallback_warn
+  local fw = cfg.fallback_warn
   if fw == "always" or (fw == "once" and not bs.warned_lsp_fallback) then
     M.notify(lsp_warn_msg("fallback", bs.last_compute_meta.fallback_reason), vim.log.levels.WARN)
     bs.warned_lsp_fallback = true
   end
 end
 
-local function maybe_warn_strict_lsp(bs, silent, config)
-  if config.source ~= "lsp" or not bs.last_compute_meta or bs.last_compute_meta.used_lsp then
+local function maybe_warn_strict_lsp(bs, silent, cfg)
+  if cfg.source ~= "lsp" or not bs.last_compute_meta or bs.last_compute_meta.used_lsp then
     return
   end
 
@@ -391,18 +215,18 @@ local function maybe_warn_strict_lsp(bs, silent, config)
   bs.warned_lsp_strict = true
 end
 
-local function apply_path(bufnr, bs, symbol, anchor, scope, opts, config, keywords, lsp_result)
+local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, lsp_result)
   bs.pending = false
   bs.request_id = nil
   bs.path_set, bs.path_order, bs.last_compute_meta = resolver.compute_path(bufnr, symbol, anchor, scope, {
-    direction = config.direction,
+    direction = cfg.direction,
     keywords = keywords,
     lsp_result = lsp_result,
-    mode = config.mode,
-    source = config.source,
+    mode = cfg.mode,
+    source = cfg.source,
   })
-  maybe_warn_fallback(bs, opts.silent, config)
-  maybe_warn_strict_lsp(bs, opts.silent, config)
+  maybe_warn_fallback(bs, opts.silent, cfg)
+  maybe_warn_strict_lsp(bs, opts.silent, cfg)
   require("tunnelvision.ui").apply_dim(bufnr)
 end
 
@@ -421,17 +245,17 @@ function M.activate(bufnr, opts)
 
   local cursor = opts.cursor or vim.api.nvim_win_get_cursor(0)
   local anchor = { row = cursor[1] - 1, col = cursor[2] }
-  local config, keywords = activation_config(bufnr, opts)
+  local cfg, keywords = activation_config(bufnr, opts)
 
   local bs = M.get_buf_state(bufnr)
-  local scope = resolver.resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil, config.scope)
+  local scope = resolver.resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil, cfg.scope)
   local keep_render = bs.active and not bs.pending and next(bs.path_set) ~= nil
   if
     bs.active
     and bs.symbol == symbol
     and resolver.anchors_equal(bs.anchor, anchor)
     and resolver.scopes_equal(bs.scope, scope)
-    and configs_equal(bs.config, config)
+    and configs_equal(bs.config, cfg)
     and not opts.force
   then
     return false
@@ -443,7 +267,7 @@ function M.activate(bufnr, opts)
   bs.anchor = anchor
   bs.scope = scope
   bs.request_id = nil
-  bs.config = config
+  bs.config = cfg
   if not keep_render then
     bs.path_set = {}
     bs.path_order = {}
@@ -451,14 +275,14 @@ function M.activate(bufnr, opts)
     bs.warned_lsp_strict = false
   end
 
-  if not sources_use_lsp(config.sources) then
-    apply_path(bufnr, bs, symbol, anchor, scope, opts, config, keywords, resolver.make_lsp_result("disabled"))
+  if not config.sources_use_lsp(cfg.sources) then
+    apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, resolver.make_lsp_result("disabled"))
     return true
   end
 
   local available, reason = resolver.get_lsp_status(bufnr)
   if not available then
-    apply_path(bufnr, bs, symbol, anchor, scope, opts, config, keywords, resolver.make_lsp_result(reason))
+    apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, resolver.make_lsp_result(reason))
     return true
   end
 
@@ -470,7 +294,7 @@ function M.activate(bufnr, opts)
   -- Activation is async when LSP highlights are available. Track the request id
   -- and re-check the buffer state on completion so older responses cannot clobber
   -- a newer symbol, cursor position, or scope.
-  resolver.request_lsp_highlight(bufnr, anchor, scope, config.lsp_timeout_ms, function(lsp_result)
+  resolver.request_lsp_highlight(bufnr, anchor, scope, cfg.lsp_timeout_ms, function(lsp_result)
     local current = state.bufs[bufnr]
     if not current or not current.active or current.request_id ~= request_id or current.symbol ~= symbol then
       return
@@ -479,7 +303,7 @@ function M.activate(bufnr, opts)
       return
     end
 
-    apply_path(bufnr, current, symbol, anchor, scope, opts, config, keywords, lsp_result)
+    apply_path(bufnr, current, symbol, anchor, scope, opts, cfg, keywords, lsp_result)
   end)
 
   return true
@@ -587,7 +411,7 @@ function M.get_mode()
 end
 
 function M.set_mode(mode)
-  if not valid_modes[mode] then
+  if not config.valid_modes[mode] then
     M.notify("TunnelVision: mode must be static, flow, or dynamic", vim.log.levels.ERROR)
     return
   end
@@ -600,7 +424,7 @@ function M.get_direction()
 end
 
 function M.set_direction(direction)
-  if not valid_directions[direction] then
+  if not config.valid_directions[direction] then
     M.notify("TunnelVision: direction must be forward or both", vim.log.levels.ERROR)
     return
   end
@@ -615,7 +439,7 @@ function M.get_scope()
 end
 
 function M.set_scope(scope)
-  if not valid_scopes[scope] then
+  if not config.valid_scopes[scope] then
     M.notify("TunnelVision: scope must be function or buffer", vim.log.levels.ERROR)
     return
   end
@@ -624,13 +448,13 @@ function M.set_scope(scope)
 end
 
 function M.get_sources()
-  return sources_copy(state.config.sources)
+  return config.get_sources_copy(state.config.sources)
 end
 
 function M.set_sources(sources)
-  local normalized = normalize_sources(sources)
+  local normalized = config.normalize_sources(sources)
   state.config.sources = normalized
-  state.config.source = legacy_source_from_sources(normalized) or defaults.source
+  state.config.source = config.legacy_source_from_sources(normalized) or config.defaults.source
   refresh_active_buffers_with(state.config)
 end
 
@@ -638,17 +462,21 @@ end
 -- current normalized sources can be represented by a single legacy value,
 -- otherwise returns nil. No runtime deprecation warnings.
 function M.get_source()
-  return legacy_source_from_sources(state.config.sources)
+  return config.legacy_source_from_sources(state.config.sources)
+end
+
+function M.get_sources_label()
+  return config.format_sources(state.config.sources)
 end
 
 -- Compatibility API (deprecated). Maps legacy source values to normalized
 -- sources and refreshes active buffers. No runtime deprecation warnings.
 function M.set_source(source)
-  if not valid_sources[source] then
+  if not config.valid_sources[source] then
     M.notify("TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, or word", vim.log.levels.ERROR)
     return
   end
-  state.config.sources = normalize_sources(legacy_sources(source))
+  state.config.sources = config.normalize_sources(config.sources_from_legacy_source(source))
   state.config.source = source
   refresh_active_buffers_with(state.config)
 end
@@ -660,16 +488,17 @@ function M.get_status(bufnr)
   end
 
   local bs = state.bufs[b]
-  local config = bs and bs.config or state.config
+  local cfg = bs and bs.config or state.config
   return {
     active = bs and bs.active or false,
     pending = bs and bs.pending or false,
     symbol = bs and bs.symbol or nil,
-    mode = config.mode,
-    direction = config.direction,
-    scope = config.scope,
-    source = legacy_source_from_sources(config.sources),
-    sources = sources_copy(config.sources),
+    mode = cfg.mode,
+    direction = cfg.direction,
+    scope = cfg.scope,
+    source = config.legacy_source_from_sources(cfg.sources),
+    sources = config.get_sources_copy(cfg.sources),
+    sources_label = config.format_sources(cfg.sources),
   }
 end
 
