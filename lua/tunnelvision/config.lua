@@ -210,9 +210,20 @@ function M.normalize(cfg)
   if not valid_fallback_warn[cfg.fallback_warn] then
     cfg.fallback_warn = defaults.fallback_warn
   end
-  if cfg.dim ~= nil and type(cfg.dim) ~= "table" then
-    cfg.dim = nil
+  -- Normalize dim: nil (derive from Comment), string group name (copy attrs),
+  -- hex string (convert to { fg = ... }), highlight table (use as-is).
+  if cfg.dim ~= nil then
+    if type(cfg.dim) == "string" then
+      if cfg.dim:match("^#%x%x%x%x%x%x$") then
+        cfg.dim = { fg = cfg.dim }
+      end
+      -- else: keep as string (group name like "Comment")
+    elseif type(cfg.dim) ~= "table" then
+      cfg.dim = nil
+    end
   end
+  -- Compatibility: deprecated dim_hl support. If both dim and dim_hl are
+  -- provided, dim is applied to the configured dim_hl group.
   cfg.extra_keywords = resolver.sanitize_keywords(cfg.extra_keywords)
 
   -- Compatibility: deprecated top-level flow options map into missing

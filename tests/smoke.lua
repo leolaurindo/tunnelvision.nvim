@@ -750,36 +750,137 @@ do
 end
 tunnelvision.setup({ notify = false, source = "lsp_else_word" })
 
-local custom_fg = 0x778899
-vim.api.nvim_set_hl(0, "TunnelVisionDim", { fg = custom_fg, italic = false })
-tunnelvision.setup({ notify = false, source = "word" })
-vim.cmd("colorscheme default")
-local dim_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
-assert_true(dim_hl and dim_hl.fg ~= custom_fg, "TunnelVisionDim should follow colorscheme comment color")
+-- === Dim API cleanup tests ===
 
-local configured_fg = 0x445566
-tunnelvision.setup({ notify = false, source = "word", dim = { fg = configured_fg, italic = false } })
-local configured_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
-assert_true(configured_hl and configured_hl.fg == configured_fg, "custom dim highlight should apply")
-vim.cmd("colorscheme default")
-configured_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+-- Restore to baseline before dim form tests
+tunnelvision.setup({ notify = false })
+
+-- dim = nil uses Comment-derived default
+tunnelvision.setup({ notify = false, dim = nil })
+local nil_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+local comment_hl = vim.api.nvim_get_hl(0, { name = "Comment", link = false })
+assert_true(nil_hl and comment_hl and nil_hl.fg == comment_hl.fg, "dim = nil should derive from Comment fg")
+
+-- dim = "Comment" copies resolved attrs
+tunnelvision.setup({ notify = false, dim = "Comment" })
+local group_copy_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(group_copy_hl and group_copy_hl.fg == comment_hl.fg, "dim = 'Comment' should copy Comment fg")
+assert_true(group_copy_hl and group_copy_hl.link == nil, "dim = 'Comment' should use copy semantics, not link")
+
+-- dim = "#445566" sets foreground color
+tunnelvision.setup({ notify = false, dim = "#445566" })
+local hex_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(hex_hl and hex_hl.fg == 0x445566, "dim = '#445566' should set fg")
+
+-- dim = { fg = "#667788", italic = false } works
+tunnelvision.setup({ notify = false, dim = { fg = "#667788", italic = false } })
+local table_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(table_hl and table_hl.fg == 0x667788, "dim = { fg = ... } table form should set fg")
 assert_true(
-  configured_hl and configured_hl.fg == configured_fg,
-  "custom dim highlight should survive colorscheme refresh"
+  table_hl and (table_hl.italic == nil or table_hl.italic == false),
+  "dim = { italic = false } should not be italic"
 )
 
+-- deprecated dim_hl still works
+vim.api.nvim_set_hl(0, "CustomDimGroup", { fg = 0x998877 })
+tunnelvision.setup({ notify = false, dim_hl = "CustomDimGroup" })
+assert_true(core.state.config.dim_hl == "CustomDimGroup", "deprecated dim_hl should set config.dim_hl")
+tunnelvision.setup({ notify = false }) -- restore
+
+-- dim plus dim_hl together works
+vim.api.nvim_set_hl(0, "DimGroupBoth", { fg = 0x112233 })
+tunnelvision.setup({ notify = false, dim = { fg = 0xAABBCC }, dim_hl = "DimGroupBoth" })
+local both_hl = vim.api.nvim_get_hl(0, { name = "DimGroupBoth", link = false })
+assert_true(both_hl and both_hl.fg == 0xAABBCC, "dim + dim_hl: dim should apply to dim_hl group")
+tunnelvision.setup({ notify = false }) -- restore
+
+-- one-shot dim = "#AA33CC" works
 vim.cmd("enew")
+vim.bo.filetype = "lua"
 vim.api.nvim_buf_set_lines(0, 0, -1, false, {
   "local alpha = 1",
   "print(alpha)",
 })
-local one_shot_dim_buf = vim.api.nvim_get_current_buf()
-local one_shot_fg = 0xAA33CC
+local oneshot_hex_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_win_set_cursor(0, { 1, 7 })
-tunnelvision.on({ source = "word", dim = { fg = one_shot_fg, italic = true } })
-local one_shot_hl = vim.api.nvim_get_hl(0, { name = core.get_buf_state(one_shot_dim_buf).config.dim_hl, link = false })
-assert_true(one_shot_hl and one_shot_hl.fg == one_shot_fg, "one-shot dim highlight should apply")
+tunnelvision.on({ source = "word", dim = "#AA33CC" })
+local oneshot_hex_hl =
+  vim.api.nvim_get_hl(0, { name = core.get_buf_state(oneshot_hex_buf).config.dim_hl, link = false })
+assert_true(oneshot_hex_hl and oneshot_hex_hl.fg == 0xAA33CC, "one-shot dim = '#AA33CC' should set fg")
+vim.cmd("TunnelVision off")
 
+-- one-shot dim = { fg = ... } works (also tested above, explicit here)
+vim.api.nvim_win_set_cursor(0, { 1, 7 })
+tunnelvision.on({ source = "word", dim = { fg = "#BB55DD", italic = true } })
+local oneshot_table_fg = 0xBB55DD
+local oneshot_table_hl =
+  vim.api.nvim_get_hl(0, { name = core.get_buf_state(oneshot_hex_buf).config.dim_hl, link = false })
+assert_true(oneshot_table_hl and oneshot_table_hl.fg == oneshot_table_fg, "one-shot dim = { fg = ... } should set fg")
+vim.cmd("TunnelVision off")
+
+-- deprecated one-shot dim_hl still works
+vim.api.nvim_set_hl(0, "OneShotCompatDim", { fg = 0x336699 })
+vim.api.nvim_win_set_cursor(0, { 1, 7 })
+tunnelvision.on({ source = "word", dim_hl = "OneShotCompatDim" })
+assert_true(
+  core.get_buf_state(oneshot_hex_buf).config.dim_hl == "OneShotCompatDim",
+  "one-shot dim_hl should set active buffer dim group"
+)
+vim.cmd("TunnelVision off")
+
+-- one-shot dim without one-shot dim_hl uses buffer-specific dim group
+tunnelvision.setup({ notify = false, dim = { fg = 0x445566 } })
+vim.cmd("enew")
+vim.bo.filetype = "lua"
+vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  "local alpha = 1",
+  "print(alpha)",
+})
+local buf_a = vim.api.nvim_get_current_buf()
+vim.api.nvim_win_set_cursor(0, { 1, 7 })
+tunnelvision.on({ source = "word", dim = "#BB44DD" })
+local buf_a_dim_hl = core.get_buf_state(buf_a).config.dim_hl
+assert_true(
+  buf_a_dim_hl:match("TunnelVisionDim%d+$"),
+  "one-shot dim without one-shot dim_hl should use buffer-specific group"
+)
+-- Global dim should still use global group
+local global_dim_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(global_dim_hl and global_dim_hl.fg == 0x445566, "global dim should be unchanged by buffer-specific group")
+-- Buffer-specific group should have the one-shot color
+local buf_a_hl = vim.api.nvim_get_hl(0, { name = buf_a_dim_hl, link = false })
+assert_true(buf_a_hl and buf_a_hl.fg == 0xBB44DD, "buffer-specific dim group should have one-shot color")
+vim.cmd("TunnelVision off")
+
+-- invalid dim falls back to Comment-derived behavior
+tunnelvision.setup({ notify = false, dim = 42 })
+local invalid_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(invalid_hl and invalid_hl.fg == comment_hl.fg, "invalid dim = 42 should fall back to Comment-derived fg")
+
+tunnelvision.setup({ notify = false, dim = "DefinitelyMissingTunnelVisionDimGroup" })
+local invalid_group_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(
+  invalid_group_hl and invalid_group_hl.fg == comment_hl.fg,
+  "invalid dim group should fall back to Comment-derived fg"
+)
+tunnelvision.setup({ notify = false }) -- restore
+
+-- colorscheme refresh preserves configured dim behavior
+tunnelvision.setup({ notify = false, dim = "Comment" })
+vim.cmd("colorscheme default")
+local cs_copy_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+local cs_comment_hl = vim.api.nvim_get_hl(0, { name = "Comment", link = false })
+assert_true(
+  cs_copy_hl and cs_comment_hl and cs_copy_hl.fg == cs_comment_hl.fg,
+  "colorscheme refresh should re-copy from Comment group for dim = 'Comment'"
+)
+
+tunnelvision.setup({ notify = false, dim = "#778899" })
+vim.cmd("colorscheme default")
+local cs_hex_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+assert_true(cs_hex_hl and cs_hex_hl.fg == 0x778899, "colorscheme refresh should preserve dim = '#778899'")
+
+tunnelvision.setup({ notify = false }) -- restore
 vim.cmd("TunnelVision off")
 assert_true(not core.is_active(0), "deactivation failed")
 

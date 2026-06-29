@@ -49,9 +49,20 @@ function M.ensure_highlights(config)
   if not config.dim and config.dim_hl == core.state.config.dim_hl and core.state.config.dim then
     config = core.state.config
   end
-  if config.dim then
+  if type(config.dim) == "table" then
     pcall(vim.api.nvim_set_hl, 0, config.dim_hl, config.dim)
     return
+  end
+  if type(config.dim) == "string" then
+    -- Copy resolved attrs from an existing highlight group (not a link, so
+    -- ColorScheme re-apply picks up updated source group attributes).
+    local ok, src = pcall(vim.api.nvim_get_hl, 0, { name = config.dim, link = false })
+    if ok and src and next(src) ~= nil then
+      src.link = nil
+      src.default = nil
+      pcall(vim.api.nvim_set_hl, 0, config.dim_hl, src)
+      return
+    end
   end
 
   local ok, comment = pcall(vim.api.nvim_get_hl, 0, { name = "Comment", link = false })
