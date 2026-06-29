@@ -24,6 +24,7 @@ local defaults = {
   scope = "function",
   extra_keywords = {},
   source = "lsp_else_word",
+  sources = { "lsp", "word" },
   fallback_warn = "once",
   dim = nil,
   dim_hl = "TunnelVisionDim",
@@ -46,9 +47,20 @@ local valid_modes = { static = true, flow = true, dynamic = true }
 local valid_directions = { forward = true, both = true }
 local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
+local valid_source_names = { lsp = true, word = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
-local activation_keys =
-  { "mode", "direction", "scope", "extra_keywords", "source", "fallback_warn", "lsp_timeout_ms", "dim", "dim_hl" }
+local activation_keys = {
+  "mode",
+  "direction",
+  "scope",
+  "extra_keywords",
+  "source",
+  "sources",
+  "fallback_warn",
+  "lsp_timeout_ms",
+  "dim",
+  "dim_hl",
+}
 
 local refresh_active_buffers = function() end
 
@@ -98,6 +110,108 @@ local function get_line_target_col(line, symbol)
   return first_nonblank and first_nonblank - 1 or 0
 end
 
+local function source_step(step)
+  if type(step) == "string" and valid_source_names[step] then
+    return { kind = "single", name = step }
+  end
+
+  if type(step) == "table" and step.kind == "single" and valid_source_names[step.name] then
+    return { kind = "single", name = step.name }
+  end
+
+  if type(step) == "table" and step.kind == "combine" and type(step.names) == "table" and #step.names > 0 then
+    local names = {}
+    for _, name in ipairs(step.names) do
+      if not valid_source_names[name] then
+        return nil
+      end
+      names[#names + 1] = name
+    end
+    return { kind = "combine", names = names }
+  end
+end
+
+local function legacy_sources(source)
+  if source == "word" or source == "lsp" then
+    return { source }
+  end
+  if source == "lsp_and_word" then
+    return { M.combine("lsp", "word") }
+  end
+  return { "lsp", "word" }
+end
+
+local function normalize_sources(sources)
+  local out = {}
+  if type(sources) ~= "table" then
+    return normalize_sources(defaults.sources)
+  end
+
+  for _, step in ipairs(sources) do
+    local normalized = source_step(step)
+    if not normalized then
+      return normalize_sources(defaults.sources)
+    end
+    out[#out + 1] = normalized
+  end
+
+  return #out > 0 and out or normalize_sources(defaults.sources)
+end
+
+local function sources_copy(sources)
+  local out = {}
+  for _, step in ipairs(sources or {}) do
+    if step.kind == "single" then
+      out[#out + 1] = step.name
+    elseif step.kind == "combine" then
+      out[#out + 1] = M.combine(unpack(step.names))
+    end
+  end
+  return out
+end
+
+local function legacy_source_from_sources(sources)
+  if #sources == 1 and sources[1].kind == "single" then
+    return sources[1].name
+  end
+  if
+    #sources == 2
+    and sources[1].kind == "single"
+    and sources[1].name == "lsp"
+    and sources[2].kind == "single"
+    and sources[2].name == "word"
+  then
+    return "lsp_else_word"
+  end
+  if
+    #sources == 1
+    and sources[1].kind == "combine"
+    and #sources[1].names == 2
+    and sources[1].names[1] == "lsp"
+    and sources[1].names[2] == "word"
+  then
+    return "lsp_and_word"
+  end
+end
+
+local function sources_use_lsp(sources)
+  for _, step in ipairs(sources or {}) do
+    if step.name == "lsp" then
+      return true
+    end
+    for _, name in ipairs(step.names or {}) do
+      if name == "lsp" then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+function M.combine(...)
+  return { kind = "combine", names = { ... } }
+end
+
 function M.normalize_config(cfg)
   if not valid_modes[cfg.mode] then
     cfg.mode = defaults.mode
@@ -108,9 +222,12 @@ function M.normalize_config(cfg)
   if not valid_scopes[cfg.scope] then
     cfg.scope = defaults.scope
   end
-  if not valid_sources[cfg.source] then
-    cfg.source = defaults.source
+  if cfg.sources ~= nil then
+    cfg.sources = normalize_sources(cfg.sources)
+  else
+    cfg.sources = normalize_sources(valid_sources[cfg.source] and legacy_sources(cfg.source) or defaults.sources)
   end
+  cfg.source = legacy_source_from_sources(cfg.sources) or defaults.source
   if not valid_fallback_warn[cfg.fallback_warn] then
     cfg.fallback_warn = defaults.fallback_warn
   end
@@ -123,7 +240,11 @@ function M.normalize_config(cfg)
 end
 
 function M.configure(opts)
-  state.config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
+  opts = opts or {}
+  state.config = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts)
+  if opts.sources == nil then
+    state.config.sources = nil
+  end
   M.normalize_config(state.config)
   state.keywords = resolver.build_keywords(state.config.extra_keywords)
 end
@@ -134,6 +255,9 @@ local function activation_config(bufnr, opts)
     if opts[key] ~= nil then
       cfg[key] = opts[key]
     end
+  end
+  if opts.source ~= nil and opts.sources == nil then
+    cfg.sources = nil
   end
   if opts.dim ~= nil and opts.dim_hl == nil and opts.config == nil then
     cfg.dim_hl = ("TunnelVisionDim%d"):format(bufnr)
@@ -148,7 +272,7 @@ local function configs_equal(a, b)
     and a.mode == b.mode
     and a.direction == b.direction
     and a.scope == b.scope
-    and a.source == b.source
+    and vim.deep_equal(a.sources, b.sources)
     and a.fallback_warn == b.fallback_warn
     and a.lsp_timeout_ms == b.lsp_timeout_ms
     and a.dim_hl == b.dim_hl
@@ -323,7 +447,7 @@ function M.activate(bufnr, opts)
     bs.warned_lsp_strict = false
   end
 
-  if config.source == "word" then
+  if not sources_use_lsp(config.sources) then
     apply_path(bufnr, bs, symbol, anchor, scope, opts, config, keywords, resolver.make_lsp_result("disabled"))
     return true
   end
@@ -495,6 +619,17 @@ function M.set_scope(scope)
   refresh_active_buffers_with(state.config)
 end
 
+function M.get_sources()
+  return sources_copy(state.config.sources)
+end
+
+function M.set_sources(sources)
+  local normalized = normalize_sources(sources)
+  state.config.sources = normalized
+  state.config.source = legacy_source_from_sources(normalized) or defaults.source
+  refresh_active_buffers_with(state.config)
+end
+
 function M.get_source()
   return state.config.source
 end
@@ -504,6 +639,7 @@ function M.set_source(source)
     M.notify("TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, or word", vim.log.levels.ERROR)
     return
   end
+  state.config.sources = normalize_sources(legacy_sources(source))
   state.config.source = source
   refresh_active_buffers_with(state.config)
 end
@@ -524,6 +660,7 @@ function M.get_status(bufnr)
     direction = config.direction,
     scope = config.scope,
     source = config.source,
+    sources = sources_copy(config.sources),
   }
 end
 

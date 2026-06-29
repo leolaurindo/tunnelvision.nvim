@@ -74,6 +74,18 @@ function M.add_keywords(words)
   return core.add_keywords(words)
 end
 
+function M.combine(...)
+  return core.combine(...)
+end
+
+function M.get_sources()
+  return core.get_sources()
+end
+
+function M.set_sources(sources)
+  core.set_sources(sources)
+end
+
 function M.get_source()
   return core.get_source()
 end

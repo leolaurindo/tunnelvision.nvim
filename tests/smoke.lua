@@ -15,10 +15,43 @@ vim.opt.runtimepath:prepend(root)
 local tunnelvision = require("tunnelvision")
 local core = require("tunnelvision.core")
 
+local function assert_sources(expected, msg)
+  local got = tunnelvision.get_sources()
+  assert_true(#got == #expected, msg .. " length")
+  for i, value in ipairs(expected) do
+    assert_true(got[i] == value, msg .. " item " .. i)
+  end
+end
+
+local function assert_combine(step, expected, msg)
+  assert_true(type(step) == "table" and step.kind == "combine", msg .. " kind")
+  assert_true(#step.names == #expected, msg .. " length")
+  for i, value in ipairs(expected) do
+    assert_true(step.names[i] == value, msg .. " item " .. i)
+  end
+end
+
+tunnelvision.setup({ notify = false })
+assert_sources({ "lsp", "word" }, "default sources")
+
+local source_copy = tunnelvision.get_sources()
+source_copy[1] = "word"
+assert_sources({ "lsp", "word" }, "get_sources should return a copy")
+
 tunnelvision.setup({
   notify = false,
   source = "word",
 })
+assert_sources({ "word" }, "legacy source should normalize to sources")
+
+tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") } })
+assert_combine(tunnelvision.get_sources()[1], { "lsp", "word" }, "combine sources")
+
+tunnelvision.setup({
+  notify = false,
+  source = "word",
+})
+assert_sources({ "word" }, "legacy source should normalize to sources")
 
 assert_true(vim.fn.exists(":TunnelVision") == 2, "missing command: TunnelVision")
 
@@ -78,6 +111,12 @@ assert_true(core.get_source() == "lsp_and_word", "source lsp_and_word not applie
 vim.cmd("TunnelVision source word")
 assert_true(core.get_source() == "word", "source word not applied")
 
+tunnelvision.set_sources({ "lsp", "word" })
+assert_sources({ "lsp", "word" }, "set_sources should update sources")
+assert_true(core.get_source() == "lsp_else_word", "set_sources should update legacy source view")
+tunnelvision.set_sources({ "word" })
+assert_sources({ "word" }, "set_sources word")
+
 tunnelvision.setup({ notify = false, source = "lsp", scope = "buffer" })
 vim.cmd("enew")
 vim.bo.filetype = "lua"
@@ -92,7 +131,21 @@ vim.api.nvim_win_set_cursor(0, { 1, 7 })
 tunnelvision.on({ source = "word" })
 assert_true(core.get_buf_state(one_shot_buf).path_set[3], "one-shot source should override activation source")
 assert_true(core.get_source() == "lsp", "one-shot source should not mutate global source")
+assert_sources({ "lsp" }, "one-shot source should not mutate global sources")
 assert_true(core.get_buf_state(one_shot_buf).config.source == "word", "active buffer should keep one-shot source")
+assert_true(
+  core.get_buf_state(one_shot_buf).config.sources[1].name == "word",
+  "active buffer should keep one-shot sources"
+)
+vim.cmd("TunnelVision off")
+
+tunnelvision.on({ sources = { "word" } })
+assert_true(core.get_buf_state(one_shot_buf).path_set[3], "one-shot sources should override activation sources")
+assert_sources({ "lsp" }, "one-shot sources should not mutate global sources")
+assert_true(
+  core.get_buf_state(one_shot_buf).config.sources[1].name == "word",
+  "active buffer should keep one-shot sources override"
+)
 vim.cmd("TunnelVision off")
 
 tunnelvision.setup({ notify = false, source = "word", mode = "flow", scope = "buffer" })
