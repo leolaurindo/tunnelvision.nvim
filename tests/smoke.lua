@@ -305,7 +305,7 @@ if vim.lsp.buf_request_all then
   local old_marks = #vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {})
   assert_true(old_marks > 0, "word render should create dim extmarks")
 
-  tunnelvision.setup({ notify = false, source = "lsp_else_word", lsp_timeout_ms = 1000 })
+  tunnelvision.setup({ notify = false, sources = { "lsp", "word" }, lsp_timeout_ms = 1000 })
   vim.api.nvim_win_set_cursor(0, { 2, 7 })
   vim.cmd("TunnelVision on")
   assert_true(core.get_buf_state(lsp_buf).pending, "async LSP activation should be pending")
@@ -348,7 +348,7 @@ if vim.lsp.buf_request_all then
   assert_true(not core.get_buf_state(lsp_buf).pending, "error response should resolve pending state")
   assert_true(core.get_buf_state(lsp_buf).path_set[2], "error response should fallback to word matching")
 
-  tunnelvision.setup({ notify = false, source = "lsp", lsp_timeout_ms = 1000 })
+  tunnelvision.setup({ notify = false, sources = { "lsp" }, lsp_timeout_ms = 1000 })
   vim.cmd("TunnelVision off")
   vim.api.nvim_win_set_cursor(0, { 2, 7 })
   vim.cmd("TunnelVision on")
@@ -360,6 +360,35 @@ if vim.lsp.buf_request_all then
   })
   assert_true(not core.get_buf_state(lsp_buf).pending, "strict lsp error should resolve pending state")
   assert_true(not core.get_buf_state(lsp_buf).path_set[3], "strict lsp source should not fallback to word")
+
+  tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") }, lsp_timeout_ms = 1000 })
+  vim.cmd("TunnelVision off")
+  vim.api.nvim_win_set_cursor(0, { 2, 7 })
+  vim.cmd("TunnelVision on")
+  assert_true(#callbacks == 5, "expected combined source async request")
+  callbacks[5]({
+    [1] = {
+      result = {
+        { range = { start = { line = 0 }, ["end"] = { line = 0 } } },
+      },
+    },
+  })
+  assert_true(not core.get_buf_state(lsp_buf).pending, "combined source should resolve pending state")
+  assert_true(core.get_buf_state(lsp_buf).path_set[1], "combined source should include lsp lines")
+  assert_true(core.get_buf_state(lsp_buf).path_set[3], "combined source should include word lines")
+
+  vim.cmd("TunnelVision off")
+  vim.api.nvim_win_set_cursor(0, { 2, 7 })
+  vim.cmd("TunnelVision on")
+  assert_true(#callbacks == 6, "expected combined source empty lsp request")
+  callbacks[6]({
+    [1] = {
+      result = {},
+    },
+  })
+  assert_true(not core.get_buf_state(lsp_buf).pending, "empty combined source should resolve pending state")
+  assert_true(core.get_buf_state(lsp_buf).path_set[2], "empty combined source should keep anchor line")
+  assert_true(not core.get_buf_state(lsp_buf).path_set[3], "empty combined source should not fallback to word")
 
   vim.lsp.buf_request_all = orig_buf_request_all
   restore_clients()

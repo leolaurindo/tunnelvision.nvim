@@ -315,35 +315,42 @@ local function sorted_lines(path_set)
 end
 
 function M.compute_path(bufnr, symbol, anchor, scope, opts)
-  local path_set = {}
-  local word_set = {}
-  local source = opts.source
-  local use_flow = opts.mode == "flow" and source ~= "lsp"
-  local tracked = { [symbol] = true }
-  local line_info = {}
   local keywords = opts.keywords or {}
   local lsp_result = opts.lsp_result or M.make_lsp_result("disabled")
+  local sources = opts.sources or {}
 
-  local need_word = source ~= "lsp" and (source ~= "lsp_else_word" or not lsp_result.used)
-  local meta = { used_lsp = false, used_fallback = false, fallback_reason = nil }
-
-  if source == "lsp_else_word" and lsp_result.used and not use_flow then
-    add_set(path_set, lsp_result.lines)
-    path_set[anchor.row + 1] = true
-    meta.used_lsp = true
-    return path_set, sorted_lines(path_set), meta
+  -- Determine if word matching or flow analysis is needed
+  local needs_word = false
+  local has_word = false
+  for _, step in ipairs(sources) do
+    if step.kind == "single" then
+      if step.name == "word" then
+        has_word = true
+        needs_word = true
+      end
+    elseif step.kind == "combine" then
+      for _, name in ipairs(step.names) do
+        if name == "word" then
+          has_word = true
+          needs_word = true
+        end
+      end
+    end
   end
+  local use_flow = opts.mode == "flow" and has_word
 
-  if use_flow or need_word then
+  local word_set = {}
+  local line_info = {}
+
+  -- Scan buffer lines for word matches and/or flow analysis
+  if needs_word or use_flow then
     local lines = vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
     for idx, raw in ipairs(lines) do
       local lnum = scope.start_line + idx - 1
       local cleaned = strip_strings_and_comments(raw)
-
-      if need_word and line_has_word(cleaned, symbol) then
+      if needs_word and line_has_word(cleaned, symbol) then
         word_set[lnum] = true
       end
-
       if use_flow then
         local lhs, rhs = parse_assignment(cleaned, keywords)
         line_info[#line_info + 1] = {
@@ -356,40 +363,73 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
     end
   end
 
-  if source == "word" then
-    add_set(path_set, word_set)
-  elseif source == "lsp_and_word" then
-    add_set(path_set, word_set)
-    add_set(path_set, lsp_result.lines)
-    meta.used_lsp = lsp_result.used
-  elseif source == "lsp" then
-    add_set(path_set, lsp_result.lines)
-    meta.used_lsp = lsp_result.used
-    if not lsp_result.used then
-      meta.fallback_reason = lsp_result.reason
+  local path_set = {}
+  local meta = {
+    used_lsp = false,
+    used_fallback = false,
+    fallback_reason = nil,
+  }
+  local step_index = 0
+
+  -- Resolve source chain: iterate steps in order, stop at the first success
+  for i, step in ipairs(sources) do
+    if step.kind == "single" then
+      local lines = (step.name == "word") and word_set or lsp_result.lines
+      if next(lines) then
+        add_set(path_set, lines)
+        step_index = i
+        if step.name == "lsp" then
+          meta.used_lsp = true
+        end
+        break
+      end
+      if step.name == "lsp" and not meta.fallback_reason then
+        meta.fallback_reason = lsp_result.reason
+      end
+    elseif step.kind == "combine" then
+      local merged = {}
+      local all_ok = true
+      for _, name in ipairs(step.names) do
+        local lines = (name == "word") and word_set or lsp_result.lines
+        if not next(lines) then
+          all_ok = false
+          if name == "lsp" and not meta.fallback_reason then
+            meta.fallback_reason = lsp_result.reason
+          end
+          break
+        end
+        add_set(merged, lines)
+      end
+      if all_ok then
+        add_set(path_set, merged)
+        step_index = i
+        for _, name in ipairs(step.names) do
+          if name == "lsp" then
+            meta.used_lsp = true
+          end
+        end
+        break
+      end
     end
-  elseif lsp_result.used then
-    add_set(path_set, lsp_result.lines)
-    meta.used_lsp = true
-  else
-    add_set(path_set, word_set)
-    meta.used_fallback = true
-    meta.fallback_reason = lsp_result.reason
   end
 
+  if step_index > 1 then
+    meta.used_fallback = true
+  end
+
+  -- Flow expansion runs after source resolution, using the selected line set.
+  -- Flow mode grows the tracked identifier set until it reaches a fixed point
+  -- or hits a small safety bound. This keeps chained assignments like
+  -- `a = b; c = a` connected without letting pathological buffers loop forever.
   if use_flow then
+    local tracked = { [symbol] = true }
     local changed, guard = true, 0
-    -- Flow mode grows the tracked identifier set until it reaches a fixed point
-    -- or hits a small safety bound. This keeps chained assignments like
-    -- `a = b; c = a` connected without letting pathological buffers loop forever.
     while changed and guard < FLOW_MAX_ITER do
       changed = false
       guard = guard + 1
-
       for _, info in ipairs(line_info) do
         local lhs_hit = info.lhs and set_intersects(info.lhs, tracked) or false
         local rhs_hit = info.rhs and set_intersects(info.rhs, tracked) or false
-
         if lhs_hit or rhs_hit or set_intersects(info.ids, tracked) then
           path_set[info.lnum] = true
         end

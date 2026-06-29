@@ -187,7 +187,11 @@ local function lsp_warn_msg(kind, reason)
 end
 
 local function maybe_warn_fallback(bs, silent, cfg)
-  if cfg.source ~= "lsp_else_word" or not bs.last_compute_meta or not bs.last_compute_meta.used_fallback then
+  if
+    config.legacy_source_from_sources(cfg.sources) ~= "lsp_else_word"
+    or not bs.last_compute_meta
+    or not bs.last_compute_meta.used_fallback
+  then
     return
   end
 
@@ -203,7 +207,11 @@ local function maybe_warn_fallback(bs, silent, cfg)
 end
 
 local function maybe_warn_strict_lsp(bs, silent, cfg)
-  if cfg.source ~= "lsp" or not bs.last_compute_meta or bs.last_compute_meta.used_lsp then
+  if
+    config.legacy_source_from_sources(cfg.sources) ~= "lsp"
+    or not bs.last_compute_meta
+    or bs.last_compute_meta.used_lsp
+  then
     return
   end
 
@@ -223,7 +231,7 @@ local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords,
     keywords = keywords,
     lsp_result = lsp_result,
     mode = cfg.mode,
-    source = cfg.source,
+    sources = cfg.sources,
   })
   maybe_warn_fallback(bs, opts.silent, cfg)
   maybe_warn_strict_lsp(bs, opts.silent, cfg)
