@@ -123,6 +123,53 @@ assert_true(core.get_source() == "lsp_and_word", "source lsp_and_word not applie
 vim.cmd("TunnelVision source word")
 assert_true(core.get_source() == "word", "source word not applied")
 
+-- Fallback-chain command syntax
+vim.cmd("TunnelVision source lsp,word")
+assert_sources({ "lsp", "word" }, "comma-separated fallback chain lsp,word")
+
+-- Status display uses source= label
+do
+  local notify_msg
+  local orig_notify = core.notify
+  core.notify = function(msg, ...)
+    notify_msg = msg
+  end
+  vim.cmd("TunnelVision status")
+  assert_true(notify_msg and notify_msg:find("source="), "status should use source= label")
+  assert_true(notify_msg and notify_msg:find("source=lsp,word"), "status should show formatted source label")
+  core.notify = orig_notify
+end
+
+-- Invalid comma values fail without corrupting config
+do
+  local notify_msg
+  local orig_notify = core.notify
+  core.notify = function(msg, ...)
+    notify_msg = msg
+  end
+  vim.cmd("TunnelVision source lsp,foo")
+  assert_true(notify_msg and notify_msg:find("invalid source"), "invalid chain source should error")
+  assert_sources({ "lsp", "word" }, "sources unchanged after invalid chain")
+  core.notify = orig_notify
+end
+
+-- Combine display via Lua setup
+vim.cmd("TunnelVision off")
+tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") } })
+do
+  local msgs = {}
+  local orig_notify = core.notify
+  core.notify = function(msg, ...)
+    msgs[#msgs + 1] = msg
+  end
+  vim.cmd("TunnelVision status")
+  vim.cmd("TunnelVision source")
+  core.notify = orig_notify
+  assert_true(msgs[1]:find("source=combine%(lsp,word%)"), "status should show combine source label")
+  assert_true(msgs[2]:find("combine%(lsp,word%)"), "query source should show combine label")
+end
+tunnelvision.setup({ notify = false, source = "lsp_else_word" }) -- restore
+
 tunnelvision.set_sources({ "lsp", "word" })
 assert_sources({ "lsp", "word" }, "set_sources should update sources")
 assert_true(core.get_source() == "lsp_else_word", "set_sources should update legacy source view")

@@ -161,10 +161,10 @@ local function ensure_commands(api)
     },
     source = {
       desc = "Query or set tunnel vision source",
-      get = api.get_source,
+      get = core.get_sources_label,
       label = "source",
-      set = api.set_source,
-      values = { "lsp_else_word", "lsp", "lsp_and_word", "word" },
+      set = core.set_source_command,
+      values = { "word", "lsp", "lsp_else_word", "lsp_and_word", "lsp,word" },
     },
     status = {
       desc = "Show tunnel vision status",
@@ -173,7 +173,7 @@ local function ensure_commands(api)
         local state_label = status.pending and "pending" or (status.active and "on" or "off")
         local symbol = status.symbol and (" symbol=" .. status.symbol) or ""
         core.notify(
-          ("TunnelVision: %s mode=%s direction=%s scope=%s sources=%s%s"):format(
+          ("TunnelVision: %s mode=%s direction=%s scope=%s source=%s%s"):format(
             state_label,
             status.mode,
             status.direction,

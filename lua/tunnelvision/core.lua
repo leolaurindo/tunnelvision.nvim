@@ -477,6 +477,36 @@ function M.get_sources_label()
   return config.format_sources(state.config.sources)
 end
 
+-- UI-facing source setter that accepts both legacy values and
+-- comma-separated fallback chains (e.g. "lsp,word").
+-- Invalid values produce a notify error and leave config unchanged.
+function M.set_source_command(value)
+  if config.valid_sources[value] then
+    M.set_source(value)
+    return
+  end
+
+  local parts = vim.split(value, ",")
+  if #parts > 1 then
+    local names = {}
+    for _, part in ipairs(parts) do
+      local name = vim.trim(part)
+      if not config.valid_source_names[name] then
+        M.notify("TunnelVision: invalid source name '" .. name .. "'", vim.log.levels.ERROR)
+        return
+      end
+      names[#names + 1] = name
+    end
+    M.set_sources(names)
+    return
+  end
+
+  M.notify(
+    "TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, word, or a comma-separated chain",
+    vim.log.levels.ERROR
+  )
+end
+
 -- Compatibility API (deprecated). Maps legacy source values to normalized
 -- sources and refreshes active buffers. No runtime deprecation warnings.
 function M.set_source(source)
