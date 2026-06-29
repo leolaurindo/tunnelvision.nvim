@@ -117,6 +117,47 @@ assert_true(core.get_source() == "lsp_else_word", "set_sources should update leg
 tunnelvision.set_sources({ "word" })
 assert_sources({ "word" }, "set_sources word")
 
+-- Legacy source mapping tests
+tunnelvision.setup({ notify = false })
+assert_true(tunnelvision.get_source() == "lsp_else_word", "default get_source returns lsp_else_word")
+tunnelvision.setup({ notify = false, source = "lsp" })
+assert_sources({ "lsp" }, "legacy source lsp maps to sources")
+assert_true(tunnelvision.get_source() == "lsp", "get_source returns lsp")
+tunnelvision.setup({ notify = false, source = "lsp_and_word" })
+assert_combine(tunnelvision.get_sources()[1], { "lsp", "word" }, "legacy source lsp_and_word maps to combine")
+assert_true(tunnelvision.get_source() == "lsp_and_word", "get_source returns lsp_and_word")
+tunnelvision.setup({ notify = false, source = "word" })
+assert_sources({ "word" }, "legacy source word maps to sources")
+
+-- sources wins over source when both are provided
+tunnelvision.setup({ notify = false, source = "word", sources = { tunnelvision.combine("lsp", "word") } })
+assert_combine(tunnelvision.get_sources()[1], { "lsp", "word" }, "sources wins over deprecated source")
+assert_true(
+  tunnelvision.get_source() == "lsp_and_word",
+  "get_source returns legacy for representable chain after sources win"
+)
+
+-- get_source returns nil for custom chains that cannot be represented
+tunnelvision.set_sources({ tunnelvision.combine("lsp", "word"), "word" })
+assert_true(tunnelvision.get_source() == nil, "get_source returns nil for unrepresentable chain")
+assert_true(tunnelvision.status().source == nil, "status source returns nil for unrepresentable chain")
+-- Restore to known state
+tunnelvision.setup({ notify = false, source = "lsp_else_word" })
+assert_true(tunnelvision.get_source() == "lsp_else_word", "restored to lsp_else_word")
+
+-- No deprecation notification when using legacy source config path
+do
+  local notify_calls = {}
+  local orig_notify = vim.notify
+  vim.notify = function(msg, ...)
+    notify_calls[#notify_calls + 1] = msg
+  end
+  tunnelvision.setup({ notify = true, source = "word" })
+  for _, msg in ipairs(notify_calls) do
+    assert_true(not msg:lower():find("deprecated"), "no deprecation warning for legacy source config: " .. msg)
+  end
+  vim.notify = orig_notify
+end
 tunnelvision.setup({ notify = false, source = "lsp", scope = "buffer" })
 vim.cmd("enew")
 vim.bo.filetype = "lua"

@@ -131,6 +131,8 @@ local function source_step(step)
   end
 end
 
+-- Legacy source mapping (deprecated, intentionally supports old source values
+-- without runtime warnings).
 local function legacy_sources(source)
   if source == "word" or source == "lsp" then
     return { source }
@@ -170,6 +172,8 @@ local function sources_copy(sources)
   return out
 end
 
+-- Inverse of legacy_sources: maps normalized sources back to a legacy value,
+-- or returns nil for custom chains that cannot be represented.
 local function legacy_source_from_sources(sources)
   if #sources == 1 and sources[1].kind == "single" then
     return sources[1].name
@@ -630,10 +634,15 @@ function M.set_sources(sources)
   refresh_active_buffers_with(state.config)
 end
 
+-- Compatibility API (deprecated). Returns the legacy source string when the
+-- current normalized sources can be represented by a single legacy value,
+-- otherwise returns nil. No runtime deprecation warnings.
 function M.get_source()
-  return state.config.source
+  return legacy_source_from_sources(state.config.sources)
 end
 
+-- Compatibility API (deprecated). Maps legacy source values to normalized
+-- sources and refreshes active buffers. No runtime deprecation warnings.
 function M.set_source(source)
   if not valid_sources[source] then
     M.notify("TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, or word", vim.log.levels.ERROR)
@@ -659,7 +668,7 @@ function M.get_status(bufnr)
     mode = config.mode,
     direction = config.direction,
     scope = config.scope,
-    source = config.source,
+    source = legacy_source_from_sources(config.sources),
     sources = sources_copy(config.sources),
   }
 end
