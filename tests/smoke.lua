@@ -35,6 +35,109 @@ end
 tunnelvision.setup({ notify = false })
 assert_sources({ "lsp", "word" }, "default sources")
 assert_true(config.format_sources(core.state.config.sources) == "lsp,word", "format_sources default")
+
+-- flow_settings defaults
+assert_true(core.state.config.flow_settings.direction == "forward", "default flow_settings.direction")
+assert_true(vim.deep_equal(core.state.config.flow_settings.extra_keywords, {}), "default flow_settings.extra_keywords")
+
+-- setup with flow_settings
+tunnelvision.setup({ notify = false, flow_settings = { direction = "both", extra_keywords = { "x" } } })
+assert_true(core.state.config.flow_settings.direction == "both", "flow_settings.direction from setup")
+assert_true(core.state.config.flow_settings.extra_keywords[1] == "x", "flow_settings.extra_keywords from setup")
+tunnelvision.setup({ notify = false }) -- restore
+
+-- Deprecated top-level direction maps to flow_settings
+tunnelvision.setup({ notify = false, direction = "both" })
+assert_true(core.state.config.flow_settings.direction == "both", "deprecated direction maps to flow_settings")
+tunnelvision.setup({ notify = false })
+
+-- flow_settings wins over deprecated top-level when both provided
+tunnelvision.setup({ notify = false, direction = "forward", flow_settings = { direction = "both" } })
+assert_true(
+  core.state.config.flow_settings.direction == "both",
+  "flow_settings.direction wins over deprecated direction"
+)
+tunnelvision.setup({ notify = false })
+
+-- Deprecated top-level flow fields fill only missing flow_settings fields
+tunnelvision.setup({
+  notify = false,
+  direction = "both",
+  extra_keywords = { "deprecated" },
+  flow_settings = { extra_keywords = { "nested" } },
+})
+assert_true(
+  core.state.config.flow_settings.direction == "both",
+  "deprecated direction fills missing flow_settings.direction"
+)
+assert_true(
+  core.state.config.flow_settings.extra_keywords[1] == "nested",
+  "flow_settings.extra_keywords wins over deprecated extra_keywords"
+)
+tunnelvision.setup({ notify = false })
+
+-- add_keywords mutates flow_settings.extra_keywords
+tunnelvision.setup({ notify = false })
+assert_true(tunnelvision.add_keywords({ "sentinel" }), "add_keywords appends to flow_settings")
+assert_true(core.state.config.flow_settings.extra_keywords[1] == "sentinel", "add_keywords stored in flow_settings")
+-- Reset: clear extra_keywords for subsequent tests
+core.state.config.flow_settings.extra_keywords = {}
+core.state.keywords = require("tunnelvision.resolver").build_keywords({})
+
+-- set_direction updates flow_settings.direction
+core.set_direction("both")
+assert_true(core.state.config.flow_settings.direction == "both", "set_direction updates flow_settings.direction")
+core.set_direction("forward")
+assert_true(core.state.config.flow_settings.direction == "forward", "set_direction restores flow_settings.direction")
+
+-- One-shot activation flow_settings works
+tunnelvision.setup({ notify = false, mode = "flow", source = "word", scope = "buffer" })
+vim.cmd("enew")
+vim.bo.filetype = "lua"
+vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  "local alpha = 1",
+  "local beta = alpha + 1",
+  "local gamma = beta + 1",
+})
+local fs_oneshot_buf = vim.api.nvim_get_current_buf()
+vim.api.nvim_win_set_cursor(0, { 1, 8 })
+tunnelvision.on({
+  flow_settings = { direction = "both", extra_keywords = { "gamma" } },
+})
+-- With direction="both" and gamma as keyword, beta should also be tracked
+assert_true(
+  core.get_buf_state(fs_oneshot_buf).path_set[2],
+  "one-shot flow_settings.direction both tracks lhs dependencies"
+)
+vim.cmd("TunnelVision off")
+
+-- Deprecated one-shot direction still works
+vim.api.nvim_win_set_cursor(0, { 1, 8 })
+tunnelvision.on({ direction = "both" })
+assert_true(core.get_buf_state(fs_oneshot_buf).path_set[2], "deprecated one-shot direction maps to flow_settings")
+vim.cmd("TunnelVision off")
+
+-- Deprecated one-shot fields fill missing flow_settings fields
+vim.api.nvim_win_set_cursor(0, { 1, 8 })
+tunnelvision.on({ direction = "both", flow_settings = { extra_keywords = { "gamma" } } })
+assert_true(
+  core.get_buf_state(fs_oneshot_buf).config.flow_settings.direction == "both",
+  "deprecated one-shot direction fills missing flow_settings.direction"
+)
+assert_true(
+  core.get_buf_state(fs_oneshot_buf).config.flow_settings.extra_keywords[1] == "gamma",
+  "one-shot flow_settings.extra_keywords is preserved"
+)
+vim.cmd("TunnelVision off")
+
+-- flow_settings.direction wins over deprecated direction in one-shot
+vim.api.nvim_win_set_cursor(0, { 1, 8 })
+tunnelvision.on({ direction = "forward", flow_settings = { direction = "both" } })
+assert_true(core.get_buf_state(fs_oneshot_buf).path_set[2], "one-shot flow_settings.direction wins over deprecated")
+vim.cmd("TunnelVision off")
+assert_true(vim.api.nvim_buf_is_valid(0), "buffer still valid after one-shot tests")
+tunnelvision.setup({ notify = false }) -- restore
+
 assert_true(config.format_sources({ { kind = "single", name = "lsp" } }) == "lsp", "format_sources single")
 assert_true(
   config.format_sources({ { kind = "combine", names = { "lsp", "word" } } }) == "combine(lsp,word)",
@@ -302,6 +405,37 @@ vim.cmd("TunnelVision on")
 assert_true(core.get_buf_state(flow_keywords_buf).path_set[3], "flow baseline should propagate through sentinel")
 
 vim.cmd("TunnelVision off")
+tunnelvision.setup({
+  notify = false,
+  source = "word",
+  mode = "flow",
+  scope = "buffer",
+  flow_settings = { extra_keywords = { "sentinel" } },
+})
+vim.api.nvim_win_set_cursor(0, { 1, 8 })
+vim.cmd("TunnelVision on")
+assert_true(
+  not core.get_buf_state(flow_keywords_buf).path_set[3],
+  "flow_settings.extra_keywords should stop propagation through ignored identifiers"
+)
+
+vim.cmd("TunnelVision off")
+tunnelvision.setup({
+  notify = false,
+  source = "word",
+  mode = "flow",
+  scope = "buffer",
+  extra_keywords = { "sentinel" },
+})
+vim.api.nvim_win_set_cursor(0, { 1, 8 })
+vim.cmd("TunnelVision on")
+assert_true(
+  not core.get_buf_state(flow_keywords_buf).path_set[3],
+  "deprecated extra_keywords should stop propagation through ignored identifiers"
+)
+
+vim.cmd("TunnelVision off")
+tunnelvision.setup({ notify = false, source = "word", mode = "flow", scope = "buffer" })
 assert_true(tunnelvision.add_keywords({ "sentinel" }), "add_keywords should append new identifiers")
 assert_true(not tunnelvision.add_keywords({ "sentinel" }), "add_keywords should ignore duplicates")
 vim.api.nvim_win_set_cursor(0, { 1, 8 })

@@ -26,7 +26,7 @@ local state = {
   request_seq = 0,
 }
 
-state.keywords = resolver.build_keywords(config.defaults.extra_keywords)
+state.keywords = resolver.build_keywords(config.defaults.flow_settings.extra_keywords)
 M.state = state
 
 local refresh_active_buffers = function() end
@@ -85,29 +85,40 @@ function M.configure(opts)
   if opts.sources == nil then
     state.config.sources = nil
   end
+
+  -- Compatibility: deprecated top-level flow options fill missing
+  -- flow_settings fields. New nested fields win. No runtime warnings.
+  if opts.direction ~= nil and (opts.flow_settings == nil or opts.flow_settings.direction == nil) then
+    state.config.flow_settings.direction = state.config.direction
+  end
+  if opts.extra_keywords ~= nil and (opts.flow_settings == nil or opts.flow_settings.extra_keywords == nil) then
+    state.config.flow_settings.extra_keywords = state.config.extra_keywords
+  end
   config.normalize(state.config)
-  state.keywords = resolver.build_keywords(state.config.extra_keywords)
+  state.keywords = resolver.build_keywords(state.config.flow_settings.extra_keywords)
 end
 
 local function activation_config(bufnr, opts)
   local cfg = config.normalize_activation(opts.config or state.config, opts, bufnr)
-  return cfg, resolver.build_keywords(cfg.extra_keywords)
+  return cfg, resolver.build_keywords(cfg.flow_settings.extra_keywords)
 end
 
 local function configs_equal(a, b)
   return a
     and b
     and a.mode == b.mode
-    and a.direction == b.direction
+    and a.flow_settings.direction == b.flow_settings.direction
     and a.scope == b.scope
     and vim.deep_equal(a.sources, b.sources)
     and a.fallback_warn == b.fallback_warn
     and a.lsp_timeout_ms == b.lsp_timeout_ms
     and a.dim_hl == b.dim_hl
     and vim.deep_equal(a.dim, b.dim)
-    and vim.deep_equal(a.extra_keywords, b.extra_keywords)
+    and vim.deep_equal(a.flow_settings.extra_keywords, b.flow_settings.extra_keywords)
 end
 
+-- Compatibility alias for the historical top-level flow API.
+-- Mutates flow_settings.extra_keywords internally.
 function M.add_keywords(words)
   local incoming = resolver.sanitize_keywords(words)
   if #incoming == 0 then
@@ -115,15 +126,15 @@ function M.add_keywords(words)
   end
 
   local existing = {}
-  state.config.extra_keywords = state.config.extra_keywords or {}
-  for _, word in ipairs(state.config.extra_keywords) do
+  state.config.flow_settings.extra_keywords = state.config.flow_settings.extra_keywords or {}
+  for _, word in ipairs(state.config.flow_settings.extra_keywords) do
     existing[word] = true
   end
 
   local changed = false
   for _, word in ipairs(incoming) do
     if not existing[word] then
-      state.config.extra_keywords[#state.config.extra_keywords + 1] = word
+      state.config.flow_settings.extra_keywords[#state.config.flow_settings.extra_keywords + 1] = word
       existing[word] = true
       changed = true
     end
@@ -133,7 +144,7 @@ function M.add_keywords(words)
     return false
   end
 
-  state.keywords = resolver.build_keywords(state.config.extra_keywords)
+  state.keywords = resolver.build_keywords(state.config.flow_settings.extra_keywords)
   if state.config.mode == "flow" then
     refresh_active_buffers()
   end
@@ -227,7 +238,7 @@ local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords,
   bs.pending = false
   bs.request_id = nil
   bs.path_set, bs.path_order, bs.last_compute_meta = resolver.compute_path(bufnr, symbol, anchor, scope, {
-    direction = cfg.direction,
+    direction = cfg.flow_settings.direction,
     keywords = keywords,
     lsp_result = lsp_result,
     mode = cfg.mode,
@@ -427,16 +438,20 @@ function M.set_mode(mode)
   refresh_active_buffers_with(state.config)
 end
 
+-- Compatibility alias for the historical top-level flow API.
+-- Returns flow_settings.direction.
 function M.get_direction()
-  return state.config.direction
+  return state.config.flow_settings.direction
 end
 
+-- Compatibility alias for the historical top-level flow API.
+-- Mutates flow_settings.direction.
 function M.set_direction(direction)
   if not config.valid_directions[direction] then
     M.notify("TunnelVision: direction must be forward or both", vim.log.levels.ERROR)
     return
   end
-  state.config.direction = direction
+  state.config.flow_settings.direction = direction
   if state.config.mode == "flow" then
     refresh_active_buffers_with(state.config)
   end
@@ -539,7 +554,7 @@ function M.get_status(bufnr)
     pending = bs and bs.pending or false,
     symbol = bs and bs.symbol or nil,
     mode = cfg.mode,
-    direction = cfg.direction,
+    direction = cfg.flow_settings.direction,
     scope = cfg.scope,
     source = config.legacy_source_from_sources(cfg.sources),
     sources = config.get_sources_copy(cfg.sources),

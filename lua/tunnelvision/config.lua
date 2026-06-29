@@ -21,6 +21,10 @@ local defaults = {
   direction = "forward",
   scope = "function",
   extra_keywords = {},
+  flow_settings = {
+    direction = "forward",
+    extra_keywords = {},
+  },
   source = "lsp_else_word",
   sources = { "lsp", "word" },
   fallback_warn = "once",
@@ -53,6 +57,7 @@ M.activation_keys = {
   "direction",
   "scope",
   "extra_keywords",
+  "flow_settings",
   "source",
   "sources",
   "fallback_warn",
@@ -209,6 +214,23 @@ function M.normalize(cfg)
     cfg.dim = nil
   end
   cfg.extra_keywords = resolver.sanitize_keywords(cfg.extra_keywords)
+
+  -- Compatibility: deprecated top-level flow options map into missing
+  -- flow_settings fields. New nested fields win. No runtime warnings.
+  if type(cfg.flow_settings) ~= "table" then
+    cfg.flow_settings = {}
+  end
+  if cfg.flow_settings.direction == nil and cfg.direction ~= nil then
+    cfg.flow_settings.direction = cfg.direction
+  end
+  if cfg.flow_settings.extra_keywords == nil and cfg.extra_keywords ~= nil then
+    cfg.flow_settings.extra_keywords = cfg.extra_keywords
+  end
+  if not valid_directions[cfg.flow_settings.direction] then
+    cfg.flow_settings.direction = defaults.flow_settings.direction
+  end
+  cfg.flow_settings.extra_keywords = resolver.sanitize_keywords(cfg.flow_settings.extra_keywords)
+
   cfg.max_dim_lines = math.max(1, tonumber(cfg.max_dim_lines) or defaults.max_dim_lines)
   cfg.lsp_timeout_ms = math.max(1, tonumber(cfg.lsp_timeout_ms) or defaults.lsp_timeout_ms)
 end
@@ -220,6 +242,22 @@ function M.normalize_activation(base_config, opts, bufnr)
       cfg[key] = opts[key]
     end
   end
+
+  -- Compatibility: deprecated one-shot flow options fill missing
+  -- flow_settings fields. New nested fields win. No runtime warnings.
+  if opts.direction ~= nil and (opts.flow_settings == nil or opts.flow_settings.direction == nil) then
+    if type(cfg.flow_settings) ~= "table" then
+      cfg.flow_settings = {}
+    end
+    cfg.flow_settings.direction = cfg.direction
+  end
+  if opts.extra_keywords ~= nil and (opts.flow_settings == nil or opts.flow_settings.extra_keywords == nil) then
+    if type(cfg.flow_settings) ~= "table" then
+      cfg.flow_settings = {}
+    end
+    cfg.flow_settings.extra_keywords = cfg.extra_keywords
+  end
+
   if opts.source ~= nil and opts.sources == nil then
     cfg.sources = nil
   end
