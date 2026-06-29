@@ -486,6 +486,12 @@ function M.set_source_command(value)
     return
   end
 
+  -- Single non-legacy source name (e.g. "treesitter")
+  if config.valid_source_names[value] then
+    M.set_sources({ value })
+    return
+  end
+
   local parts = vim.split(value, ",")
   if #parts > 1 then
     local names = {}
@@ -502,7 +508,8 @@ function M.set_source_command(value)
   end
 
   M.notify(
-    "TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, word, or a comma-separated chain",
+    "TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, word, treesitter,"
+      .. " or a comma-separated chain like lsp,word or treesitter,word",
     vim.log.levels.ERROR
   )
 end

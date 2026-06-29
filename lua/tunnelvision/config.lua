@@ -38,7 +38,7 @@ local valid_modes = { static = true, flow = true, dynamic = true }
 local valid_directions = { forward = true, both = true }
 local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
-local valid_source_names = { lsp = true, word = true }
+local valid_source_names = { lsp = true, word = true, treesitter = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
 
 M.valid_modes = valid_modes
@@ -128,7 +128,7 @@ end
 -- Inverse of sources_from_legacy_source: maps normalized sources back to a
 -- legacy value, or returns nil for custom chains that cannot be represented.
 function M.legacy_source_from_sources(sources)
-  if #sources == 1 and sources[1].kind == "single" then
+  if #sources == 1 and sources[1].kind == "single" and valid_sources[sources[1].name] then
     return sources[1].name
   end
   if

@@ -127,6 +127,40 @@ assert_true(core.get_source() == "word", "source word not applied")
 vim.cmd("TunnelVision source lsp,word")
 assert_sources({ "lsp", "word" }, "comma-separated fallback chain lsp,word")
 
+-- Treesitter source validation
+tunnelvision.setup({ notify = false, sources = { "treesitter" } })
+assert_sources({ "treesitter" }, "treesitter source validates")
+assert_true(tunnelvision.get_source() == nil, "get_source returns nil for treesitter-only chain")
+
+tunnelvision.setup({ notify = false, sources = { "treesitter", "word" } })
+assert_sources({ "treesitter", "word" }, "treesitter,word sources validates")
+assert_true(tunnelvision.get_source() == nil, "get_source returns nil for treesitter,word chain")
+
+tunnelvision.setup({ notify = false, sources = { "lsp", "treesitter", "word" } })
+assert_sources({ "lsp", "treesitter", "word" }, "lsp,treesitter,word sources validates")
+
+-- tv.combine("lsp", "treesitter") validates
+tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "treesitter") } })
+assert_combine(tunnelvision.get_sources()[1], { "lsp", "treesitter" }, "combine(lsp,treesitter) validates")
+assert_true(tunnelvision.get_source() == nil, "get_source returns nil for combine chain with treesitter")
+
+-- :TunnelVision source treesitter works
+tunnelvision.setup({ notify = false })
+vim.cmd("TunnelVision source treesitter")
+assert_sources({ "treesitter" }, "command source treesitter")
+assert_true(tunnelvision.status().sources_label == "treesitter", "status source label shows treesitter")
+
+-- :TunnelVision source treesitter,word works
+vim.cmd("TunnelVision source treesitter,word")
+assert_sources({ "treesitter", "word" }, "command source treesitter,word")
+
+vim.cmd("TunnelVision source lsp,treesitter,word")
+assert_sources({ "lsp", "treesitter", "word" }, "command source lsp,treesitter,word")
+
+-- Restore to known state for subsequent tests
+vim.cmd("TunnelVision source lsp,word")
+assert_sources({ "lsp", "word" }, "restored to lsp,word")
+
 -- Status display uses source= label
 do
   local notify_msg
@@ -440,6 +474,147 @@ if vim.lsp.buf_request_all then
   vim.lsp.buf_request_all = orig_buf_request_all
   restore_clients()
 end
+
+-- Treesitter fallback behavior (plaintext has no parser)
+tunnelvision.setup({ notify = false })
+vim.cmd("enew")
+vim.bo.filetype = "plaintext"
+vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  "local alpha = 1",
+  "local beta = 2",
+  "print(alpha)",
+})
+local ts_fb_buf = vim.api.nvim_get_current_buf()
+vim.api.nvim_win_set_cursor(0, { 1, 7 })
+
+-- sources = { "treesitter" } should only keep the anchor line
+tunnelvision.on({ sources = { "treesitter" } })
+assert_true(next(core.get_buf_state(ts_fb_buf).path_set) ~= nil, "treesitter-only should keep anchor")
+assert_true(core.get_buf_state(ts_fb_buf).path_set[1], "treesitter-only anchor at line 1")
+assert_true(not core.get_buf_state(ts_fb_buf).path_set[3], "treesitter-only should not match line 3")
+local ts_meta = core.get_buf_state(ts_fb_buf).last_compute_meta
+assert_true(ts_meta.fallback_reason == "unavailable", "treesitter-only fallback reason is unavailable")
+vim.cmd("TunnelVision off")
+
+-- sources = { "treesitter", "word" } falls back to word matching
+vim.api.nvim_win_set_cursor(0, { 1, 7 })
+tunnelvision.on({ sources = { "treesitter", "word" } })
+assert_true(core.get_buf_state(ts_fb_buf).path_set[3], "treesitter,word falls back to word matching")
+assert_true(
+  core.get_buf_state(ts_fb_buf).last_compute_meta.fallback_reason == "unavailable",
+  "treesitter,word fallback reason is unavailable"
+)
+vim.cmd("TunnelVision off")
+
+-- tv.combine("lsp", "treesitter"), "word" falls back to word when treesitter unavailable
+vim.api.nvim_win_set_cursor(0, { 1, 7 })
+tunnelvision.on({ sources = { tunnelvision.combine("lsp", "treesitter"), "word" } })
+assert_true(core.get_buf_state(ts_fb_buf).path_set[3], "combine(lsp,treesitter),word falls back to word")
+vim.cmd("TunnelVision off")
+tunnelvision.setup({ notify = false, source = "lsp_else_word" })
+
+-- Treesitter source matches identifier nodes when parser is available
+do
+  tunnelvision.setup({ notify = false })
+  vim.cmd("enew")
+  vim.bo.filetype = "lua"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "local alpha = 1",
+    "local beta = 2",
+    "print(alpha)",
+  })
+
+  local ok_parser, parser = pcall(vim.treesitter.get_parser, 0, "lua")
+  if ok_parser and parser then
+    local ts_buf = vim.api.nvim_get_current_buf()
+
+    -- sources = { "treesitter" } returns identifier lines
+    vim.api.nvim_win_set_cursor(0, { 1, 7 })
+    tunnelvision.on({ sources = { "treesitter" } })
+    assert_true(core.get_buf_state(ts_buf).path_set[1], "treesitter should match line 1 (declaration)")
+    assert_true(core.get_buf_state(ts_buf).path_set[3], "treesitter should match line 3 (usage)")
+    assert_true(not core.get_buf_state(ts_buf).path_set[2], "treesitter should not match line 2 (different symbol)")
+    assert_true(
+      core.get_buf_state(ts_buf).last_compute_meta.fallback_reason == nil,
+      "treesitter should not set fallback_reason on success"
+    )
+    vim.cmd("TunnelVision off")
+
+    -- Treesitter excludes string-only occurrences
+    vim.cmd("enew")
+    vim.bo.filetype = "lua"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+      'local msg = "alpha is here"',
+      "-- alpha in a comment",
+      "local copy = alpha",
+    })
+    local str_buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_win_set_cursor(0, { 3, 10 })
+    tunnelvision.on({ sources = { "treesitter" } })
+    -- alpha on line 3 is an identifier reference
+    assert_true(core.get_buf_state(str_buf).path_set[3], "treesitter should match identifier alpha on line 3")
+    -- alpha on line 1 is inside a string literal, not an identifier node
+    assert_true(
+      not core.get_buf_state(str_buf).path_set[1],
+      "treesitter should not match alpha inside string on line 1"
+    )
+    assert_true(
+      not core.get_buf_state(str_buf).path_set[2],
+      "treesitter should not match alpha inside comment on line 2"
+    )
+    vim.cmd("TunnelVision off")
+
+    -- Treesitter respects scope = "function" vs scope = "buffer"
+    vim.cmd("enew")
+    vim.bo.filetype = "lua"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+      "local function foo()",
+      "  local alpha = 1",
+      "  print(alpha)",
+      "end",
+      "local alpha = 2",
+    })
+    local scope_buf = vim.api.nvim_get_current_buf()
+    -- scope = "function" with cursor inside foo() should only find alpha inside the function
+    vim.api.nvim_win_set_cursor(0, { 2, 10 })
+    tunnelvision.on({ sources = { "treesitter" }, scope = "function" })
+    assert_true(core.get_buf_state(scope_buf).path_set[2], "treesitter function scope should match alpha on line 2")
+    assert_true(core.get_buf_state(scope_buf).path_set[3], "treesitter function scope should match alpha on line 3")
+    -- line 5 (outside function) may or may not be included depending on scope resolution;
+    -- we just verify function scope is narrower than buffer scope
+    local function_scope_matches = vim.tbl_count(core.get_buf_state(scope_buf).path_set)
+    vim.cmd("TunnelVision off")
+
+    -- scope = "buffer" should find alpha everywhere
+    vim.api.nvim_win_set_cursor(0, { 2, 10 })
+    tunnelvision.on({ sources = { "treesitter" }, scope = "buffer" })
+    assert_true(core.get_buf_state(scope_buf).path_set[5], "treesitter buffer scope should match alpha on line 5")
+    local buffer_scope_matches = vim.tbl_count(core.get_buf_state(scope_buf).path_set)
+    assert_true(
+      buffer_scope_matches >= function_scope_matches,
+      "buffer scope should match at least as many lines as function scope"
+    )
+    vim.cmd("TunnelVision off")
+
+    -- combine(lsp, treesitter) fails the combined step when LSP is unavailable
+    vim.cmd("enew")
+    vim.bo.filetype = "lua"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+      "local alpha = 1",
+    })
+    local combine_buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_win_set_cursor(0, { 1, 7 })
+    tunnelvision.on({ sources = { tunnelvision.combine("lsp", "treesitter"), "word" } })
+    -- LSP is unavailable, so combine fails, falls back to word
+    assert_true(core.get_buf_state(combine_buf).path_set[1], "combine(lsp,treesitter) fallback should keep anchor")
+    assert_true(
+      core.get_buf_state(combine_buf).last_compute_meta.used_fallback,
+      "combine(lsp,treesitter) should trigger fallback when LSP unavailable"
+    )
+    vim.cmd("TunnelVision off")
+  end
+end
+tunnelvision.setup({ notify = false, source = "lsp_else_word" })
 
 local custom_fg = 0x778899
 vim.api.nvim_set_hl(0, "TunnelVisionDim", { fg = custom_fg, italic = false })

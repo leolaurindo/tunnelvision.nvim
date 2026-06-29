@@ -164,7 +164,16 @@ local function ensure_commands(api)
       get = core.get_sources_label,
       label = "source",
       set = core.set_source_command,
-      values = { "word", "lsp", "lsp_else_word", "lsp_and_word", "lsp,word" },
+      values = {
+        "word",
+        "lsp",
+        "lsp_else_word",
+        "lsp_and_word",
+        "lsp,word",
+        "treesitter",
+        "treesitter,word",
+        "lsp,treesitter,word",
+      },
     },
     status = {
       desc = "Show tunnel vision status",

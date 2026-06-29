@@ -157,6 +157,13 @@ local function is_function_like(node_type)
     or node_type == "func_literal"
 end
 
+local function is_identifier_like(node_type)
+  return node_type:find("identifier", 1, true)
+    or node_type:find("name", 1, true)
+    or node_type == "variable"
+    or node_type == "field"
+end
+
 local function get_scope_range(bufnr, anchor, scope_mode)
   local total = vim.api.nvim_buf_line_count(bufnr)
   if scope_mode == "buffer" then
@@ -226,6 +233,44 @@ function M.make_lsp_result(reason, lines, used)
     used = used or false,
     reason = reason or "disabled",
   }
+end
+
+local function collect_treesitter_lines(bufnr, symbol, scope)
+  local ok_parser, parser = pcall(vim.treesitter.get_parser, bufnr)
+  if not ok_parser or not parser then
+    return { lines = {}, used = false, reason = "unavailable" }
+  end
+
+  local ok_tree, parsed = pcall(parser.parse, parser)
+  if not ok_tree or not parsed or not parsed[1] then
+    return { lines = {}, used = false, reason = "unavailable" }
+  end
+
+  local root = parsed[1]:root()
+  local lines = {}
+  local scope_start = scope.start_line - 1
+  local scope_end = scope.end_line - 1
+
+  local function walk(node)
+    if is_identifier_like(node:type()) then
+      local text = vim.treesitter.get_node_text(node, bufnr)
+      if text == symbol then
+        local start_row = node:start()
+        if start_row >= scope_start and start_row <= scope_end then
+          lines[start_row + 1] = true
+        end
+      end
+    end
+    for child in node:iter_children() do
+      walk(child)
+    end
+  end
+  walk(root)
+
+  if next(lines) then
+    return { lines = lines, used = true, reason = "ok" }
+  end
+  return { lines = {}, used = false, reason = "no_matches" }
 end
 
 local function collect_lsp_lines(responses, scope)
@@ -370,44 +415,66 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
     fallback_reason = nil,
   }
   local step_index = 0
+  local ts_result
+
+  local function get_treesitter_result()
+    if not ts_result then
+      ts_result = collect_treesitter_lines(bufnr, symbol, scope)
+    end
+    return ts_result
+  end
+
+  local function source_result(name)
+    if name == "word" then
+      return { lines = word_set, used = next(word_set) ~= nil }
+    end
+    if name == "lsp" then
+      return {
+        lines = lsp_result.lines,
+        used = next(lsp_result.lines) ~= nil,
+        reason = lsp_result.reason,
+        used_lsp = true,
+      }
+    end
+    if name == "treesitter" then
+      return get_treesitter_result()
+    end
+    return { lines = {}, used = false, reason = "unavailable" }
+  end
 
   -- Resolve source chain: iterate steps in order, stop at the first success
   for i, step in ipairs(sources) do
     if step.kind == "single" then
-      local lines = (step.name == "word") and word_set or lsp_result.lines
-      if next(lines) then
-        add_set(path_set, lines)
+      local result = source_result(step.name)
+      if result.used then
+        add_set(path_set, result.lines)
         step_index = i
-        if step.name == "lsp" then
-          meta.used_lsp = true
-        end
+        meta.used_lsp = result.used_lsp or false
         break
       end
-      if step.name == "lsp" and not meta.fallback_reason then
-        meta.fallback_reason = lsp_result.reason
+      if not meta.fallback_reason then
+        meta.fallback_reason = result.reason
       end
     elseif step.kind == "combine" then
       local merged = {}
       local all_ok = true
+      local used_lsp = false
       for _, name in ipairs(step.names) do
-        local lines = (name == "word") and word_set or lsp_result.lines
-        if not next(lines) then
+        local result = source_result(name)
+        if not result.used then
           all_ok = false
-          if name == "lsp" and not meta.fallback_reason then
-            meta.fallback_reason = lsp_result.reason
+          if not meta.fallback_reason then
+            meta.fallback_reason = result.reason
           end
           break
         end
-        add_set(merged, lines)
+        used_lsp = used_lsp or result.used_lsp or false
+        add_set(merged, result.lines)
       end
       if all_ok then
         add_set(path_set, merged)
         step_index = i
-        for _, name in ipairs(step.names) do
-          if name == "lsp" then
-            meta.used_lsp = true
-          end
-        end
+        meta.used_lsp = used_lsp
         break
       end
     end

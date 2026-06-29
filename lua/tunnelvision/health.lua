@@ -29,13 +29,20 @@ function M.check()
 
   if pcall(require, "vim.treesitter") then
     vim.health.ok("Tree-sitter runtime available")
+
+    local ok_parser = pcall(vim.treesitter.get_parser, 0)
+    if ok_parser then
+      vim.health.ok("Tree-sitter parser available for current buffer")
+    else
+      vim.health.warn("Tree-sitter parser not available for current buffer; treesitter source will fall back")
+    end
   else
-    vim.health.warn("Tree-sitter runtime not available; scope detection may be less accurate")
+    vim.health.warn("Tree-sitter runtime not available; scope detection and treesitter source may be less accurate")
   end
 
   local clients = get_clients()
   if vim.tbl_isempty(clients) then
-    vim.health.warn("No active LSP clients detected; use source=lsp_else_word for automatic word fallback")
+    vim.health.warn('No active LSP clients detected; use sources = { "lsp", "word" } for automatic word fallback')
   elseif has_doc_highlight(clients) then
     vim.health.ok("At least one active LSP client supports documentHighlight")
   else
