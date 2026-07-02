@@ -12,8 +12,9 @@ TunnelVision dims unrelated lines and keeps attention on the targeted symbol.
 ## Requirements
 
 - Neovim `>= 0.9`
-- Optional (recommended):
-  - Tree-sitter for better scope detection
+- Optional:
+  - Tree-sitter for better scope detection (recommended, specially for LSP-free
+    setups)
   - LSP with `documentHighlight`
 
 ## Installation
@@ -37,8 +38,6 @@ TunnelVision dims unrelated lines and keeps attention on the targeted symbol.
 vim.pack.add({ "https://github.com/leolaurindo/tunnelvision.nvim" })
 require("tunnelvision").setup()
 ```
-
-`vim.pack` is Neovim's built-in plugin manager in newer versions, and it is still experimental upstream.
 
 </details>
 
@@ -68,7 +67,8 @@ use({
 
 ## Quick start
 
-1. Call `require("tunnelvision").setup()` so the `:TunnelVision` command is registered.
+1. Call `require("tunnelvision").setup()` so the `:TunnelVision` command is
+   registered.
 2. Put the cursor on a symbol.
 3. Run `:TunnelVision on`.
 4. Jump with `:TunnelVision next` and `:TunnelVision prev`.
@@ -80,7 +80,7 @@ use({
 :TunnelVision on|retarget|off|toggle|next|prev|refresh|status
 :TunnelVision mode [static|dynamic|flow]
 :TunnelVision scope [function|buffer]
-:TunnelVision source [lsp_else_word|lsp|lsp_and_word|word]
+:TunnelVision source [lsp|treesitter|word|lsp,word|treesitter,word|lsp,treesitter,word]
 :TunnelVision direction [forward|both]
 ```
 
@@ -90,11 +90,22 @@ Run `:help tunnelvision` for full command and option reference.
 
 - `static` (default): track the symbol selected on activation.
 - `dynamic`: retarget as the cursor moves.
-- `flow`: experimental mode that expands to assignment-related lines to follow value flow.
+- `flow`: experimental mode that expands to assignment-related lines to follow
+  value flow.
 
-`scope = "function"` uses Tree-sitter when available, otherwise TunnelVision falls back to the full buffer.
+`scope = "function"` uses Tree-sitter when available, otherwise TunnelVision
+falls back to the full buffer.
 
-`source = "lsp_else_word"` is the default and works well as a general setting.
+`sources = { "lsp", "word" }` is the default and works well as a general setting.
+If LSP is slow or unavailable, TunnelVision falls back to `word` after
+`lsp_timeout_ms`.
+
+Since `0.3.0`, `treesitter` can also be used as a lightweight source fallback:
+`sources = { "lsp", "treesitter", "word" }`.
+
+For LSP-free setups, `sources = { "treesitter", "word" }` pairs well with
+`scope = "function"`, because Tree-sitter keeps matching syntax-aware when a
+parser is available, and word matching remains as a broad fallback.
 
 ## Configuration
 
@@ -107,11 +118,18 @@ Use `setup()` to define the persistent defaults used by `:TunnelVision on`,
 require("tunnelvision").setup({
   mode = "static",
   scope = "function",
-  source = "lsp_else_word",
+  sources = { "lsp", "word" },
+  flow_settings = {
+    direction = "forward",
+    extra_keywords = {},
+  },
+  dim = nil,
 })
 ```
 
-The default config will essentially resolve to your colorscheme Comment color. Set `dim` when you want to choose the color or style used for dimmed lines yourself:
+By default, TunnelVision derives its dim style from your colorscheme's `Comment`
+highlight. Set `dim` when you want to choose the color or style used for dimmed
+lines yourself:
 
 ```lua
 require("tunnelvision").setup({
@@ -125,30 +143,98 @@ Use one-shot overrides when you want a specific keymap or command to activate wi
 different behavior without changing those defaults:
 
 ```lua
-require("tunnelvision").on({ scope = "buffer", source = "word" })
+require("tunnelvision").on({ scope = "buffer", sources = { "word" } })
 ```
 
 This makes it easy to keep a stable default, such as LSP-first matching in the
 current function, while adding focused alternatives like plain word matching across
 the full buffer.
 
+### Source chains
+
+TunnelVision uses `sources` to describe how matching lines are found. The list is
+ordered: each source is tried in sequence and the first source with usable lines
+wins.
+
+```lua
+require("tunnelvision").setup({
+  sources = { "lsp", "treesitter", "word" },
+})
+```
+
+Available source engines:
+
+| Source | Notes |
+| --- | --- |
+| `lsp` | Semantic and async. Best precision when the attached server supports `documentHighlight`. |
+| `treesitter` | Syntax-aware and lightweight. Matches identifier-like nodes and avoids string/comment-only matches where parser support allows it. Not semantic. |
+| `word` | Textual and broad. Language-agnostic fallback. |
+
+LSP is the most semantic source, but it depends on server support and response
+time. If `documentHighlight` is slow or unavailable, TunnelVision falls back to
+the next source in the chain after `lsp_timeout_ms`. For a lightweight setup,
+`sources = { "treesitter", "word" }` with `scope = "function"` often works well:
+Tree-sitter keeps matches syntax-aware, word matching gives a broad fallback, and
+function scope keeps both cheap and focused.
+
+`tv.combine(...)` creates one strict combined source step. Think of it as an
+"all" step: every source inside the combined step must produce usable matches,
+then their line sets are merged. If any member fails or returns no matches, the
+whole combined step fails and the chain continues to the next fallback.
+
+```lua
+local tv = require("tunnelvision")
+
+tv.setup({
+  sources = {
+    tv.combine("lsp", "treesitter"),
+    "treesitter",
+    "word",
+  },
+})
+```
+
+For command usage, comma syntax means fallback order:
+
+```vim
+:TunnelVision source lsp,word
+:TunnelVision source treesitter,word
+:TunnelVision source lsp,treesitter,word
+```
+
+Strict `combine(...)` steps are Lua-only.
+
+### Migration
+
+The old API remains supported without runtime deprecation warnings, but new
+configuration should prefer the composable forms below.
+
+| Old | New |
+| --- | --- |
+| `source = "word"` | `sources = { "word" }` |
+| `source = "lsp"` | `sources = { "lsp" }` |
+| `source = "lsp_else_word"` | `sources = { "lsp", "word" }` |
+| `source = "lsp_and_word"` | `sources = { tv.combine("lsp", "word") }` |
+| `direction = "both"` | `flow_settings = { direction = "both" }` |
+| `extra_keywords = { ... }` | `flow_settings = { extra_keywords = { ... } }` |
+| `dim_hl = "..."` | `dim = ...` |
+
 ### Options
 
 These options can be set as persistent defaults in `setup()`. Core behavior and
-appearance options such as `mode`, `scope`, `source`, `direction`, and `dim` can
-also be passed to `on(opts)` for one-shot activations.
+appearance options such as `mode`, `scope`, `sources`, `flow_settings`, and `dim`
+can also be passed to `on(opts)` for one-shot activations.
 
 | Option | Default | Notes |
 | --- | --- | --- |
 | `mode` | `static` | `dynamic` retargets as you move; `flow` is experimental. |
-| `direction` | `forward` | Flow mode only. Use `both` to include backward influence. |
 | `scope` | `function` | Uses the nearest function-like scope when Tree-sitter is available. |
-| `source` | `lsp_else_word` | LSP first, then word matching when LSP data is unavailable. |
-| `fallback_warn` | `once` | Controls fallback warnings for `lsp_else_word`. |
-| `extra_keywords` | `{}` | Extra identifiers to ignore in flow analysis. |
+| `sources` | `{ "lsp", "word" }` | Ordered fallback chain for source engines. |
+| `flow_settings.direction` | `forward` | Flow mode only. Use `both` to include backward influence. |
+| `flow_settings.extra_keywords` | `{}` | Extra identifiers to ignore in flow analysis. |
+| `fallback_warn` | `once` | Controls warnings when LSP falls back to another source. |
 | `lsp_timeout_ms` | `150` | Timeout for async LSP `documentHighlight` requests. |
-| `dim` | `nil` | Optional color/style definition for dimmed lines. Defaults to the `Comment` foreground. |
-| `dim_hl` | `TunnelVisionDim` | Highlight group used for dimmed lines. |
+| `dim` | `nil` | Optional dim style: `nil` (`Comment` derived), highlight group name, hex foreground, or highlight table. |
 | `max_dim_lines` | `6000` | Skip dimming in very large buffers. |
 | `notify` | `true` | Enable plugin notifications. |
 
@@ -173,7 +259,7 @@ end, { expr = true, silent = true, desc = "TunnelVision off on Esc" })
 
 -- as an example: a different activation as one-shot
 vim.keymap.set("n", "<leader>V", function()
-  tv.on({ scope = "buffer", source = "word" })
+  tv.on({ scope = "buffer", sources = { "word" } })
 end, { desc = "TunnelVision word in buffer" })
 ```
 

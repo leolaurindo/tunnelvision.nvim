@@ -1,4 +1,4 @@
-*tunnelvision.txt*  Focus one symbol path at a time.      Last change: 2026 Apr 15
+*tunnelvision.txt*  Focus one symbol path at a time.      Last change: 2026 Jul 02
 
 ===============================================================================
 CONTENTS                                                    *tunnelvision*
@@ -9,14 +9,15 @@ CONTENTS                                                    *tunnelvision*
 4. Commands ..................................... |tunnelvision-commands|
 5. Configuration ................................ |tunnelvision-config|
 6. Lua API ...................................... |tunnelvision-api|
-7. Health ....................................... |tunnelvision-health|
-8. Troubleshooting .............................. |tunnelvision-troubleshooting|
+7. Sources ...................................... |tunnelvision-sources|
+8. Migration .................................... |tunnelvision-migration|
+9. Health ....................................... |tunnelvision-health|
+10. Troubleshooting ............................. |tunnelvision-troubleshooting|
 
 ===============================================================================
 1. Introduction                                          *tunnelvision-introduction*
 
-TunnelVision dims unrelated lines and keeps attention on the symbol under
-cursor.
+TunnelVision dims unrelated lines and keeps attention on the targeted symbol.
 
 Modes >
   static   Track the symbol selected on activation.
@@ -24,25 +25,15 @@ Modes >
   flow     Experimental mode that expands to assignment-related lines.
 <
 
-Direction is used only in flow mode >
-  forward  Follow forward influence.
-  both     Include backward influence too.
-<
-
-Flow keyword filtering (flow mode only) >
-  extra_keywords  Additional identifiers ignored by flow analysis.
-<
-
 Scope controls where matching is searched >
-  function  Use nearest function-like scope (Tree-sitter); fallback to buffer.
+  function  Use nearest function-like scope when Tree-sitter is available.
   buffer    Use full buffer.
 <
 
-Source controls how matching lines are found >
-  lsp_else_word  Use LSP first, fallback to word matching on failure.
-  lsp            Use LSP only (no word fallback).
-  lsp_and_word   Union word matching and LSP matches.
-  word           Word matching only.
+Source chains describe how matching lines are found. The default is LSP first,
+then word fallback:
+>
+  sources = { "lsp", "word" }
 <
 
 ===============================================================================
@@ -53,6 +44,11 @@ lazy.nvim >lua
     "leolaurindo/tunnelvision.nvim",
     opts = {},
   }
+<
+
+vim.pack >lua
+  vim.pack.add({ "https://github.com/leolaurindo/tunnelvision.nvim" })
+  require("tunnelvision").setup()
 <
 
 mini.deps >lua
@@ -69,16 +65,10 @@ packer.nvim >lua
   })
 <
 
-vim.pack >lua
-  vim.pack.add({ "https://github.com/leolaurindo/tunnelvision.nvim" })
-  require("tunnelvision").setup()
-<
-
 Requirements >
   - Neovim 0.9+
-  - Optional: Tree-sitter for better scope detection
+  - Optional: Tree-sitter for scope detection and the treesitter source
   - Optional: LSP with documentHighlight support
-  - vim.pack users need a newer Neovim with vim.pack available
 <
 
 ===============================================================================
@@ -87,7 +77,6 @@ Requirements >
 Call `require("tunnelvision").setup()` first so `:TunnelVision` is available.
 
   :TunnelVision on
-  :TunnelVision retarget
   :TunnelVision next
   :TunnelVision prev
   :TunnelVision off
@@ -121,7 +110,7 @@ show the current value when called without an argument.
       Recompute the current path.
 
   :TunnelVision status
-      Show the current state, mode, direction, scope, source, and symbol.
+      Show current state, mode, direction, scope, source chain, and symbol.
 
   :TunnelVision mode [static|flow|dynamic]
       Query or set the current mode.
@@ -132,42 +121,67 @@ show the current value when called without an argument.
 
   :TunnelVision scope [function|buffer]
       Query or set the current search scope.
-      `function` uses Tree-sitter when available, else falls back to buffer.
 
-  :TunnelVision source [lsp_else_word|lsp|lsp_and_word|word]
-      Query or set the current symbol source.
+  :TunnelVision source [value]
+      Query or set the current source chain.
+
+      Supported command values include:
+        word
+        lsp
+        treesitter
+        lsp,word
+        treesitter,word
+        lsp,treesitter,word
+
+      Deprecated legacy values remain supported:
+        lsp_else_word
+        lsp_and_word
+
+      Comma syntax means fallback order. Strict `combine(...)` source steps are
+      Lua-only.
 
 ===============================================================================
 5. Configuration                                            *tunnelvision-config*
 
->lua
+Default shape >lua
   require("tunnelvision").setup({
     mode = "static",
-    direction = "forward",
     scope = "function",
-    extra_keywords = {},
-    source = "lsp_else_word",
+    sources = { "lsp", "word" },
+    flow_settings = {
+      direction = "forward",
+      extra_keywords = {},
+    },
     fallback_warn = "once",
     lsp_timeout_ms = 150,
     dim = nil,
-    dim_hl = "TunnelVisionDim",
     max_dim_lines = 6000,
     notify = true,
   })
 <
 
 Options >
-  mode            static | flow | dynamic
-  direction       forward | both
-  scope           function | buffer
-  extra_keywords  flow mode only: list of extra identifiers ignored in flow analysis
-  source          lsp_else_word | lsp | lsp_and_word | word
-  fallback_warn   once | always | never (for lsp_else_word)
-  lsp_timeout_ms  timeout for async LSP documentHighlight requests
-  dim             optional highlight definition for dimmed lines
-  dim_hl          highlight group used for dimmed lines
-  max_dim_lines   skip dimming in very large buffers
-  notify          enable plugin notifications
+  mode                          static | flow | dynamic
+  scope                         function | buffer
+  sources                       ordered source fallback chain
+  flow_settings.direction       forward | both
+  flow_settings.extra_keywords  extra identifiers ignored in flow analysis
+  fallback_warn                 once | always | never
+  lsp_timeout_ms                timeout for async LSP documentHighlight requests
+  dim                           nil, highlight group, #RRGGBB, or highlight table
+  max_dim_lines                 skip dimming in very large buffers
+  notify                        enable plugin notifications
+<
+
+By default, `dim = nil` derives TunnelVision's dim style from your colorscheme's
+`Comment` highlight. Use `dim = "Comment"` only when you want to explicitly copy
+that highlight group.
+
+Dim examples >lua
+  require("tunnelvision").setup({ dim = nil })
+  require("tunnelvision").setup({ dim = "Comment" })
+  require("tunnelvision").setup({ dim = "#565f89" })
+  require("tunnelvision").setup({ dim = { fg = "#565f89", italic = true } })
 <
 
 ===============================================================================
@@ -183,6 +197,8 @@ From `require("tunnelvision")` >
   refresh()
   is_active(bufnr?)
   status(bufnr?)
+  combine(...)
+  get_sources() / set_sources(sources)
   get_mode() / set_mode(mode)
   get_direction() / set_direction(direction)
   get_scope() / set_scope(scope)
@@ -190,15 +206,80 @@ From `require("tunnelvision")` >
   get_source() / set_source(source)
 <
 
-`on(opts)` accepts temporary activation overrides such as `scope`, `source`,
-`mode`, `direction`, and `dim`. These overrides affect that activation without
-changing the defaults set by `setup()` or the runtime setters.
+`on(opts)` accepts one-shot overrides such as `scope`, `sources`, `mode`,
+`flow_settings`, and `dim`. These overrides affect that activation without
+changing defaults set by `setup()` or runtime setters.
 
-`add_keywords(words)` appends identifiers to the `extra_keywords` ignore list at
-runtime. This affects flow analysis only.
+Example >lua
+  local tv = require("tunnelvision")
+  tv.on({ scope = "buffer", sources = { "word" } })
+<
+
+`get_source()` and `set_source(source)` are compatibility APIs for old source
+strings. Prefer `get_sources()` and `set_sources(sources)` for new code.
 
 ===============================================================================
-7. Health                                                  *tunnelvision-health*
+7. Sources                                                *tunnelvision-sources*
+
+Source chains are simple and composable. Each step is tried in order. The first
+step that produces usable lines wins.
+
+Fallback chain >lua
+  require("tunnelvision").setup({
+    sources = { "lsp", "treesitter", "word" },
+  })
+<
+
+Source engines >
+  lsp         Semantic and async when documentHighlight is supported.
+  treesitter  Syntax-aware, parser-based, and not semantic.
+  word        Textual, broad, language-agnostic fallback.
+<
+
+`combine(...)` creates one strict combined source step. It behaves like "all":
+every source inside the step must produce usable matches. If all members succeed,
+their line sets are merged. If any member fails or returns no matches, the whole
+step fails and the chain continues.
+
+Strict combined source step >lua
+  local tv = require("tunnelvision")
+
+  tv.setup({
+    sources = {
+      tv.combine("lsp", "treesitter"),
+      "word",
+    },
+  })
+<
+
+Tree-sitter limitations >
+  - More precise than word matching for syntax, less semantic than LSP.
+  - Does not fully resolve shadowing.
+  - Does not resolve imports, aliases, type inference, or external identity.
+  - Depends on installed parser quality and grammar node names.
+<
+
+===============================================================================
+8. Migration                                            *tunnelvision-migration*
+
+Deprecated APIs remain supported and do not emit runtime deprecation warnings in
+this release. Prefer the new API for new configuration.
+
+Old to new >
+  source = "word"            -> sources = { "word" }
+  source = "lsp"             -> sources = { "lsp" }
+  source = "lsp_else_word"   -> sources = { "lsp", "word" }
+  source = "lsp_and_word"    -> sources = { tv.combine("lsp", "word") }
+  direction = "both"         -> flow_settings = { direction = "both" }
+  extra_keywords = { ... }    -> flow_settings = { extra_keywords = { ... } }
+  dim_hl = "..."             -> dim = ...
+<
+
+There is intentionally no `treesitter_else_word` value. Use explicit fallback
+chains such as `sources = { "treesitter", "word" }`.
+
+===============================================================================
+9. Health                                                  *tunnelvision-health*
 
 Run >
   :checkhealth tunnelvision
@@ -206,17 +287,18 @@ Run >
 
 Checks >
   - Neovim version
-  - Tree-sitter availability
+  - Tree-sitter runtime and parser availability
   - LSP documentHighlight availability
-  - TunnelVision highlight availability
+  - TunnelVision dim highlight availability
 <
 
 ===============================================================================
-8. Troubleshooting                                *tunnelvision-troubleshooting*
+10. Troubleshooting                               *tunnelvision-troubleshooting*
 
 - No symbol under cursor: move to a word identifier before `:TunnelVision on`.
 - Slow or empty LSP mode: try `:TunnelVision source word` to compare.
-- No LSP highlights: use `lsp_else_word` for automatic word fallback.
+- No LSP highlights: use `sources = { "lsp", "word" }` for word fallback.
+- Too many word matches: try `sources = { "treesitter", "word" }`.
 - Function scope behaving like buffer: check Tree-sitter health/status.
 - Flow mode is heuristic, not full dataflow analysis.
 

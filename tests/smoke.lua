@@ -268,7 +268,7 @@ assert_sources({ "lsp", "word" }, "restored to lsp,word")
 do
   local notify_msg
   local orig_notify = core.notify
-  core.notify = function(msg, ...)
+  core.notify = function(msg)
     notify_msg = msg
   end
   vim.cmd("TunnelVision status")
@@ -281,7 +281,7 @@ end
 do
   local notify_msg
   local orig_notify = core.notify
-  core.notify = function(msg, ...)
+  core.notify = function(msg)
     notify_msg = msg
   end
   vim.cmd("TunnelVision source lsp,foo")
@@ -296,7 +296,7 @@ tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "wo
 do
   local msgs = {}
   local orig_notify = core.notify
-  core.notify = function(msg, ...)
+  core.notify = function(msg)
     msgs[#msgs + 1] = msg
   end
   vim.cmd("TunnelVision status")
@@ -350,7 +350,7 @@ assert_true(tunnelvision.get_source() == "lsp_else_word", "restored to lsp_else_
 do
   local notify_calls = {}
   local orig_notify = vim.notify
-  vim.notify = function(msg, ...)
+  vim.notify = function(msg)
     notify_calls[#notify_calls + 1] = msg
   end
   tunnelvision.setup({ notify = true, source = "word" })
