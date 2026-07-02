@@ -14,8 +14,6 @@ local resolver = require("tunnelvision.resolver")
 
 local M = {}
 
--- Defaults ------------------------------------------------------------------
-
 local defaults = {
   mode = "static",
   direction = "forward",
@@ -36,7 +34,7 @@ local defaults = {
 }
 M.defaults = defaults
 
--- Validation tables ---------------------------------------------------------
+-- Validation tables
 
 local valid_modes = { static = true, flow = true, dynamic = true }
 local valid_directions = { forward = true, both = true }
@@ -66,7 +64,7 @@ M.activation_keys = {
   "dim_hl",
 }
 
--- Source-helpers ------------------------------------------------------------
+-- Source-helpers
 
 local function source_step(step)
   if type(step) == "string" and valid_source_names[step] then
@@ -170,7 +168,6 @@ function M.sources_use_lsp(sources)
   return false
 end
 
--- Formatting ----------------------------------------------------------------
 
 function M.format_sources(sources)
   local parts = {}
@@ -184,7 +181,7 @@ function M.format_sources(sources)
   return table.concat(parts, ",")
 end
 
--- Public helpers ------------------------------------------------------------
+-- Public helpers
 
 function M.combine(...)
   return { kind = "combine", names = { ... } }
