@@ -168,7 +168,6 @@ function M.sources_use_lsp(sources)
   return false
 end
 
-
 function M.format_sources(sources)
   local parts = {}
   for _, step in ipairs(sources or {}) do
