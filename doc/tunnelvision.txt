@@ -198,6 +198,7 @@ From `require("tunnelvision")` >
   is_active(bufnr?)
   status(bufnr?)
   combine(...)
+  register_source(name, handler)
   get_sources() / set_sources(sources)
   get_mode() / set_mode(mode)
   get_direction() / set_direction(direction)
@@ -251,6 +252,46 @@ Strict combined source step >lua
     },
   })
 <
+
+Custom sources                                      *tunnelvision-custom-sources*
+
+`register_source(name, handler)` adds a synchronous Lua source. Register it
+before using its name in `sources`. The `assertions` source below is user-defined
+by this example; it is not built in.
+
+Custom source example >lua
+  local tv = require("tunnelvision")
+
+  tv.register_source("assertions", function(ctx)
+    local matches = {}
+    local lines = vim.api.nvim_buf_get_lines(
+      ctx.bufnr,
+      ctx.scope.start_line - 1,
+      ctx.scope.end_line,
+      false
+    )
+
+    for offset, text in ipairs(lines) do
+      local symbol = "%f[%w_]" .. vim.pesc(ctx.symbol) .. "%f[^%w_]"
+      if text:find("assert", 1, true) and text:find(symbol) then
+        matches[ctx.scope.start_line + offset - 1] = true
+      end
+    end
+
+    return matches
+  end)
+
+  tv.setup({ sources = { "lsp", "assertions", "word" } })
+<
+
+The handler context contains `bufnr`, `symbol`, `anchor`, `scope`, `mode`,
+`direction`, and `keywords`. Return a line set such as `{ [3] = true }`.
+Returning `nil`, `false`, an empty table, or raising an error continues to the
+next source. Invalid and out-of-scope line numbers are ignored.
+
+Custom sources work in `combine(...)`. They are synchronous and Lua-only, so
+`:TunnelVision source` does not accept their names. Built-in and legacy source
+names cannot be replaced.
 
 Tree-sitter limitations >
   - More precise than word matching for syntax, less semantic than LSP.

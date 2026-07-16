@@ -263,6 +263,44 @@ vim.keymap.set("n", "<leader>V", function()
 end, { desc = "TunnelVision word in buffer" })
 ```
 
+## Custom sources
+
+Custom sources are synchronous Lua functions that return the lines TunnelVision
+should keep visible. Register the source before using its name in `sources`.
+
+The `assertions` source below is defined entirely by this example; it is not a
+built-in TunnelVision source. It finds assertions that mention the active symbol:
+
+```lua
+local tv = require("tunnelvision")
+
+tv.register_source("assertions", function(ctx)
+  local matches = {}
+  local lines = vim.api.nvim_buf_get_lines(ctx.bufnr, ctx.scope.start_line - 1, ctx.scope.end_line, false)
+
+  for offset, text in ipairs(lines) do
+    if text:find("assert", 1, true) and text:find("%f[%w_]" .. vim.pesc(ctx.symbol) .. "%f[^%w_]") then
+      matches[ctx.scope.start_line + offset - 1] = true
+    end
+  end
+
+  return matches
+end)
+
+tv.setup({
+  sources = { "lsp", "assertions", "word" },
+})
+```
+
+The handler receives `bufnr`, `symbol`, `anchor`, `scope`, `mode`, `direction`,
+and `keywords`. Return a line set such as `{ [3] = true, [8] = true }`.
+Returning `nil`, `false`, an empty table, or raising an error makes the chain
+continue to the next source. Invalid and out-of-scope line numbers are ignored.
+
+Custom sources also work in `tv.combine(...)`. They are synchronous and Lua-only,
+so they are not accepted by `:TunnelVision source`. Built-in and legacy source
+names cannot be replaced.
+
 ## Health
 
 - `:checkhealth tunnelvision`
