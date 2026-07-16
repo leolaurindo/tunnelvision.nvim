@@ -23,10 +23,10 @@ local state = {
   ns = vim.api.nvim_create_namespace("tunnelvision"),
   bufs = {},
   config = vim.deepcopy(config.defaults),
+  custom_sources = {},
   request_seq = 0,
 }
 
-state.keywords = resolver.build_keywords(config.defaults.flow_settings.extra_keywords)
 M.state = state
 
 local refresh_active_buffers = function() end
@@ -94,12 +94,11 @@ function M.configure(opts)
   if opts.extra_keywords ~= nil and (opts.flow_settings == nil or opts.flow_settings.extra_keywords == nil) then
     state.config.flow_settings.extra_keywords = state.config.extra_keywords
   end
-  config.normalize(state.config)
-  state.keywords = resolver.build_keywords(state.config.flow_settings.extra_keywords)
+  config.normalize(state.config, state.custom_sources)
 end
 
 local function activation_config(bufnr, opts)
-  local cfg = config.normalize_activation(opts.config or state.config, opts, bufnr)
+  local cfg = config.normalize_activation(opts.config or state.config, opts, bufnr, state.custom_sources)
   return cfg, resolver.build_keywords(cfg.flow_settings.extra_keywords)
 end
 
@@ -144,7 +143,6 @@ function M.add_keywords(words)
     return false
   end
 
-  state.keywords = resolver.build_keywords(state.config.flow_settings.extra_keywords)
   if state.config.mode == "flow" then
     refresh_active_buffers()
   end
@@ -239,6 +237,7 @@ local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords,
   bs.request_id = nil
   bs.path_set, bs.path_order, bs.last_compute_meta = resolver.compute_path(bufnr, symbol, anchor, scope, {
     direction = cfg.flow_settings.direction,
+    custom_sources = state.custom_sources,
     keywords = keywords,
     lsp_result = lsp_result,
     mode = cfg.mode,
@@ -475,10 +474,25 @@ function M.get_sources()
 end
 
 function M.set_sources(sources)
-  local normalized = config.normalize_sources(sources)
+  local normalized = config.normalize_sources(sources, state.custom_sources)
   state.config.sources = normalized
   state.config.source = config.legacy_source_from_sources(normalized) or config.defaults.source
   refresh_active_buffers_with(state.config)
+end
+
+function M.register_source(name, handler)
+  if
+    type(name) ~= "string"
+    or name == ""
+    or type(handler) ~= "function"
+    or config.valid_source_names[name]
+    or config.valid_sources[name]
+  then
+    return false
+  end
+
+  state.custom_sources[name] = handler
+  return true
 end
 
 -- Compatibility API (deprecated). Returns the legacy source string when the
@@ -536,7 +550,7 @@ function M.set_source(source)
     M.notify("TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, or word", vim.log.levels.ERROR)
     return
   end
-  state.config.sources = config.normalize_sources(config.sources_from_legacy_source(source))
+  state.config.sources = config.normalize_sources(config.sources_from_legacy_source(source), state.custom_sources)
   state.config.source = source
   refresh_active_buffers_with(state.config)
 end

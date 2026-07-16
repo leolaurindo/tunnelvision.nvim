@@ -359,155 +359,257 @@ local function sorted_lines(path_set)
   return out
 end
 
-function M.compute_path(bufnr, symbol, anchor, scope, opts)
-  local keywords = opts.keywords or {}
-  local lsp_result = opts.lsp_result or M.make_lsp_result("disabled")
-  local sources = opts.sources or {}
-
-  -- Determine if word matching or flow analysis is needed
-  local needs_word = false
-  local has_word = false
+local function sources_use(sources, source_name)
   for _, step in ipairs(sources) do
-    if step.kind == "single" then
-      if step.name == "word" then
-        has_word = true
-        needs_word = true
-      end
-    elseif step.kind == "combine" then
-      for _, name in ipairs(step.names) do
-        if name == "word" then
-          has_word = true
-          needs_word = true
-        end
+    if step.name == source_name then
+      return true
+    end
+    for _, name in ipairs(step.names or {}) do
+      if name == source_name then
+        return true
       end
     end
   end
-  local use_flow = opts.mode == "flow" and has_word
+  return false
+end
 
+local function collect_word_context(bufnr, symbol, scope, keywords, collect_matches, collect_flow)
   local word_set = {}
   local line_info = {}
 
-  -- Scan buffer lines for word matches and/or flow analysis
-  if needs_word or use_flow then
-    local lines = vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
-    for idx, raw in ipairs(lines) do
-      local lnum = scope.start_line + idx - 1
-      local cleaned = strip_strings_and_comments(raw)
-      if needs_word and line_has_word(cleaned, symbol) then
-        word_set[lnum] = true
-      end
-      if use_flow then
-        local lhs, rhs = parse_assignment(cleaned, keywords)
-        line_info[#line_info + 1] = {
-          lnum = lnum,
-          ids = collect_identifiers(cleaned, keywords),
-          lhs = lhs,
-          rhs = rhs,
-        }
-      end
+  if not collect_matches and not collect_flow then
+    return word_set, line_info
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
+  for idx, raw in ipairs(lines) do
+    local lnum = scope.start_line + idx - 1
+    local cleaned = strip_strings_and_comments(raw)
+    if collect_matches and line_has_word(cleaned, symbol) then
+      word_set[lnum] = true
+    end
+    if collect_flow then
+      local lhs, rhs = parse_assignment(cleaned, keywords)
+      line_info[#line_info + 1] = {
+        lnum = lnum,
+        ids = collect_identifiers(cleaned, keywords),
+        lhs = lhs,
+        rhs = rhs,
+      }
     end
   end
 
+  return word_set, line_info
+end
+
+local function collect_source_result(name, context)
+  if name == "word" then
+    local used = next(context.word_lines) ~= nil
+    return {
+      lines = context.word_lines,
+      used = used,
+      reason = used and nil or "no_matches",
+      failed_source = name,
+      has_word = true,
+      used_word = true,
+    }
+  end
+  if name == "lsp" then
+    local lines = context.lsp_result.lines or {}
+    local used = next(lines) ~= nil
+    return {
+      lines = lines,
+      used = used,
+      reason = not used and (context.lsp_result.reason == "ok" and "no_matches" or context.lsp_result.reason) or nil,
+      used_lsp = true,
+      failed_source = name,
+    }
+  end
+  if name == "treesitter" then
+    if not context.treesitter_result then
+      context.treesitter_result = collect_treesitter_lines(context.bufnr, context.symbol, context.scope)
+    end
+    context.treesitter_result.failed_source = name
+    return context.treesitter_result
+  end
+  local handler = context.custom_sources[name]
+  if handler then
+    local ok, result = pcall(handler, {
+      anchor = { row = context.anchor.row, col = context.anchor.col },
+      bufnr = context.bufnr,
+      direction = context.direction,
+      keywords = vim.deepcopy(context.keywords),
+      mode = context.mode,
+      scope = { start_line = context.scope.start_line, end_line = context.scope.end_line },
+      symbol = context.symbol,
+    })
+    if not ok or type(result) ~= "table" then
+      return {
+        lines = {},
+        used = false,
+        reason = ok and "no_matches" or "error",
+        failed_source = name,
+        has_custom = true,
+      }
+    end
+
+    local lines = {}
+    local line_count = vim.api.nvim_buf_line_count(context.bufnr)
+    for lnum, included in pairs(result) do
+      if
+        included
+        and type(lnum) == "number"
+        and lnum % 1 == 0
+        and lnum >= context.scope.start_line
+        and lnum <= context.scope.end_line
+        and lnum <= line_count
+      then
+        lines[lnum] = true
+      end
+    end
+    local used = next(lines) ~= nil
+    return {
+      lines = lines,
+      used = used,
+      reason = used and nil or "no_matches",
+      failed_source = name,
+      has_custom = true,
+      used_custom = true,
+    }
+  end
+  return { lines = {}, used = false, reason = "unavailable", failed_source = name }
+end
+
+local function collect_source_step(step, context)
+  if step.kind == "single" then
+    return collect_source_result(step.name, context)
+  end
+
+  local result = {
+    lines = {},
+    used = true,
+    used_lsp = false,
+    used_custom = false,
+    used_word = false,
+    has_custom = false,
+    has_word = false,
+  }
+  for _, name in ipairs(step.names) do
+    local source = collect_source_result(name, context)
+    result.has_custom = result.has_custom or source.has_custom or false
+    result.has_word = result.has_word or source.has_word or false
+    if not source.used then
+      return {
+        lines = {},
+        used = false,
+        reason = source.reason,
+        failed_source = source.failed_source,
+        has_custom = result.has_custom,
+        has_word = result.has_word,
+      }
+    end
+    add_set(result.lines, source.lines)
+    result.used_lsp = result.used_lsp or source.used_lsp or false
+    result.used_custom = result.used_custom or source.used_custom or false
+    result.used_word = result.used_word or source.used_word or false
+  end
+  return result
+end
+
+local function source_step_label(step)
+  if step.kind == "combine" then
+    return "combine(" .. table.concat(step.names, ",") .. ")"
+  end
+  return step.name
+end
+
+local function resolve_source_chain(sources, context)
   local path_set = {}
   local meta = {
+    used_source = nil,
+    failed_sources = {},
+    fallback_source = nil,
     used_lsp = false,
+    used_custom = false,
+    used_word = false,
+    flow_eligible = true,
     used_fallback = false,
     fallback_reason = nil,
   }
-  local step_index = 0
-  local ts_result
 
-  local function get_treesitter_result()
-    if not ts_result then
-      ts_result = collect_treesitter_lines(bufnr, symbol, scope)
-    end
-    return ts_result
-  end
-
-  local function source_result(name)
-    if name == "word" then
-      return { lines = word_set, used = next(word_set) ~= nil }
-    end
-    if name == "lsp" then
-      return {
-        lines = lsp_result.lines,
-        used = next(lsp_result.lines) ~= nil,
-        reason = lsp_result.reason,
-        used_lsp = true,
-      }
-    end
-    if name == "treesitter" then
-      return get_treesitter_result()
-    end
-    return { lines = {}, used = false, reason = "unavailable" }
-  end
-
-  -- Resolve source chain: iterate steps in order, stop at the first success
   for i, step in ipairs(sources) do
-    if step.kind == "single" then
-      local result = source_result(step.name)
-      if result.used then
-        add_set(path_set, result.lines)
-        step_index = i
-        meta.used_lsp = result.used_lsp or false
-        break
-      end
-      if not meta.fallback_reason then
-        meta.fallback_reason = result.reason
-      end
-    elseif step.kind == "combine" then
-      local merged = {}
-      local all_ok = true
-      local used_lsp = false
-      for _, name in ipairs(step.names) do
-        local result = source_result(name)
-        if not result.used then
-          all_ok = false
-          if not meta.fallback_reason then
-            meta.fallback_reason = result.reason
-          end
-          break
-        end
-        used_lsp = used_lsp or result.used_lsp or false
-        add_set(merged, result.lines)
-      end
-      if all_ok then
-        add_set(path_set, merged)
-        step_index = i
-        meta.used_lsp = used_lsp
-        break
-      end
+    local result = collect_source_step(step, context)
+    if result.used then
+      add_set(path_set, result.lines)
+      meta.used_source = source_step_label(step)
+      meta.used_lsp = result.used_lsp or false
+      meta.used_custom = result.used_custom or false
+      meta.used_word = result.used_word or false
+      meta.flow_eligible = not meta.used_custom or meta.used_word
+      meta.used_fallback = i > 1
+      return path_set, meta
+    end
+    if step.kind == "combine" and result.has_custom then
+      meta.flow_eligible = false
+    elseif step.kind == "single" and step.name == "word" then
+      meta.flow_eligible = true
+    end
+    meta.failed_sources[#meta.failed_sources + 1] = source_step_label(step)
+    if not meta.fallback_reason then
+      meta.fallback_reason = result.reason
+      meta.fallback_source = result.failed_source
     end
   end
 
-  if step_index > 1 then
-    meta.used_fallback = true
-  end
+  return path_set, meta
+end
 
+local function expand_flow(path_set, symbol, line_info, direction)
   -- Flow expansion runs after source resolution, using the selected line set.
   -- Flow mode grows the tracked identifier set until it reaches a fixed point
   -- or hits a small safety bound. This keeps chained assignments like
   -- `a = b; c = a` connected without letting pathological buffers loop forever.
-  if use_flow then
-    local tracked = { [symbol] = true }
-    local changed, guard = true, 0
-    while changed and guard < FLOW_MAX_ITER do
-      changed = false
-      guard = guard + 1
-      for _, info in ipairs(line_info) do
-        local lhs_hit = info.lhs and set_intersects(info.lhs, tracked) or false
-        local rhs_hit = info.rhs and set_intersects(info.rhs, tracked) or false
-        if lhs_hit or rhs_hit or set_intersects(info.ids, tracked) then
-          path_set[info.lnum] = true
-        end
-        if rhs_hit and info.lhs then
-          changed = add_set(tracked, info.lhs) or changed
-        end
-        if opts.direction == "both" and lhs_hit and info.rhs then
-          changed = add_set(tracked, info.rhs) or changed
-        end
+  local tracked = { [symbol] = true }
+  local changed, guard = true, 0
+  while changed and guard < FLOW_MAX_ITER do
+    changed = false
+    guard = guard + 1
+    for _, info in ipairs(line_info) do
+      local lhs_hit = info.lhs and set_intersects(info.lhs, tracked) or false
+      local rhs_hit = info.rhs and set_intersects(info.rhs, tracked) or false
+      if lhs_hit or rhs_hit or set_intersects(info.ids, tracked) then
+        path_set[info.lnum] = true
+      end
+      if rhs_hit and info.lhs then
+        changed = add_set(tracked, info.lhs) or changed
+      end
+      if direction == "both" and lhs_hit and info.rhs then
+        changed = add_set(tracked, info.rhs) or changed
       end
     end
+  end
+end
+
+function M.compute_path(bufnr, symbol, anchor, scope, opts)
+  local sources = opts.sources or {}
+  local uses_word = sources_use(sources, "word")
+  local use_flow = opts.mode == "flow" and uses_word
+  local word_lines, line_info = collect_word_context(bufnr, symbol, scope, opts.keywords or {}, uses_word, use_flow)
+  local path_set, meta = resolve_source_chain(sources, {
+    anchor = anchor,
+    bufnr = bufnr,
+    custom_sources = opts.custom_sources or {},
+    direction = opts.direction,
+    keywords = opts.keywords or {},
+    lsp_result = opts.lsp_result or M.make_lsp_result("disabled"),
+    mode = opts.mode,
+    scope = scope,
+    symbol = symbol,
+    word_lines = word_lines,
+  })
+
+  if use_flow and meta.flow_eligible then
+    expand_flow(path_set, symbol, line_info, opts.direction)
   end
 
   path_set[anchor.row + 1] = true

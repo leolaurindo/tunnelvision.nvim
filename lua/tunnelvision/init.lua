@@ -78,6 +78,10 @@ function M.combine(...)
   return core.combine(...)
 end
 
+function M.register_source(name, handler)
+  return core.register_source(name, handler)
+end
+
 function M.get_sources()
   return core.get_sources()
 end

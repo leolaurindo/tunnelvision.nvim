@@ -82,7 +82,6 @@ assert_true(tunnelvision.add_keywords({ "sentinel" }), "add_keywords appends to 
 assert_true(core.state.config.flow_settings.extra_keywords[1] == "sentinel", "add_keywords stored in flow_settings")
 -- Reset: clear extra_keywords for subsequent tests
 core.state.config.flow_settings.extra_keywords = {}
-core.state.keywords = require("tunnelvision.resolver").build_keywords({})
 
 -- set_direction updates flow_settings.direction
 core.set_direction("both")
@@ -359,6 +358,139 @@ do
   end
   vim.notify = orig_notify
 end
+
+-- Custom synchronous sources participate in source chains
+do
+  assert_true(not tunnelvision.register_source("", function() end), "empty custom source name is rejected")
+  assert_true(not tunnelvision.register_source("custom_invalid"), "custom source handler must be a function")
+  assert_true(not tunnelvision.register_source("lsp", function() end), "built-in source cannot be overridden")
+  assert_true(
+    not tunnelvision.register_source("lsp_else_word", function() end),
+    "legacy source value cannot be overridden"
+  )
+
+  tunnelvision.setup({ notify = false, sources = { "custom_missing" } })
+  assert_sources({ "lsp", "word" }, "unregistered custom source falls back to default normalization")
+
+  local handler_context
+  assert_true(
+    tunnelvision.register_source("custom_hit", function(ctx)
+      handler_context = ctx
+      ctx.anchor.row = 99
+      ctx.scope.start_line = 99
+      return { [0] = true, [1.5] = true, [2] = true, [999] = true }
+    end),
+    "custom source registers"
+  )
+  assert_true(
+    tunnelvision.register_source("custom_empty", function()
+      return {}
+    end),
+    "empty custom source registers"
+  )
+  assert_true(
+    tunnelvision.register_source("custom_error", function()
+      error("custom source failure")
+    end),
+    "erroring custom source registers"
+  )
+
+  tunnelvision.setup({
+    notify = false,
+    sources = { "custom_hit" },
+    scope = "buffer",
+    mode = "flow",
+    flow_settings = { direction = "both", extra_keywords = { "sentinel" } },
+  })
+  vim.cmd("enew")
+  vim.bo.filetype = "lua"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "local alpha = 1",
+    "local beta = alpha",
+    "print(beta)",
+  })
+  local custom_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  vim.cmd("TunnelVision on")
+  local custom_state = core.get_buf_state(custom_buf)
+  assert_true(custom_state.path_set[2], "custom source adds valid returned line")
+  assert_true(not custom_state.path_set[3], "custom source does not add unrelated word line")
+  assert_true(vim.tbl_count(custom_state.path_set) == 2, "custom source ignores invalid lines")
+  assert_true(custom_state.anchor.row == 0 and custom_state.scope.start_line == 1, "custom context is isolated")
+  assert_true(handler_context.bufnr == custom_buf and handler_context.symbol == "alpha", "custom context identity")
+  assert_true(handler_context.mode == "flow" and handler_context.direction == "both", "custom context mode")
+  assert_true(handler_context.keywords.sentinel, "custom context keywords")
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.on({ sources = { "custom_hit", "word" }, scope = "buffer" })
+  assert_true(core.get_buf_state(custom_buf).path_set[2], "successful custom source wins before word fallback")
+  assert_true(
+    not core.get_buf_state(custom_buf).path_set[3],
+    "unused word fallback does not flow-expand successful custom source"
+  )
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.on({ sources = { "custom_empty", "word" }, scope = "buffer" })
+  assert_true(core.get_buf_state(custom_buf).path_set[3], "empty custom source falls back to word")
+  assert_true(core.get_buf_state(custom_buf).last_compute_meta.used_source == "word", "custom fallback metadata")
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.on({ sources = { "custom_error", "word" }, scope = "buffer" })
+  assert_true(core.get_buf_state(custom_buf).path_set[3], "erroring custom source falls back without crashing")
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.on({ sources = { tunnelvision.combine("custom_hit", "word") }, scope = "buffer" })
+  assert_true(core.get_buf_state(custom_buf).path_set[2], "combined custom source includes custom lines")
+  assert_true(core.get_buf_state(custom_buf).path_set[3], "combined custom source includes word lines")
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.on({ sources = { tunnelvision.combine("custom_empty", "word") }, scope = "buffer" })
+  assert_true(
+    not core.get_buf_state(custom_buf).path_set[3],
+    "failed custom combine does not flow-expand member word lines"
+  )
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.on({
+    sources = { tunnelvision.combine("custom_empty", "word"), "word" },
+    scope = "buffer",
+  })
+  assert_true(core.get_buf_state(custom_buf).path_set[3], "word fallback after failed custom combine expands flow")
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.on({
+    sources = { tunnelvision.combine("custom_empty", "word"), "custom_hit" },
+    scope = "buffer",
+  })
+  local failed_combine_state = core.get_buf_state(custom_buf)
+  assert_true(failed_combine_state.path_set[2], "failed custom combine uses later source")
+  assert_true(not failed_combine_state.path_set[3], "failed custom combine does not leak partial word lines")
+  assert_true(
+    failed_combine_state.last_compute_meta.fallback_source == "custom_empty",
+    "custom combine failure metadata"
+  )
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+  assert_true(
+    tunnelvision.register_source("custom_late", function()
+      return { [2] = true }
+    end),
+    "custom source registers after setup"
+  )
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  tunnelvision.on({ sources = { "custom_late" } })
+  assert_true(core.get_buf_state(custom_buf).path_set[2], "late custom source works as one-shot override")
+  assert_sources({ "word" }, "one-shot late custom source does not change global sources")
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.set_sources({ "custom_late" })
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  vim.cmd("TunnelVision on")
+  assert_true(core.get_buf_state(custom_buf).path_set[2], "late custom source works with set_sources")
+  vim.cmd("TunnelVision off")
+end
+
 tunnelvision.setup({ notify = false, source = "lsp", scope = "buffer" })
 vim.cmd("enew")
 vim.bo.filetype = "lua"
@@ -543,6 +675,11 @@ if vim.lsp.buf_request_all then
   assert_true(core.get_buf_state(lsp_buf).pending, "stale LSP response should be ignored")
   assert_true(core.get_buf_state(lsp_buf).symbol == "alpha", "stale response should not retarget symbol")
 
+  local notify_calls = 0
+  local orig_notify = core.notify
+  core.notify = function()
+    notify_calls = notify_calls + 1
+  end
   callbacks[2]({
     [1] = {
       result = {
@@ -552,6 +689,10 @@ if vim.lsp.buf_request_all then
   })
   assert_true(not core.get_buf_state(lsp_buf).pending, "current LSP response should resolve pending state")
   assert_true(core.get_buf_state(lsp_buf).path_set[2], "resolved LSP response should update path")
+  assert_true(core.get_buf_state(lsp_buf).last_compute_meta.used_source == "lsp", "first lsp source selected")
+  assert_true(not core.get_buf_state(lsp_buf).last_compute_meta.used_fallback, "first lsp source is not fallback")
+  assert_true(notify_calls == 0, "successful first lsp source does not warn")
+  core.notify = orig_notify
 
   vim.api.nvim_win_set_cursor(0, { 2, 7 })
   vim.cmd("TunnelVision on")
@@ -604,9 +745,89 @@ if vim.lsp.buf_request_all then
   assert_true(not core.get_buf_state(lsp_buf).pending, "empty combined source should resolve pending state")
   assert_true(core.get_buf_state(lsp_buf).path_set[2], "empty combined source should keep anchor line")
   assert_true(not core.get_buf_state(lsp_buf).path_set[3], "empty combined source should not fallback to word")
+  assert_true(
+    core.get_buf_state(lsp_buf).last_compute_meta.fallback_reason == "no_matches",
+    "empty lsp result records no_matches"
+  )
+  assert_true(
+    core.get_buf_state(lsp_buf).last_compute_meta.fallback_source == "lsp",
+    "empty lsp result records failed member"
+  )
+
+  tunnelvision.setup({
+    notify = false,
+    sources = { tunnelvision.combine("lsp", "treesitter"), "word" },
+    lsp_timeout_ms = 1000,
+  })
+  vim.cmd("TunnelVision off")
+  vim.bo.filetype = "plaintext"
+  vim.api.nvim_win_set_cursor(0, { 2, 7 })
+  vim.cmd("TunnelVision on")
+  assert_true(#callbacks == 7, "expected combined source request for later-member failure")
+  callbacks[7]({
+    [1] = {
+      result = {
+        { range = { start = { line = 1 }, ["end"] = { line = 1 } } },
+      },
+    },
+  })
+  local combined_later_meta = core.get_buf_state(lsp_buf).last_compute_meta
+  assert_true(combined_later_meta.used_source == "word", "later combined failure falls back to word")
+  assert_true(combined_later_meta.fallback_source == "treesitter", "later combined failure records member")
+  assert_true(combined_later_meta.failed_sources[1] == "combine(lsp,treesitter)", "later combined failure records step")
 
   vim.lsp.buf_request_all = orig_buf_request_all
   restore_clients()
+end
+
+-- Fallback metadata and warnings remain stable when LSP is unavailable
+do
+  local messages = {}
+  local orig_notify = core.notify
+  core.notify = function(msg)
+    messages[#messages + 1] = msg
+  end
+
+  tunnelvision.setup({ notify = true, source = "lsp_else_word", fallback_warn = "once", scope = "buffer" })
+  vim.cmd("enew")
+  vim.bo.filetype = "plaintext"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "local alpha = 1",
+    "print(alpha)",
+  })
+  local fallback_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  vim.cmd("TunnelVision on")
+
+  local fallback_meta = core.get_buf_state(fallback_buf).last_compute_meta
+  assert_true(fallback_meta.used_source == "word", "fallback metadata records selected word source")
+  assert_true(fallback_meta.failed_sources[1] == "lsp", "fallback metadata records failed lsp source")
+  assert_true(fallback_meta.fallback_source == "lsp", "fallback metadata records failure source")
+  assert_true(fallback_meta.used_fallback, "fallback metadata marks fallback use")
+  assert_true(messages[1] and messages[1]:find("falling back to word matching"), "default fallback warning")
+
+  core.activate(fallback_buf, { force = true, silent = false, symbol = "alpha", cursor = { 1, 7 } })
+  assert_true(#messages == 1, "fallback_warn once only warns once per buffer")
+
+  vim.cmd("TunnelVision off")
+  messages = {}
+  tunnelvision.setup({ notify = true, source = "word", scope = "buffer" })
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  vim.cmd("TunnelVision on")
+  assert_true(#messages == 0, "successful first source does not warn")
+
+  vim.cmd("TunnelVision off")
+  tunnelvision.setup({ notify = true, source = "lsp", scope = "buffer" })
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  vim.cmd("TunnelVision on")
+
+  local strict_meta = core.get_buf_state(fallback_buf).last_compute_meta
+  assert_true(strict_meta.used_source == nil, "strict lsp metadata has no selected source")
+  assert_true(strict_meta.failed_sources[1] == "lsp", "strict lsp metadata records failed source")
+  assert_true(messages[1] and messages[1]:find("strict LSP source"), "strict lsp warning")
+
+  vim.cmd("TunnelVision off")
+  core.notify = orig_notify
 end
 
 -- Treesitter fallback behavior (plaintext has no parser)
@@ -644,6 +865,13 @@ vim.cmd("TunnelVision off")
 vim.api.nvim_win_set_cursor(0, { 1, 7 })
 tunnelvision.on({ sources = { tunnelvision.combine("lsp", "treesitter"), "word" } })
 assert_true(core.get_buf_state(ts_fb_buf).path_set[3], "combine(lsp,treesitter),word falls back to word")
+local combined_meta = core.get_buf_state(ts_fb_buf).last_compute_meta
+assert_true(combined_meta.used_source == "word", "combined fallback metadata records selected word source")
+assert_true(
+  combined_meta.failed_sources[1] == "combine(lsp,treesitter)",
+  "combined fallback metadata records failed combined step"
+)
+assert_true(combined_meta.fallback_source == "lsp", "combined fallback metadata records failed member")
 vim.cmd("TunnelVision off")
 tunnelvision.setup({ notify = false, source = "lsp_else_word" })
 

@@ -66,19 +66,23 @@ M.activation_keys = {
 
 -- Source-helpers
 
-local function source_step(step)
-  if type(step) == "string" and valid_source_names[step] then
+local function is_source_name(name, custom_sources)
+  return valid_source_names[name] or type(custom_sources) == "table" and type(custom_sources[name]) == "function"
+end
+
+local function source_step(step, custom_sources)
+  if type(step) == "string" and is_source_name(step, custom_sources) then
     return { kind = "single", name = step }
   end
 
-  if type(step) == "table" and step.kind == "single" and valid_source_names[step.name] then
+  if type(step) == "table" and step.kind == "single" and is_source_name(step.name, custom_sources) then
     return { kind = "single", name = step.name }
   end
 
   if type(step) == "table" and step.kind == "combine" and type(step.names) == "table" and #step.names > 0 then
     local names = {}
     for _, name in ipairs(step.names) do
-      if not valid_source_names[name] then
+      if not is_source_name(name, custom_sources) then
         return nil
       end
       names[#names + 1] = name
@@ -99,21 +103,21 @@ function M.sources_from_legacy_source(source)
   return { "lsp", "word" }
 end
 
-function M.normalize_sources(sources)
+function M.normalize_sources(sources, custom_sources)
   local out = {}
   if type(sources) ~= "table" then
-    return M.normalize_sources(defaults.sources)
+    return M.normalize_sources(defaults.sources, custom_sources)
   end
 
   for _, step in ipairs(sources) do
-    local normalized = source_step(step)
+    local normalized = source_step(step, custom_sources)
     if not normalized then
-      return M.normalize_sources(defaults.sources)
+      return M.normalize_sources(defaults.sources, custom_sources)
     end
     out[#out + 1] = normalized
   end
 
-  return #out > 0 and out or M.normalize_sources(defaults.sources)
+  return #out > 0 and out or M.normalize_sources(defaults.sources, custom_sources)
 end
 
 function M.get_sources_copy(sources)
@@ -186,7 +190,7 @@ function M.combine(...)
   return { kind = "combine", names = { ... } }
 end
 
-function M.normalize(cfg)
+function M.normalize(cfg, custom_sources)
   if not valid_modes[cfg.mode] then
     cfg.mode = defaults.mode
   end
@@ -197,10 +201,12 @@ function M.normalize(cfg)
     cfg.scope = defaults.scope
   end
   if cfg.sources ~= nil then
-    cfg.sources = M.normalize_sources(cfg.sources)
+    cfg.sources = M.normalize_sources(cfg.sources, custom_sources)
   else
-    cfg.sources =
-      M.normalize_sources(valid_sources[cfg.source] and M.sources_from_legacy_source(cfg.source) or defaults.sources)
+    cfg.sources = M.normalize_sources(
+      valid_sources[cfg.source] and M.sources_from_legacy_source(cfg.source) or defaults.sources,
+      custom_sources
+    )
   end
   cfg.source = M.legacy_source_from_sources(cfg.sources) or defaults.source
   if not valid_fallback_warn[cfg.fallback_warn] then
@@ -242,7 +248,7 @@ function M.normalize(cfg)
   cfg.lsp_timeout_ms = math.max(1, tonumber(cfg.lsp_timeout_ms) or defaults.lsp_timeout_ms)
 end
 
-function M.normalize_activation(base_config, opts, bufnr)
+function M.normalize_activation(base_config, opts, bufnr, custom_sources)
   local cfg = vim.deepcopy(base_config)
   for _, key in ipairs(M.activation_keys) do
     if opts[key] ~= nil then
@@ -271,7 +277,7 @@ function M.normalize_activation(base_config, opts, bufnr)
   if opts.dim ~= nil and opts.dim_hl == nil and opts.config == nil then
     cfg.dim_hl = ("TunnelVisionDim%d"):format(bufnr)
   end
-  M.normalize(cfg)
+  M.normalize(cfg, custom_sources)
   return cfg
 end
 
