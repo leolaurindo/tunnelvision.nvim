@@ -277,11 +277,21 @@ The option is opt-in and degrades silently without a parser.
 | `"statement"` | Walk Tree-sitter from symbol upward, pick first safe declaration or statement node. | Line-only behavior when no parser, no safe node, or node is a broad block (`if_statement`, `class_declaration`, etc.). |
 | `function` | User-defined. Receives `{ bufnr, symbol, line, col, scope, node }`. | `nil` return means keep only the matched line. Errors caught with `pcall`. |
 
-## Suggested keymaps
+## Suggested defaults and keymaps
 
 ```lua
 local tv = require("tunnelvision")
 
+tv.setup({
+  sources = { "lsp", "treesitter", "word" },
+  visible_context = "statement",
+  preserve_scope_heads = true,
+})
+```
+
+Keymaps:
+
+```lua
 vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
 -- or vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision toggle<CR>", { desc = "TunnelVision toggle" })
 vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
