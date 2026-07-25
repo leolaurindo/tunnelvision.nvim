@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Added `register_source(name, handler)` for custom synchronous Lua sources in
   fallback chains and strict combined source steps.
+- Added `visible_context` option (`"line"`, `"statement"`, or custom function)
+  that controls what stays undimmed beyond matched path lines. `"statement"`
+  uses Tree-sitter best-effort expansion to keep the containing declaration or
+  statement visible; it falls back silently to line-only behavior when no parser
+  or no safe node is available.
+- Added `preserve_scope_heads` option that, when enabled, keeps enclosing `if`,
+  `for`, `while`, and function header lines undimmed. Off by default.
 
 ### Changed
 - Refactored internal source resolution without changing public behavior.

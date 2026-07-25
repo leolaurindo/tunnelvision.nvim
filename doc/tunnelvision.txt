@@ -10,9 +10,10 @@ CONTENTS                                                    *tunnelvision*
 5. Configuration ................................ |tunnelvision-config|
 6. Lua API ...................................... |tunnelvision-api|
 7. Sources ...................................... |tunnelvision-sources|
-8. Migration .................................... |tunnelvision-migration|
-9. Health ....................................... |tunnelvision-health|
-10. Troubleshooting ............................. |tunnelvision-troubleshooting|
+8. Visible context .............................. |tunnelvision-visible-context|
+9. Migration .................................... |tunnelvision-migration|
+10. Health ....................................... |tunnelvision-health|
+11. Troubleshooting .............................. |tunnelvision-troubleshooting|
 
 ===============================================================================
 1. Introduction                                          *tunnelvision-introduction*
@@ -155,6 +156,8 @@ Default shape >lua
     fallback_warn = "once",
     lsp_timeout_ms = 150,
     dim = nil,
+    visible_context = "line",
+    preserve_scope_heads = false,
     max_dim_lines = 6000,
     notify = true,
   })
@@ -169,6 +172,8 @@ Options >
   fallback_warn                 once | always | never
   lsp_timeout_ms                timeout for async LSP documentHighlight requests
   dim                           nil, highlight group, #RRGGBB, or highlight table
+  visible_context               line | statement | function
+  preserve_scope_heads          boolean, off by default
   max_dim_lines                 skip dimming in very large buffers
   notify                        enable plugin notifications
 <
@@ -182,6 +187,67 @@ Dim examples >lua
   require("tunnelvision").setup({ dim = "Comment" })
   require("tunnelvision").setup({ dim = "#565f89" })
   require("tunnelvision").setup({ dim = { fg = "#565f89", italic = true } })
+<
+
+===============================================================================
+8. Visible context                       *tunnelvision-visible-context*
+
+`visible_context` controls what stays undimmed beyond the source/flow path
+lines. It is a rendering concern, separate from how matches are found.
+
+Options >
+  line        matched lines only (default, current behavior)
+  statement   keep the containing statement or declaration undimmed
+  function    user-provided custom context callback
+<
+
+`visible_context = "statement"` uses Tree-sitter to find the nearest containing
+statement or declaration node. This is best-effort and language-agnostic —
+there is no universal "statement" node type, so the heuristic walks ancestors
+and returns the first safe declaration or statement node.
+
+Broad nodes are intentionally excluded to avoid revealing too much code:
+function bodies, class definitions, and large control-flow blocks
+(if/for/while/switch) are rejected. When no parser is available or no safe node
+is found, the feature degrades silently to line-only behavior.
+
+`preserve_scope_heads` (off by default) adds the start lines of enclosing
+`if`, `for`, `while`, and function headers to the visible context. Only actual
+path lines trigger scope-head collection. Preserved heads are never navigation
+targets. Degrades silently without a parser.
+
+Statement context example >lua
+  local tv = require("tunnelvision")
+
+  tv.setup({
+    visible_context = "statement",
+  })
+
+  -- Now when you activate on a symbol inside a multi-line call,
+  -- the full call statement stays undimmed.
+
+  tv.setup({
+    visible_context = "statement",
+    preserve_scope_heads = true,
+  })
+
+  -- Enclosing if/for/while/function headers also stay undimmed.
+<
+
+Custom context function >lua
+  tv.setup({
+    visible_context = function(ctx)
+      -- ctx: { bufnr, symbol, line, col, scope, node }
+      return { start_line = ctx.line - 1, end_line = ctx.line + 1 }
+    end,
+  })
+<
+
+Best-effort fallback >
+  visible_context    fallback
+  "line"             N/A — always works
+  "statement"        line-only when no parser or no safe node found
+  function           line-only when nil returned or error caught by pcall
 <
 
 ===============================================================================
@@ -301,7 +367,7 @@ Tree-sitter limitations >
 <
 
 ===============================================================================
-8. Migration                                            *tunnelvision-migration*
+9. Migration                                            *tunnelvision-migration*
 
 Deprecated APIs remain supported and do not emit runtime deprecation warnings in
 this release. Prefer the new API for new configuration.
@@ -320,7 +386,7 @@ There is intentionally no `treesitter_else_word` value. Use explicit fallback
 chains such as `sources = { "treesitter", "word" }`.
 
 ===============================================================================
-9. Health                                                  *tunnelvision-health*
+10. Health                                                  *tunnelvision-health*
 
 Run >
   :checkhealth tunnelvision
@@ -334,7 +400,7 @@ Checks >
 <
 
 ===============================================================================
-10. Troubleshooting                               *tunnelvision-troubleshooting*
+11. Troubleshooting                         *tunnelvision-troubleshooting*
 
 - No symbol under cursor: move to a word identifier before `:TunnelVision on`.
 - Slow or empty LSP mode: try `:TunnelVision source word` to compare.

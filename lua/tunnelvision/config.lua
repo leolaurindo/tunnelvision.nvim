@@ -26,6 +26,8 @@ local defaults = {
   source = "lsp_else_word",
   sources = { "lsp", "word" },
   fallback_warn = "once",
+  visible_context = "line",
+  preserve_scope_heads = false,
   dim = nil,
   dim_hl = "TunnelVisionDim",
   max_dim_lines = 6000,
@@ -41,9 +43,11 @@ local valid_directions = { forward = true, both = true }
 local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
 local valid_source_names = { lsp = true, word = true, treesitter = true }
+local valid_visible_contexts = { line = true, statement = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
 
 M.valid_modes = valid_modes
+M.valid_visible_contexts = valid_visible_contexts
 M.valid_directions = valid_directions
 M.valid_scopes = valid_scopes
 M.valid_sources = valid_sources
@@ -62,6 +66,8 @@ M.activation_keys = {
   "lsp_timeout_ms",
   "dim",
   "dim_hl",
+  "visible_context",
+  "preserve_scope_heads",
 }
 
 -- Source-helpers
@@ -199,6 +205,9 @@ function M.normalize(cfg, custom_sources)
   end
   if not valid_scopes[cfg.scope] then
     cfg.scope = defaults.scope
+  end
+  if not valid_visible_contexts[cfg.visible_context] and type(cfg.visible_context) ~= "function" then
+    cfg.visible_context = defaults.visible_context
   end
   if cfg.sources ~= nil then
     cfg.sources = M.normalize_sources(cfg.sources, custom_sources)

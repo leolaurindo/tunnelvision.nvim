@@ -50,6 +50,7 @@ function M.get_buf_state(bufnr)
     scope = nil,
     path_set = {},
     path_order = {},
+    context_set = {},
     warned_lsp_fallback = false,
     warned_lsp_strict = false,
     warned_large_buffer = false,
@@ -112,6 +113,8 @@ local function configs_equal(a, b)
     and a.fallback_warn == b.fallback_warn
     and a.lsp_timeout_ms == b.lsp_timeout_ms
     and a.dim_hl == b.dim_hl
+    and a.visible_context == b.visible_context
+    and a.preserve_scope_heads == b.preserve_scope_heads
     and vim.deep_equal(a.dim, b.dim)
     and vim.deep_equal(a.flow_settings.extra_keywords, b.flow_settings.extra_keywords)
 end
@@ -243,6 +246,7 @@ local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords,
     mode = cfg.mode,
     sources = cfg.sources,
   })
+  bs.context_set = require("tunnelvision.context").evaluate(cfg, bs.path_set, bufnr, symbol, anchor, scope)
   maybe_warn_fallback(bs, opts.silent, cfg)
   maybe_warn_strict_lsp(bs, opts.silent, cfg)
   require("tunnelvision.ui").apply_dim(bufnr)
@@ -289,6 +293,7 @@ function M.activate(bufnr, opts)
   if not keep_render then
     bs.path_set = {}
     bs.path_order = {}
+    bs.context_set = {}
     bs.last_compute_meta = nil
     bs.warned_lsp_strict = false
   end
@@ -338,6 +343,7 @@ function M.deactivate(bufnr)
     bs.scope = nil
     bs.path_set = {}
     bs.path_order = {}
+    bs.context_set = {}
     bs.last_compute_meta = nil
     bs.warned_large_buffer = false
     bs.config = nil

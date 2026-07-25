@@ -101,7 +101,7 @@ function M.apply_dim(bufnr)
   bs.warned_large_buffer = false
 
   for idx = 1, total do
-    if not bs.path_set[idx] then
+    if not bs.path_set[idx] and not bs.context_set[idx] then
       pcall(vim.api.nvim_buf_set_extmark, bufnr, core.state.ns, idx - 1, 0, {
         line_hl_group = config.dim_hl,
         priority = 1000,

@@ -235,10 +235,47 @@ can also be passed to `on(opts)` for one-shot activations.
 | `fallback_warn` | `once` | Controls warnings when LSP falls back to another source. |
 | `lsp_timeout_ms` | `150` | Timeout for async LSP `documentHighlight` requests. |
 | `dim` | `nil` | Optional dim style: `nil` (`Comment` derived), highlight group name, hex foreground, or highlight table. |
+| `visible_context` | `"line"` | `"line"` (current behavior), `"statement"` (Tree-sitter best-effort expansion), or a custom function. |
+| `preserve_scope_heads` | `false` | When `true`, keep enclosing `if`/`for`/`while`/function headers undimmed. |
 | `max_dim_lines` | `6000` | Skip dimming in very large buffers. |
 | `notify` | `true` | Enable plugin notifications. |
 
 Run `:help tunnelvision-config` for the full option reference.
+
+### Visible context and scope heads
+
+`visible_context` controls what stays undimmed beyond the matched path lines.
+It is a rendering concern, separate from how matches are found (`sources`).
+
+```lua
+-- default (current behavior): keep matched lines visible
+visible_context = "line"
+
+-- Tree-sitter best-effort: keep the containing statement visible
+visible_context = "statement"
+
+-- custom function: return a range or nil per path line
+visible_context = function(ctx)
+  -- ctx: { bufnr, symbol, line, col, scope, node }
+  return { start_line = ctx.line - 1, end_line = ctx.line + 1 }
+end
+```
+
+`visible_context = "statement"` walks Tree-sitter ancestors from each matched
+symbol to find the nearest declaration or statement node. When no parser is
+available or no safe node is found, it falls back silently to line-only
+behavior. Broad nodes (function bodies, class definitions, large control-flow
+blocks) are deliberately excluded to avoid revealing too much code.
+
+`preserve_scope_heads = true` adds enclosing `if`, `for`, `while`, and function
+header lines to the visible context. These lines are never navigation targets.
+The option is opt-in and degrades silently without a parser.
+
+| Visible Context | Best-Effort Strategy | Fallback |
+|---|---|---|
+| `"line"` | None — matches stay on matched lines. | N/A |
+| `"statement"` | Walk Tree-sitter from symbol upward, pick first safe declaration or statement node. | Line-only behavior when no parser, no safe node, or node is a broad block (`if_statement`, `class_declaration`, etc.). |
+| `function` | User-defined. Receives `{ bufnr, symbol, line, col, scope, node }`. | `nil` return means keep only the matched line. Errors caught with `pcall`. |
 
 ## Suggested keymaps
 
