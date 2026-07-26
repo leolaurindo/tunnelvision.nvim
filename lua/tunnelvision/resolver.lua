@@ -60,21 +60,35 @@ function M.sanitize_keywords(list)
   return out
 end
 
-local function line_has_word(line, word)
-  if not line or line == "" or not word or word == "" then
-    return false
+local function strip_strings_and_comments(line)
+  local function mask(text)
+    return (" "):rep(#text)
   end
-  return line:find("%f[%w_]" .. vim.pesc(word) .. "%f[^%w_]") ~= nil
+
+  local s = line:gsub('".-"', mask):gsub("'.-'", mask)
+  s = s:gsub("//.*$", mask)
+  s = s:gsub("#.*$", mask)
+  s = s:gsub("%-%-.*$", mask)
+  return s
 end
 
-local function strip_strings_and_comments(line)
-  local s = line
-  s = s:gsub('".-"', '""')
-  s = s:gsub("'.-'", "''")
-  s = s:gsub("//.*$", "")
-  s = s:gsub("#.*$", "")
-  s = s:gsub("%-%-.*$", "")
-  return s
+local function collect_word_ranges(line, word, lnum)
+  local ranges = {}
+  if not line or line == "" or not word or word == "" then
+    return ranges
+  end
+
+  local pattern = "%f[%w_]" .. vim.pesc(word) .. "%f[^%w_]"
+  local from = 1
+  while true do
+    local start_col, end_col = line:find(pattern, from)
+    if not start_col then
+      break
+    end
+    ranges[#ranges + 1] = { line = lnum, start_col = start_col - 1, end_col = end_col }
+    from = end_col + 1
+  end
+  return ranges
 end
 
 local function collect_identifiers(text, keywords)
@@ -105,6 +119,36 @@ local function add_set(dst, src)
     end
   end
   return changed
+end
+
+local function add_ranges(dst, src)
+  for _, range in ipairs(src or {}) do
+    dst[#dst + 1] = range
+  end
+end
+
+local function normalize_ranges(bufnr, ranges)
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local out, seen = {}, {}
+  for _, range in ipairs(ranges) do
+    if type(range) == "table" and type(range.line) == "number" then
+      local lnum = math.max(1, math.min(line_count, math.floor(range.line)))
+      local line_len = #(lines[lnum] or "")
+      local start_col = math.max(0, math.min(line_len, math.floor(tonumber(range.start_col) or 0)))
+      local end_col = math.max(0, math.min(line_len, math.floor(tonumber(range.end_col) or 0)))
+      local key = lnum .. ":" .. start_col .. ":" .. end_col
+      if end_col > start_col and not seen[key] then
+        seen[key] = true
+        out[#out + 1] = { line = lnum, start_col = start_col, end_col = end_col }
+      end
+    end
+  end
+  table.sort(out, function(a, b)
+    return a.line < b.line
+      or (a.line == b.line and (a.start_col < b.start_col or (a.start_col == b.start_col and a.end_col < b.end_col)))
+  end)
+  return out
 end
 
 local function find_assign(line)
@@ -227,9 +271,10 @@ local function has_document_highlight_provider(bufnr)
   return false
 end
 
-function M.make_lsp_result(reason, lines, used)
+function M.make_lsp_result(reason, lines, used, ranges)
   return {
     lines = lines or {},
+    ranges = ranges or {},
     used = used or false,
     reason = reason or "disabled",
   }
@@ -238,16 +283,17 @@ end
 local function collect_treesitter_lines(bufnr, symbol, scope)
   local ok_parser, parser = pcall(vim.treesitter.get_parser, bufnr)
   if not ok_parser or not parser then
-    return { lines = {}, used = false, reason = "unavailable" }
+    return { lines = {}, ranges = {}, used = false, reason = "unavailable" }
   end
 
   local ok_tree, parsed = pcall(parser.parse, parser)
   if not ok_tree or not parsed or not parsed[1] then
-    return { lines = {}, used = false, reason = "unavailable" }
+    return { lines = {}, ranges = {}, used = false, reason = "unavailable" }
   end
 
   local root = parsed[1]:root()
   local lines = {}
+  local ranges = {}
   local scope_start = scope.start_line - 1
   local scope_end = scope.end_line - 1
 
@@ -255,9 +301,14 @@ local function collect_treesitter_lines(bufnr, symbol, scope)
     if is_identifier_like(node:type()) then
       local text = vim.treesitter.get_node_text(node, bufnr)
       if text == symbol then
-        local start_row = node:start()
+        local start_row, start_col, _, end_col = node:range()
         if start_row >= scope_start and start_row <= scope_end then
           lines[start_row + 1] = true
+          ranges[#ranges + 1] = {
+            line = start_row + 1,
+            start_col = start_col,
+            end_col = end_col,
+          }
         end
       end
     end
@@ -268,15 +319,35 @@ local function collect_treesitter_lines(bufnr, symbol, scope)
   walk(root)
 
   if next(lines) then
-    return { lines = lines, used = true, reason = "ok" }
+    return { lines = lines, ranges = ranges, used = true, reason = "ok" }
   end
-  return { lines = {}, used = false, reason = "no_matches" }
+  return { lines = {}, ranges = {}, used = false, reason = "no_matches" }
 end
 
-local function collect_lsp_lines(responses, scope)
+local function lsp_byteindex(line, character, encoding)
+  character = math.max(0, character or 0)
+  encoding = encoding or "utf-16"
+  if encoding == "utf-8" then
+    return math.min(character, #line)
+  end
+
+  local ok, byte = pcall(vim.str_byteindex, line, encoding, character, false)
+  if ok then
+    return byte
+  end
+  ok, byte = pcall(vim.str_byteindex, line, character, encoding == "utf-16")
+  return ok and byte or #line
+end
+
+local function collect_lsp_result(bufnr, responses, scope)
   local lines = {}
-  for _, resp in pairs(responses or {}) do
+  local ranges = {}
+  local buffer_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  for client_id, resp in pairs(responses or {}) do
     if resp and resp.result then
+      local id = tonumber(client_id) or resp.client_id
+      local client = id and vim.lsp.get_client_by_id and vim.lsp.get_client_by_id(id) or nil
+      local encoding = client and client.offset_encoding or "utf-16"
       for _, item in ipairs(resp.result) do
         local r = item.range
         if r and r.start and r["end"] then
@@ -287,11 +358,17 @@ local function collect_lsp_lines(responses, scope)
               lines[lnum] = true
             end
           end
+          for lnum = math.max(from, scope.start_line), math.min(to, scope.end_line) do
+            local text = buffer_lines[lnum] or ""
+            local start_col = lnum == from and lsp_byteindex(text, r.start.character, encoding) or 0
+            local end_col = lnum == to and lsp_byteindex(text, r["end"].character, encoding) or #text
+            ranges[#ranges + 1] = { line = lnum, start_col = start_col, end_col = end_col }
+          end
         end
       end
     end
   end
-  return lines
+  return lines, ranges
 end
 
 local function has_lsp_results(responses)
@@ -336,7 +413,8 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
       return
     end
 
-    finish(M.make_lsp_result("ok", collect_lsp_lines(responses, scope), true))
+    local lines, ranges = collect_lsp_result(bufnr, responses, scope)
+    finish(M.make_lsp_result("ok", lines, true, ranges))
   end)
   if not ok then
     finish(M.make_lsp_result("request_failed"))
@@ -375,18 +453,23 @@ end
 
 local function collect_word_context(bufnr, symbol, scope, keywords, collect_matches, collect_flow)
   local word_set = {}
+  local word_ranges = {}
   local line_info = {}
 
   if not collect_matches and not collect_flow then
-    return word_set, line_info
+    return word_set, word_ranges, line_info
   end
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
   for idx, raw in ipairs(lines) do
     local lnum = scope.start_line + idx - 1
     local cleaned = strip_strings_and_comments(raw)
-    if collect_matches and line_has_word(cleaned, symbol) then
-      word_set[lnum] = true
+    if collect_matches then
+      local ranges = collect_word_ranges(cleaned, symbol, lnum)
+      if #ranges > 0 then
+        word_set[lnum] = true
+        add_ranges(word_ranges, ranges)
+      end
     end
     if collect_flow then
       local lhs, rhs = parse_assignment(cleaned, keywords)
@@ -395,11 +478,12 @@ local function collect_word_context(bufnr, symbol, scope, keywords, collect_matc
         ids = collect_identifiers(cleaned, keywords),
         lhs = lhs,
         rhs = rhs,
+        text = cleaned,
       }
     end
   end
 
-  return word_set, line_info
+  return word_set, word_ranges, line_info
 end
 
 local function collect_source_result(name, context)
@@ -407,6 +491,7 @@ local function collect_source_result(name, context)
     local used = next(context.word_lines) ~= nil
     return {
       lines = context.word_lines,
+      ranges = context.word_ranges,
       used = used,
       reason = used and nil or "no_matches",
       failed_source = name,
@@ -419,6 +504,7 @@ local function collect_source_result(name, context)
     local used = next(lines) ~= nil
     return {
       lines = lines,
+      ranges = context.lsp_result.ranges or {},
       used = used,
       reason = not used and (context.lsp_result.reason == "ok" and "no_matches" or context.lsp_result.reason) or nil,
       used_lsp = true,
@@ -446,6 +532,7 @@ local function collect_source_result(name, context)
     if not ok or type(result) ~= "table" then
       return {
         lines = {},
+        ranges = {},
         used = false,
         reason = ok and "no_matches" or "error",
         failed_source = name,
@@ -468,8 +555,14 @@ local function collect_source_result(name, context)
       end
     end
     local used = next(lines) ~= nil
+    local ranges = {}
+    for lnum in pairs(lines) do
+      local text = vim.api.nvim_buf_get_lines(context.bufnr, lnum - 1, lnum, false)[1]
+      add_ranges(ranges, collect_word_ranges(text, context.symbol, lnum))
+    end
     return {
       lines = lines,
+      ranges = ranges,
       used = used,
       reason = used and nil or "no_matches",
       failed_source = name,
@@ -477,7 +570,7 @@ local function collect_source_result(name, context)
       used_custom = true,
     }
   end
-  return { lines = {}, used = false, reason = "unavailable", failed_source = name }
+  return { lines = {}, ranges = {}, used = false, reason = "unavailable", failed_source = name }
 end
 
 local function collect_source_step(step, context)
@@ -487,6 +580,7 @@ local function collect_source_step(step, context)
 
   local result = {
     lines = {},
+    ranges = {},
     used = true,
     used_lsp = false,
     used_custom = false,
@@ -501,6 +595,7 @@ local function collect_source_step(step, context)
     if not source.used then
       return {
         lines = {},
+        ranges = {},
         used = false,
         reason = source.reason,
         failed_source = source.failed_source,
@@ -509,6 +604,7 @@ local function collect_source_step(step, context)
       }
     end
     add_set(result.lines, source.lines)
+    add_ranges(result.ranges, source.ranges)
     result.used_lsp = result.used_lsp or source.used_lsp or false
     result.used_custom = result.used_custom or source.used_custom or false
     result.used_word = result.used_word or source.used_word or false
@@ -525,6 +621,7 @@ end
 
 local function resolve_source_chain(sources, context)
   local path_set = {}
+  local ranges = {}
   local meta = {
     used_source = nil,
     failed_sources = {},
@@ -541,13 +638,14 @@ local function resolve_source_chain(sources, context)
     local result = collect_source_step(step, context)
     if result.used then
       add_set(path_set, result.lines)
+      add_ranges(ranges, result.ranges)
       meta.used_source = source_step_label(step)
       meta.used_lsp = result.used_lsp or false
       meta.used_custom = result.used_custom or false
       meta.used_word = result.used_word or false
       meta.flow_eligible = not meta.used_custom or meta.used_word
       meta.used_fallback = i > 1
-      return path_set, meta
+      return path_set, ranges, meta
     end
     if step.kind == "combine" and result.has_custom then
       meta.flow_eligible = false
@@ -561,7 +659,7 @@ local function resolve_source_chain(sources, context)
     end
   end
 
-  return path_set, meta
+  return path_set, ranges, meta
 end
 
 local function expand_flow(path_set, symbol, line_info, direction)
@@ -588,14 +686,30 @@ local function expand_flow(path_set, symbol, line_info, direction)
       end
     end
   end
+  return tracked
+end
+
+local function collect_flow_ranges(path_set, tracked, line_info)
+  local ranges = {}
+  for _, info in ipairs(line_info) do
+    if path_set[info.lnum] then
+      for id in pairs(info.ids) do
+        if tracked[id] then
+          add_ranges(ranges, collect_word_ranges(info.text, id, info.lnum))
+        end
+      end
+    end
+  end
+  return ranges
 end
 
 function M.compute_path(bufnr, symbol, anchor, scope, opts)
   local sources = opts.sources or {}
   local uses_word = sources_use(sources, "word")
   local use_flow = opts.mode == "flow" and uses_word
-  local word_lines, line_info = collect_word_context(bufnr, symbol, scope, opts.keywords or {}, uses_word, use_flow)
-  local path_set, meta = resolve_source_chain(sources, {
+  local word_lines, word_ranges, line_info =
+    collect_word_context(bufnr, symbol, scope, opts.keywords or {}, uses_word, use_flow)
+  local path_set, ranges, meta = resolve_source_chain(sources, {
     anchor = anchor,
     bufnr = bufnr,
     custom_sources = opts.custom_sources or {},
@@ -606,14 +720,16 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
     scope = scope,
     symbol = symbol,
     word_lines = word_lines,
+    word_ranges = word_ranges,
   })
 
   if use_flow and meta.flow_eligible then
-    expand_flow(path_set, symbol, line_info, opts.direction)
+    local tracked = expand_flow(path_set, symbol, line_info, opts.direction)
+    add_ranges(ranges, collect_flow_ranges(path_set, tracked, line_info))
   end
 
   path_set[anchor.row + 1] = true
-  return path_set, sorted_lines(path_set), meta
+  return path_set, sorted_lines(path_set), meta, normalize_ranges(bufnr, ranges)
 end
 
 return M

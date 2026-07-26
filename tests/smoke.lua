@@ -16,6 +16,10 @@ local tunnelvision = require("tunnelvision")
 local core = require("tunnelvision.core")
 local config = require("tunnelvision.config")
 
+local function assert_ranges(actual, expected, msg)
+  assert_true(vim.deep_equal(actual, expected), msg .. ": " .. vim.inspect(actual))
+end
+
 local function assert_sources(expected, msg)
   local got = tunnelvision.get_sources()
   assert_true(#got == #expected, msg .. " length")
@@ -472,6 +476,12 @@ do
     "empty custom source registers"
   )
   assert_true(
+    tunnelvision.register_source("custom_without_symbol", function()
+      return { [3] = true }
+    end),
+    "custom source without symbol registers"
+  )
+  assert_true(
     tunnelvision.register_source("custom_error", function()
       error("custom source failure")
     end),
@@ -499,10 +509,22 @@ do
   assert_true(custom_state.path_set[2], "custom source adds valid returned line")
   assert_true(not custom_state.path_set[3], "custom source does not add unrelated word line")
   assert_true(vim.tbl_count(custom_state.path_set) == 2, "custom source ignores invalid lines")
+  assert_ranges(custom_state.symbol_ranges, {
+    { line = 2, start_col = 13, end_col = 18 },
+  }, "custom source should derive symbol ranges only on selected matching lines")
   assert_true(custom_state.anchor.row == 0 and custom_state.scope.start_line == 1, "custom context is isolated")
   assert_true(handler_context.bufnr == custom_buf and handler_context.symbol == "alpha", "custom context identity")
   assert_true(handler_context.mode == "flow" and handler_context.direction == "both", "custom context mode")
   assert_true(handler_context.keywords.sentinel, "custom context keywords")
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.on({ sources = { "custom_without_symbol" }, scope = "buffer", mode = "static" })
+  assert_true(core.get_buf_state(custom_buf).path_set[3], "custom source may select a line without the symbol")
+  assert_ranges(
+    core.get_buf_state(custom_buf).symbol_ranges,
+    {},
+    "custom-selected lines without the active symbol should have no range"
+  )
   vim.cmd("TunnelVision off")
 
   tunnelvision.on({ sources = { "custom_hit", "word" }, scope = "buffer" })
@@ -548,6 +570,9 @@ do
   local failed_combine_state = core.get_buf_state(custom_buf)
   assert_true(failed_combine_state.path_set[2], "failed custom combine uses later source")
   assert_true(not failed_combine_state.path_set[3], "failed custom combine does not leak partial word lines")
+  assert_ranges(failed_combine_state.symbol_ranges, {
+    { line = 2, start_col = 13, end_col = 18 },
+  }, "failed combine should not leak partial member ranges")
   assert_true(
     failed_combine_state.last_compute_meta.fallback_source == "custom_empty",
     "custom combine failure metadata"
@@ -663,6 +688,79 @@ assert_true(
 vim.cmd("TunnelVision off")
 tunnelvision.setup({ notify = false, source = "word" })
 
+-- Source ranges use exact, sorted byte columns and preserve ignored-text offsets.
+do
+  tunnelvision.setup({ notify = false, source = "word", mode = "static", scope = "buffer" })
+  vim.cmd("enew")
+  vim.bo.filetype = "lua"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "alpha + alpha_ + alpha -- alpha",
+    '"alpha" .. alpha',
+    "é alpha alpha",
+  })
+  local range_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_win_set_cursor(0, { 1, 1 })
+  tunnelvision.on()
+  assert_ranges(core.get_buf_state(range_buf).symbol_ranges, {
+    { line = 1, start_col = 0, end_col = 5 },
+    { line = 1, start_col = 17, end_col = 22 },
+    { line = 2, start_col = 11, end_col = 16 },
+    { line = 3, start_col = 3, end_col = 8 },
+    { line = 3, start_col = 9, end_col = 14 },
+  }, "word ranges should retain exact byte positions and all valid occurrences")
+  vim.cmd("TunnelVision off")
+  assert_ranges(core.get_buf_state(range_buf).symbol_ranges, {}, "deactivation should clear symbol ranges")
+
+  local resolver = require("tunnelvision.resolver")
+  local _, _, _, normalized = resolver.compute_path(range_buf, "alpha", { row = 0, col = 0 }, {
+    start_line = 1,
+    end_line = 3,
+  }, {
+    direction = "forward",
+    keywords = {},
+    lsp_result = resolver.make_lsp_result("ok", { [1] = true }, true, {
+      { line = 1, start_col = 17, end_col = 99 },
+      { line = 1, start_col = 0, end_col = 5 },
+      { line = 1, start_col = 0, end_col = 5 },
+      { line = 1, start_col = 9, end_col = 9 },
+    }),
+    mode = "static",
+    sources = { { kind = "single", name = "lsp" } },
+  })
+  assert_ranges(normalized, {
+    { line = 1, start_col = 0, end_col = 5 },
+    { line = 1, start_col = 17, end_col = 31 },
+  }, "computed ranges should clamp, deduplicate, discard empties, and sort")
+end
+
+-- Flow adds propagated identifiers while static mode retains only source ranges.
+do
+  tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+  vim.cmd("enew")
+  vim.bo.filetype = "lua"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "local alpha = 1",
+    "local beta = alpha",
+    "local gamma = beta",
+  })
+  local flow_range_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  tunnelvision.on({ mode = "static" })
+  assert_ranges(core.get_buf_state(flow_range_buf).symbol_ranges, {
+    { line = 1, start_col = 6, end_col = 11 },
+    { line = 2, start_col = 13, end_col = 18 },
+  }, "static ranges should exclude unrelated identifiers on selected lines")
+  tunnelvision.on({ mode = "flow" })
+  assert_ranges(core.get_buf_state(flow_range_buf).symbol_ranges, {
+    { line = 1, start_col = 6, end_col = 11 },
+    { line = 2, start_col = 6, end_col = 10 },
+    { line = 2, start_col = 13, end_col = 18 },
+    { line = 3, start_col = 6, end_col = 11 },
+    { line = 3, start_col = 14, end_col = 18 },
+  }, "flow ranges should include propagated tracked identifiers")
+  vim.cmd("TunnelVision off")
+end
+
 vim.cmd("enew")
 vim.bo.filetype = "lua"
 vim.api.nvim_buf_set_lines(0, 0, -1, false, {
@@ -693,10 +791,18 @@ assert_true(no_op == false, "identical activate should no-op")
 vim.cmd("TunnelVision off")
 
 if vim.lsp.buf_request_all then
-  local fake_clients = { { server_capabilities = { documentHighlightProvider = true } } }
+  local fake_clients = {
+    { id = 1, offset_encoding = "utf-8", server_capabilities = { documentHighlightProvider = true } },
+    { id = 2, offset_encoding = "utf-16", server_capabilities = { documentHighlightProvider = true } },
+  }
   local callbacks = {}
   local restore_clients
   local orig_buf_request_all = vim.lsp.buf_request_all
+  local orig_get_client_by_id = vim.lsp.get_client_by_id
+
+  vim.lsp.get_client_by_id = function(id)
+    return fake_clients[id]
+  end
 
   if vim.lsp.get_clients then
     local orig_get_clients = vim.lsp.get_clients
@@ -859,7 +965,32 @@ if vim.lsp.buf_request_all then
   assert_true(combined_later_meta.fallback_source == "treesitter", "later combined failure records member")
   assert_true(combined_later_meta.failed_sources[1] == "combine(lsp,treesitter)", "later combined failure records step")
 
+  tunnelvision.setup({ notify = false, source = "lsp", scope = "buffer", lsp_timeout_ms = 1000 })
+  vim.cmd("TunnelVision off")
+  vim.bo.filetype = "lua"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "é alpha alpha" })
+  vim.api.nvim_win_set_cursor(0, { 1, 3 })
+  vim.cmd("TunnelVision on")
+  callbacks[8]({
+    [1] = {
+      result = {
+        { range = { start = { line = 0, character = 3 }, ["end"] = { line = 0, character = 8 } } },
+      },
+    },
+    [2] = {
+      result = {
+        { range = { start = { line = 0, character = 2 }, ["end"] = { line = 0, character = 7 } } },
+        { range = { start = { line = 0, character = 8 }, ["end"] = { line = 0, character = 13 } } },
+      },
+    },
+  })
+  assert_ranges(core.get_buf_state(lsp_buf).symbol_ranges, {
+    { line = 1, start_col = 3, end_col = 8 },
+    { line = 1, start_col = 9, end_col = 14 },
+  }, "LSP ranges should convert each client's encoding to deduplicated byte columns")
+
   vim.lsp.buf_request_all = orig_buf_request_all
+  vim.lsp.get_client_by_id = orig_get_client_by_id
   restore_clients()
 end
 
@@ -979,6 +1110,10 @@ do
     assert_true(core.get_buf_state(ts_buf).path_set[1], "treesitter should match line 1 (declaration)")
     assert_true(core.get_buf_state(ts_buf).path_set[3], "treesitter should match line 3 (usage)")
     assert_true(not core.get_buf_state(ts_buf).path_set[2], "treesitter should not match line 2 (different symbol)")
+    assert_ranges(core.get_buf_state(ts_buf).symbol_ranges, {
+      { line = 1, start_col = 6, end_col = 11 },
+      { line = 3, start_col = 6, end_col = 11 },
+    }, "treesitter should retain exact identifier node ranges")
     assert_true(
       core.get_buf_state(ts_buf).last_compute_meta.fallback_reason == nil,
       "treesitter should not set fallback_reason on success"

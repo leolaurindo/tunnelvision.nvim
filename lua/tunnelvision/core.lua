@@ -50,6 +50,7 @@ function M.get_buf_state(bufnr)
     scope = nil,
     path_set = {},
     path_order = {},
+    symbol_ranges = {},
     context_set = {},
     warned_lsp_fallback = false,
     warned_lsp_strict = false,
@@ -240,14 +241,15 @@ end
 local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, lsp_result)
   bs.pending = false
   bs.request_id = nil
-  bs.path_set, bs.path_order, bs.last_compute_meta = resolver.compute_path(bufnr, symbol, anchor, scope, {
-    direction = cfg.flow_settings.direction,
-    custom_sources = state.custom_sources,
-    keywords = keywords,
-    lsp_result = lsp_result,
-    mode = cfg.mode,
-    sources = cfg.sources,
-  })
+  bs.path_set, bs.path_order, bs.last_compute_meta, bs.symbol_ranges =
+    resolver.compute_path(bufnr, symbol, anchor, scope, {
+      direction = cfg.flow_settings.direction,
+      custom_sources = state.custom_sources,
+      keywords = keywords,
+      lsp_result = lsp_result,
+      mode = cfg.mode,
+      sources = cfg.sources,
+    })
   bs.context_set = require("tunnelvision.context").evaluate(cfg, bs.path_set, bufnr, symbol, anchor, scope)
   maybe_warn_fallback(bs, opts.silent, cfg)
   maybe_warn_strict_lsp(bs, opts.silent, cfg)
@@ -295,6 +297,7 @@ function M.activate(bufnr, opts)
   if not keep_render then
     bs.path_set = {}
     bs.path_order = {}
+    bs.symbol_ranges = {}
     bs.context_set = {}
     bs.last_compute_meta = nil
     bs.warned_lsp_strict = false
@@ -345,6 +348,7 @@ function M.deactivate(bufnr)
     bs.scope = nil
     bs.path_set = {}
     bs.path_order = {}
+    bs.symbol_ranges = {}
     bs.context_set = {}
     bs.last_compute_meta = nil
     bs.warned_large_buffer = false
