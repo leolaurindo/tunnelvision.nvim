@@ -32,9 +32,92 @@ local function assert_combine(step, expected, msg)
   end
 end
 
+local function assert_default_visual_config(msg)
+  assert_true(config.format_sources(core.state.config.sources) == "lsp,word", msg .. " sources")
+  assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), msg .. " highlights")
+  assert_true(core.state.config.dim == nil, msg .. " dim")
+end
+
+tunnelvision.setup()
+assert_default_visual_config("bare setup")
+tunnelvision.setup({})
+assert_default_visual_config("empty setup")
+tunnelvision.setup({ source = "lsp_else_word" })
+assert_default_visual_config("legacy default source setup")
+tunnelvision.setup({ sources = { "lsp", "word" } })
+assert_default_visual_config("modern default sources setup")
+
 tunnelvision.setup({ notify = false })
 assert_sources({ "lsp", "word" }, "default sources")
 assert_true(config.format_sources(core.state.config.sources) == "lsp,word", "format_sources default")
+
+-- Highlight rules normalize without deep-merging the default line context.
+tunnelvision.setup({ notify = false, highlights = {} })
+assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), "empty highlights should use line default")
+
+tunnelvision.setup({ notify = false, highlights = { symbol = true } })
+assert_true(vim.deep_equal(core.state.config.highlights, { symbol = {} }), "symbol rule should replace line default")
+
+tunnelvision.setup({ notify = false, highlights = { line = false } })
+assert_true(vim.deep_equal(core.state.config.highlights, {}), "false context should remain disabled")
+
+tunnelvision.setup({
+  notify = false,
+  highlights = { statement = {}, line = { bold = true } },
+})
+assert_true(
+  vim.deep_equal(core.state.config.highlights, { statement = {}, line = { bold = true } }),
+  "enabled highlight rules should preserve empty and styled contexts"
+)
+
+tunnelvision.setup({
+  notify = false,
+  highlights = {
+    scope_head = {
+      fg = "#112233",
+      bg = 0x445566,
+      bg_opacity = 2,
+      bold = true,
+      italic = false,
+      underline = true,
+      undercurl = false,
+      strikethrough = true,
+    },
+  },
+})
+assert_true(
+  vim.deep_equal(core.state.config.highlights, {
+    scope_head = {
+      fg = "#112233",
+      bg = 0x445566,
+      bg_opacity = 1,
+      bold = true,
+      italic = false,
+      underline = true,
+      undercurl = false,
+      strikethrough = true,
+    },
+  }),
+  "all supported highlight style fields should normalize"
+)
+
+tunnelvision.setup({
+  notify = false,
+  highlights = {
+    unknown = true,
+    line = false,
+    symbol = "bold",
+    statement = { fg = false, bold = "yes", bg_opacity = "0.5", unknown = true },
+  },
+})
+assert_true(
+  vim.deep_equal(core.state.config.highlights, { statement = {} }),
+  "invalid highlight rules should be ignored"
+)
+
+tunnelvision.setup({ notify = false, highlights = 42 })
+assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), "invalid highlights should use line default")
+tunnelvision.setup({ notify = false }) -- restore
 
 -- flow_settings defaults
 assert_true(core.state.config.flow_settings.direction == "forward", "default flow_settings.direction")
@@ -1112,241 +1195,88 @@ tunnelvision.setup({ notify = false }) -- restore
 vim.cmd("TunnelVision off")
 assert_true(not core.is_active(0), "deactivation failed")
 
--- visible_context and context_set tests
+-- One-shot highlight rules inherit or replace the setup rules.
 do
-  tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+  tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { symbol = true } })
   vim.cmd("enew")
   vim.bo.filetype = "lua"
   vim.api.nvim_buf_set_lines(0, 0, -1, false, {
     "local alpha = 1",
-    "local beta = 2",
     "print(alpha)",
+    "local beta = 2",
   })
-  local ctx_buf = vim.api.nvim_get_current_buf()
+  local highlight_buf = vim.api.nvim_get_current_buf()
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
 
-  vim.cmd("TunnelVision on")
-  local bs = core.get_buf_state(ctx_buf)
-  assert_true(vim.tbl_count(bs.context_set) == 0, "default visible_context=line produces empty context_set")
-  assert_true(bs.path_set[1] and bs.path_set[3], "path_set has alpha matches")
-  assert_true(not core.is_active(0) or true, "activation succeeded")
-  vim.cmd("TunnelVision off")
+  tunnelvision.on()
+  local bs = core.get_buf_state(highlight_buf)
+  assert_true(vim.deep_equal(bs.config.highlights, { symbol = {} }), "missing one-shot highlights should inherit")
 
-  -- custom function context extends visibility
-  tunnelvision.on({
-    source = "word",
-    scope = "buffer",
-    visible_context = function(ctx)
-      if ctx.line == ctx.scope.start_line then
-        return { start_line = ctx.scope.start_line, end_line = ctx.scope.start_line + 1 }
-      end
-    end,
-  })
-  bs = core.get_buf_state(ctx_buf)
-  assert_true(bs.path_set[1] and bs.path_set[3], "custom context preserves path_set")
-  assert_true(bs.context_set[2], "custom context adds line 2 to context_set")
-  assert_true(vim.tbl_count(bs.context_set) == 2, "custom context adds two extra lines")
-  vim.cmd("TunnelVision off")
-
-  -- custom context returning nil falls back to line
-  tunnelvision.on({
-    source = "word",
-    scope = "buffer",
-    visible_context = function()
-      return nil
-    end,
-  })
-  bs = core.get_buf_state(ctx_buf)
-  assert_true(vim.tbl_count(bs.context_set) == 0, "nil-returning custom context produces empty context_set")
-  vim.cmd("TunnelVision off")
-
-  -- custom context errors are caught silently
-  tunnelvision.on({
-    source = "word",
-    scope = "buffer",
-    visible_context = function()
-      error("boom")
-    end,
-  })
-  bs = core.get_buf_state(ctx_buf)
-  assert_true(vim.tbl_count(bs.context_set) == 0, "erroring custom context falls back silently")
-  vim.cmd("TunnelVision off")
-
-  -- custom context out-of-range is clamped
-  tunnelvision.on({
-    source = "word",
-    scope = "buffer",
-    visible_context = function()
-      return { start_line = -5, end_line = 999 }
-    end,
-  })
-  bs = core.get_buf_state(ctx_buf)
-  assert_true(vim.tbl_count(bs.context_set) == 3, "out-of-range context clamped to buffer scope")
-  vim.cmd("TunnelVision off")
-
-  -- deactivate clears context_set
-  assert_true(vim.tbl_count(bs.context_set) == 0, "context_set cleared on deactivate")
-
-  -- navigation ignores context_set lines
-  tunnelvision.on({
-    source = "word",
-    scope = "buffer",
-    visible_context = function(ctx)
-      return { start_line = ctx.scope.start_line, end_line = ctx.scope.start_line + 1 }
-    end,
-  })
-  assert_true(#core.get_buf_state(ctx_buf).path_order == 2, "path_order has only two navigable lines")
-  vim.cmd("TunnelVision off")
-
-  tunnelvision.setup({ notify = false })
-end
-
--- visible_context = "statement" tests
-do
-  tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
-
-  local function test_statement(filetype, lines, cursor, symbol_col, path_assertions, context_assertions)
-    vim.cmd("enew")
-    vim.bo.filetype = filetype
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
-    local buf = vim.api.nvim_get_current_buf()
-    vim.api.nvim_win_set_cursor(0, { cursor, symbol_col })
-
-    tunnelvision.on({
+  assert_true(
+    core.activate(highlight_buf, {
       source = "word",
       scope = "buffer",
-      visible_context = "statement",
-    })
-    local bs = core.get_buf_state(buf)
-
-    for lnum, expected in pairs(path_assertions) do
-      assert_true(bs.path_set[lnum] == expected, "statement: path_set line " .. lnum)
-    end
-    for lnum, expected in pairs(context_assertions) do
-      assert_true(bs.context_set[lnum] == expected, "statement: context_set line " .. lnum)
-    end
-    assert_true(#bs.path_order == vim.tbl_count(path_assertions), "statement: path_order only contains path lines")
-    vim.cmd("TunnelVision off")
-  end
-
-  -- Lua: local function with multi-line call
-  test_statement(
-    "lua",
-    {
-      "local function helper(a, b)",
-      "  return a + b",
-      "end",
-      "local result = helper(",
-      "  helper(1, 2),",
-      "  helper(3, 4)",
-      ")",
-      "print(result)",
-    },
-    4,
-    17, -- 'helper' on line 4
-    { [1] = true, [4] = true, [5] = true, [6] = true },
-    { [4] = true, [5] = true, [6] = true, [7] = true }
+      highlights = { statement = true },
+      symbol = "alpha",
+      cursor = { 1, 7 },
+    }),
+    "changed one-shot highlights should invalidate config equality"
+  )
+  bs = core.get_buf_state(highlight_buf)
+  assert_true(
+    vim.deep_equal(bs.config.highlights, { statement = {} }),
+    "non-empty one-shot highlights should replace setup rules"
   )
 
-  -- Plaintext: fallback to line behavior
-  test_statement(
-    "plaintext",
-    {
-      "local alpha = 1",
-      "print(alpha)",
-    },
-    1,
-    7,
-    { [1] = true, [2] = true },
-    {} -- no context added, no parser
+  core.activate(highlight_buf, {
+    source = "word",
+    scope = "buffer",
+    highlights = {},
+    symbol = "alpha",
+    cursor = { 1, 7 },
+    force = true,
+  })
+  assert_true(
+    vim.deep_equal(core.get_buf_state(highlight_buf).config.highlights, { line = {} }),
+    "empty one-shot highlights should use line default"
   )
 
-  -- Lua: multi-line table constructor
-  test_statement(
-    "lua",
-    {
-      "local config = {",
-      '  key1 = "value1",',
-      '  key2 = "value2",',
-      '  key3 = "value3",',
-      "}",
-      "print(config.key1)",
-    },
-    1,
-    8, -- 'config' on line 1
-    { [1] = true, [6] = true },
-    { [1] = true, [2] = true, [3] = true, [4] = true, [5] = true }
+  core.activate(highlight_buf, {
+    source = "word",
+    highlights = { unknown = true, symbol = 42, line = { bold = "yes" } },
+    symbol = "alpha",
+    cursor = { 1, 7 },
+    force = true,
+  })
+  assert_true(
+    vim.deep_equal(core.get_buf_state(highlight_buf).config.highlights, { line = {} }),
+    "invalid one-shot highlight rules should normalize safely"
   )
-
-  tunnelvision.setup({ notify = false })
+  vim.cmd("TunnelVision off")
 end
 
--- preserve_scope_heads tests
+-- dim = "none" clears existing marks and skips dim rendering.
 do
   tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
-    "local x = 1",
-    "if x > 0 then",
-    "  local target = x",
-    "  print(target)",
-    "end",
-    "for i = 1, 3 do",
-    "  print(target)",
-    "end",
-  })
-  local head_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  tunnelvision.on()
+  assert_true(#vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {}) > 0, "default dim should create extmarks")
 
-  -- disabled by default
-  vim.api.nvim_win_set_cursor(0, { 4, 10 }) -- 'target' on line 4
-  vim.cmd("TunnelVision on")
-  local bs = core.get_buf_state(head_buf)
-  assert_true(vim.tbl_count(bs.context_set) == 0, "scope heads disabled by default")
+  tunnelvision.on({ dim = "none" })
+  assert_true(
+    #vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {}) == 0,
+    "one-shot dim none should clear and skip dim extmarks"
+  )
   vim.cmd("TunnelVision off")
 
-  -- enabled adds enclosing if/for headers
-  tunnelvision.on({
-    source = "word",
-    scope = "buffer",
-    preserve_scope_heads = true,
-  })
-  bs = core.get_buf_state(head_buf)
-  assert_true(bs.context_set[2], "scope heads adds if header line")
+  tunnelvision.setup({ notify = false, source = "word", scope = "buffer", dim = "none" })
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  tunnelvision.on()
+  assert_true(
+    #vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {}) == 0,
+    "setup dim none should create no dim extmarks"
+  )
   vim.cmd("TunnelVision off")
-
-  -- heads do not affect navigation
-  tunnelvision.on({
-    source = "word",
-    scope = "buffer",
-    preserve_scope_heads = true,
-  })
-  bs = core.get_buf_state(head_buf)
-  assert_true(#bs.path_order == 3, "scope heads do not affect path_order")
-  vim.cmd("TunnelVision off")
-
-  -- plaintext degrades silently
-  vim.cmd("enew")
-  vim.bo.filetype = "plaintext"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
-    "local x = 1",
-    "if x > 0 then",
-    "  local target = x",
-    "  print(target)",
-    "end",
-  })
-  local pt_buf = vim.api.nvim_get_current_buf()
-  vim.api.nvim_win_set_cursor(0, { 4, 10 })
-  tunnelvision.on({
-    source = "word",
-    scope = "buffer",
-    preserve_scope_heads = true,
-  })
-  bs = core.get_buf_state(pt_buf)
-  assert_true(vim.tbl_count(bs.context_set) == 0, "scope heads silent on plaintext")
-  vim.cmd("TunnelVision off")
-
-  tunnelvision.setup({ notify = false })
 end
 
 print("tunnelvision smoke: OK")

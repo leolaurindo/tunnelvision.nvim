@@ -86,6 +86,9 @@ function M.configure(opts)
   if opts.sources == nil then
     state.config.sources = nil
   end
+  if opts.highlights ~= nil then
+    state.config.highlights = opts.highlights
+  end
 
   -- Compatibility: deprecated top-level flow options fill missing
   -- flow_settings fields. New nested fields win. No runtime warnings.
@@ -113,8 +116,7 @@ local function configs_equal(a, b)
     and a.fallback_warn == b.fallback_warn
     and a.lsp_timeout_ms == b.lsp_timeout_ms
     and a.dim_hl == b.dim_hl
-    and a.visible_context == b.visible_context
-    and a.preserve_scope_heads == b.preserve_scope_heads
+    and vim.deep_equal(a.highlights, b.highlights)
     and vim.deep_equal(a.dim, b.dim)
     and vim.deep_equal(a.flow_settings.extra_keywords, b.flow_settings.extra_keywords)
 end

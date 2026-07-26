@@ -46,6 +46,9 @@ end
 
 function M.ensure_highlights(config)
   config = config or core.state.config
+  if config.dim == "none" then
+    return
+  end
   if not config.dim and config.dim_hl == core.state.config.dim_hl and core.state.config.dim then
     config = core.state.config
   end
@@ -82,6 +85,9 @@ function M.apply_dim(bufnr)
   end
 
   local config = bs.config or core.state.config
+  if config.dim == "none" then
+    return
+  end
   M.ensure_highlights(config)
 
   local total = vim.api.nvim_buf_line_count(bufnr)

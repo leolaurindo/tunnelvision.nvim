@@ -26,8 +26,7 @@ local defaults = {
   source = "lsp_else_word",
   sources = { "lsp", "word" },
   fallback_warn = "once",
-  visible_context = "line",
-  preserve_scope_heads = false,
+  highlights = { line = true },
   dim = nil,
   dim_hl = "TunnelVisionDim",
   max_dim_lines = 6000,
@@ -43,11 +42,18 @@ local valid_directions = { forward = true, both = true }
 local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
 local valid_source_names = { lsp = true, word = true, treesitter = true }
-local valid_visible_contexts = { line = true, statement = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
+local highlight_contexts = { "scope_head", "statement", "line", "symbol" }
+local color_style_keys = { fg = true, bg = true }
+local boolean_style_keys = {
+  bold = true,
+  italic = true,
+  underline = true,
+  undercurl = true,
+  strikethrough = true,
+}
 
 M.valid_modes = valid_modes
-M.valid_visible_contexts = valid_visible_contexts
 M.valid_directions = valid_directions
 M.valid_scopes = valid_scopes
 M.valid_sources = valid_sources
@@ -66,8 +72,7 @@ M.activation_keys = {
   "lsp_timeout_ms",
   "dim",
   "dim_hl",
-  "visible_context",
-  "preserve_scope_heads",
+  "highlights",
 }
 
 -- Source-helpers
@@ -196,6 +201,33 @@ function M.combine(...)
   return { kind = "combine", names = { ... } }
 end
 
+function M.normalize_highlights(highlights)
+  if type(highlights) ~= "table" or next(highlights) == nil then
+    return { line = {} }
+  end
+
+  local normalized = {}
+  for _, context in ipairs(highlight_contexts) do
+    local rule = highlights[context]
+    if rule == true then
+      normalized[context] = {}
+    elseif type(rule) == "table" then
+      local style = {}
+      for key, value in pairs(rule) do
+        if color_style_keys[key] and (type(value) == "string" or type(value) == "number") then
+          style[key] = value
+        elseif boolean_style_keys[key] and type(value) == "boolean" then
+          style[key] = value
+        elseif key == "bg_opacity" and type(value) == "number" then
+          style[key] = math.max(0, math.min(1, value))
+        end
+      end
+      normalized[context] = style
+    end
+  end
+  return normalized
+end
+
 function M.normalize(cfg, custom_sources)
   if not valid_modes[cfg.mode] then
     cfg.mode = defaults.mode
@@ -206,9 +238,9 @@ function M.normalize(cfg, custom_sources)
   if not valid_scopes[cfg.scope] then
     cfg.scope = defaults.scope
   end
-  if not valid_visible_contexts[cfg.visible_context] and type(cfg.visible_context) ~= "function" then
-    cfg.visible_context = defaults.visible_context
-  end
+  cfg.highlights = M.normalize_highlights(cfg.highlights)
+  cfg.visible_context = nil
+  cfg.preserve_scope_heads = nil
   if cfg.sources ~= nil then
     cfg.sources = M.normalize_sources(cfg.sources, custom_sources)
   else
