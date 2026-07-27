@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exact `symbol` ranges, including attribute inheritance and background
   pseudo-opacity.
 - Added `dim = "none"` for positive highlighting without dimming.
+- Added `register_source(name, handler)` for custom synchronous Lua sources in
+  fallback chains and strict combined source steps.
 
 ### Changed
 - Structural statement and scope-head highlighting now uses Tree-sitter
@@ -21,14 +23,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   navigation remains limited to source/flow path lines.
 - Existing setup forms keep line focus with Comment-derived dimming, including
   legacy `source` values and modern `sources` chains.
-
-## [0.3.1] - Unreleased
-
-### Added
-- Added `register_source(name, handler)` for custom synchronous Lua sources in
-  fallback chains and strict combined source steps.
-
-### Changed
 - Refactored internal source resolution without changing public behavior.
 - Clarified internal fallback metadata for source-chain resolution without
   changing public behavior.
