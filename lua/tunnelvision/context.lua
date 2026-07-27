@@ -25,6 +25,8 @@ local statement_types = {
   yield_statement = true,
 }
 
+local standalone_call_parents = { block = true, chunk = true }
+
 local scope_head_types = {
   arrow_function = true,
   if_statement = true,
@@ -47,7 +49,10 @@ local scope_head_types = {
 local function statement_range(node)
   while node do
     local node_type = node:type()
-    if statement_types[node_type] then
+    local parent = node:parent()
+    local is_statement = statement_types[node_type]
+      or node_type == "function_call" and parent and standalone_call_parents[parent:type()]
+    if is_statement then
       local start_row, _, end_row, end_col = node:range()
       local end_line = end_row + (end_col > 0 and 1 or 0)
       if end_line - start_row <= STATEMENT_MAX_LINES then
@@ -55,7 +60,7 @@ local function statement_range(node)
       end
       return nil
     end
-    node = node:parent()
+    node = parent
   end
 end
 

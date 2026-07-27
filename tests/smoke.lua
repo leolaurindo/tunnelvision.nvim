@@ -44,6 +44,114 @@ local function assert_default_visual_config(msg)
   assert_true(core.state.config.dim == nil, msg .. " dim")
 end
 
+-- Function scope skips known call/header nodes and keeps broad grammar support.
+do
+  local resolver = require("tunnelvision.resolver")
+  local scope_buf = new_buffer({ "one", "two", "three", "four" }, "plaintext")
+  local orig_get_parser = vim.treesitter.get_parser
+  local leaf
+  local function node(node_type, start_row, end_row, parent)
+    return {
+      type = function()
+        return node_type
+      end,
+      range = function()
+        return start_row, 0, end_row, 1
+      end,
+      parent = function()
+        return parent
+      end,
+    }
+  end
+
+  local parent = node("function_definition", 0, 3)
+  local rejected = {
+    "abstract_method_signature",
+    "abstract_function_declarator",
+    "explicit_function_specifier",
+    "function_annotation",
+    "function_call",
+    "function_declarator",
+    "function_modifier",
+    "function_modifiers",
+    "function_name",
+    "function_parameters",
+    "function_prototype",
+    "function_signature",
+    "function_signature_item",
+    "function_specifier",
+    "function_type",
+    "function_type_parameters",
+    "function_value_parameters",
+    "default_method_clause",
+    "delete_method_clause",
+    "generic_function",
+    "lambda_capture_initializer",
+    "lambda_capture_specifier",
+    "lambda_default_capture",
+    "lambda_declarator",
+    "lambda_parameters",
+    "lambda_specifier",
+    "method_call_expression",
+    "method_elem",
+    "method_index_expression",
+    "method_invocation",
+    "method_parameters",
+    "method_reference",
+    "method_signature",
+    "preproc_function_def",
+    "template_function",
+    "template_method",
+  }
+  vim.treesitter.get_parser = function()
+    return {
+      parse = function()
+        return {
+          {
+            root = function()
+              return {
+                named_descendant_for_range = function()
+                  return leaf
+                end,
+              }
+            end,
+          },
+        }
+      end,
+    }
+  end
+  for _, node_type in ipairs(rejected) do
+    leaf = node(node_type, 1, 1, parent)
+    local scope = resolver.resolve_scope(scope_buf, { row = 1, col = 0 }, nil, "function")
+    assert_true(scope.start_line == 1 and scope.end_line == 4, node_type .. " should defer to its function parent")
+  end
+
+  for _, node_type in ipairs({ "closure_expression", "custom_function_definition" }) do
+    leaf = node(node_type, 1, 2)
+    local scope = resolver.resolve_scope(scope_buf, { row = 1, col = 0 }, nil, "function")
+    assert_true(scope.start_line == 2 and scope.end_line == 3, node_type .. " should remain a function scope")
+  end
+  vim.treesitter.get_parser = orig_get_parser
+
+  local lua_buf = new_buffer({
+    "local outside = 1",
+    "local function run(config)",
+    "  print(config.host)",
+    "end",
+    "print(outside)",
+  }, "lua")
+  if pcall(vim.treesitter.get_parser, lua_buf, "lua") then
+    local scope = resolver.resolve_scope(lua_buf, { row = 2, col = 9 }, nil, "function")
+    assert_true(scope.start_line == 2 and scope.end_line == 4, "Lua calls should defer to the enclosing function")
+  end
+
+  local cpp_buf = new_buffer({ "int outside;", "void foo(int config) {", "  print(config);", "}", "int after;" }, "cpp")
+  if pcall(vim.treesitter.get_parser, cpp_buf, "cpp") then
+    local scope = resolver.resolve_scope(cpp_buf, { row = 1, col = 13 }, nil, "function")
+    assert_true(scope.start_line == 2 and scope.end_line == 4, "C++ declarators should defer to function definitions")
+  end
+end
+
 tunnelvision.setup()
 assert_default_visual_config("bare setup")
 
@@ -1233,6 +1341,61 @@ do
   assert_true(seen_col == 3, "structural lookup should use the exact source byte column")
   assert_true(vim.deep_equal(statements, { [1] = true, [2] = true }), "column-zero end rows should stay exclusive")
   assert_true(not fallback.statement, "safe statement resolution should not report fallback")
+
+  local chunk_node = {
+    type = function()
+      return "chunk"
+    end,
+    parent = function()
+      return nil
+    end,
+  }
+  local call_node = {
+    type = function()
+      return "function_call"
+    end,
+    range = function()
+      return 0, 0, 2, 0
+    end,
+    parent = function()
+      return chunk_node
+    end,
+  }
+  stub_parser(function()
+    return call_node
+  end)
+  statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
+  assert_true(vim.deep_equal(statements, { [1] = true, [2] = true }), "standalone Lua calls should be statements")
+  assert_true(not fallback.statement, "standalone Lua calls should not report structural fallback")
+
+  local assignment_node = {
+    type = function()
+      return "assignment_statement"
+    end,
+    range = function()
+      return 0, 0, 2, 0
+    end,
+    parent = function()
+      return nil
+    end,
+  }
+  local expression_list = {
+    type = function()
+      return "expression_list"
+    end,
+    parent = function()
+      return assignment_node
+    end,
+  }
+  call_node.parent = function()
+    return expression_list
+  end
+  stub_parser(function()
+    return call_node
+  end)
+  statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
+  assert_true(vim.deep_equal(statements, { [1] = true, [2] = true }), "nested Lua calls should defer to assignments")
+  assert_true(not fallback.statement, "nested Lua calls inside assignments should resolve structurally")
 
   local broad_node = {
     type = function()

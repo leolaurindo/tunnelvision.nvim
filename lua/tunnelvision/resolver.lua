@@ -189,12 +189,55 @@ local function parse_assignment(line, keywords)
   return lhs, rhs
 end
 
+local non_function_scope_types = {
+  abstract_function_declarator = true,
+  abstract_method_signature = true,
+  default_method_clause = true,
+  delete_method_clause = true,
+  explicit_function_specifier = true,
+  function_annotation = true,
+  function_call = true,
+  function_declarator = true,
+  function_modifier = true,
+  function_modifiers = true,
+  function_name = true,
+  function_parameters = true,
+  function_prototype = true,
+  function_signature = true,
+  function_signature_item = true,
+  function_specifier = true,
+  function_type = true,
+  function_type_parameters = true,
+  function_value_parameters = true,
+  generic_function = true,
+  lambda_capture_initializer = true,
+  lambda_capture_specifier = true,
+  lambda_default_capture = true,
+  lambda_declarator = true,
+  lambda_parameters = true,
+  lambda_specifier = true,
+  method_call_expression = true,
+  method_elem = true,
+  method_index_expression = true,
+  method_invocation = true,
+  method_parameters = true,
+  method_reference = true,
+  method_signature = true,
+  preproc_function_def = true,
+  template_function = true,
+  template_method = true,
+}
+
 local function is_function_like(node_type)
-  return node_type:find("function", 1, true)
-    or node_type:find("method", 1, true)
-    or node_type:find("lambda", 1, true)
-    or node_type:find("arrow", 1, true)
-    or node_type == "func_literal"
+  return not non_function_scope_types[node_type]
+    and (
+      node_type:find("function", 1, true)
+      or node_type:find("method", 1, true)
+      or node_type:find("lambda", 1, true)
+      or node_type:find("arrow", 1, true)
+      or node_type == "closure_expression"
+      or node_type == "func_literal"
+    )
 end
 
 local function is_identifier_like(node_type)
