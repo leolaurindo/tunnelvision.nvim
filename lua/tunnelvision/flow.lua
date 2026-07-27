@@ -3,7 +3,9 @@
 local M = {}
 
 local FLOW_MAX_ITER = 32
-local assign_ops = { "+=", "-=", "*=", "/=", "%=", "=" }
+local assign_ops = { "+=", "-=", "*=", "/=", "%=", ":=", "=" }
+local compound_ops = { ["+="] = true, ["-="] = true, ["*="] = true, ["/="] = true, ["%="] = true }
+local declaration_keywords = { ["local"] = true, let = true, const = true, var = true }
 
 local function strip_strings_and_comments(line)
   local function mask(text)
@@ -51,44 +53,59 @@ local function find_assign(line)
   end
 end
 
+local function parse_lhs(text, line, keywords)
+  local body, offset = text, 0
+  local _, declaration_end, declaration = text:find("^%s*([%a_][%w_]*)%s+")
+  local has_declaration = declaration_keywords[declaration]
+  if has_declaration then
+    body, offset = text:sub(declaration_end + 1), declaration_end
+  end
+
+  local lhs, from = {}, 1
+  while from <= #body do
+    local comma = body:find(",", from, true) or (#body + 1)
+    local segment = body:sub(from, comma - 1)
+    local leading, name = segment:match("^(%s*)([%a_][%w_]*)")
+    local start_col = leading and #leading + 1 or nil
+    local end_col = name and start_col + #name - 1 or nil
+    local rest = end_col and segment:sub(end_col + 1) or ""
+    if not has_declaration and comma > #body and rest:match("^%s+[%a_][%w_]*%s*$") then
+      start_col, _, name = segment:find("([%a_][%w_]*)%s*$")
+      end_col = start_col + #name - 1
+      rest = ""
+    end
+    if not name or keywords[name] or not (rest:match("^%s*$") or rest:match("^%s*:%s*[%a_][%w_%.%[%]]*%s*$")) then
+      return
+    end
+    lhs[#lhs + 1] = {
+      name = name,
+      line = line,
+      start_col = offset + from + start_col - 2,
+      end_col = offset + from + end_col - 1,
+    }
+    from = comma + 1
+  end
+  return #lhs > 0 and lhs or nil
+end
+
 local function parse_assignment(text, line, keywords)
   local assign_col, op = find_assign(text)
   if not assign_col then
     return
   end
 
-  local lhs_text = text:sub(1, assign_col - 1)
-  if lhs_text:find(",", 1, true) then
-    return
-  end
-
-  local declaration_name = lhs_text:match("^%s*local%s+([%a_][%w_]*)")
-  local lhs_name = declaration_name or lhs_text:match("([%a_][%w_]*)%s*$")
-  if not lhs_name or keywords[lhs_name] then
-    return
-  end
-
-  local lhs_tokens = collect_tokens(lhs_text, line, keywords)
-  local lhs
-  local first, last, step = #lhs_tokens, 1, -1
-  if declaration_name then
-    first, last, step = 1, #lhs_tokens, 1
-  end
-  for i = first, last, step do
-    if lhs_tokens[i].name == lhs_name then
-      lhs = lhs_tokens[i]
-      break
-    end
-  end
+  local lhs = parse_lhs(text:sub(1, assign_col - 1), line, keywords)
   if not lhs then
     return
   end
 
   local rhs = collect_tokens(text:sub(assign_col + #op), line, keywords, assign_col + #op - 1)
-  if op ~= "=" then
-    rhs[#rhs + 1] = lhs
+  if compound_ops[op] then
+    for _, token in ipairs(lhs) do
+      rhs[#rhs + 1] = token
+    end
   end
-  return { line = line, lhs = { lhs }, rhs = rhs }
+  return { line = line, lhs = lhs, rhs = rhs }
 end
 
 function M.analyze_text(context)
@@ -111,86 +128,240 @@ function M.analyze_text(context)
   return analysis
 end
 
-local function side_intersects(side, tracked)
-  for _, token in ipairs(side) do
-    if tracked[token.name] then
+local function is_identifier(node_type)
+  return node_type:find("identifier", 1, true) or node_type == "variable" or node_type == "name"
+end
+
+local function is_function(node_type)
+  if
+    node_type:find("call", 1, true)
+    or node_type:find("invocation", 1, true)
+    or node_type:find("reference", 1, true)
+    or node_type:find("parameter", 1, true)
+    or node_type:find("function_type", 1, true)
+  then
+    return false
+  end
+  return node_type:find("function", 1, true)
+    or node_type:find("method", 1, true)
+    or node_type:find("lambda", 1, true)
+    or node_type:find("arrow", 1, true)
+    or node_type == "closure_expression"
+    or node_type == "func_literal"
+end
+
+local function contains(node, row, col)
+  local start_row, start_col, end_row, end_col = node:range()
+  return (row > start_row or row == start_row and col >= start_col)
+    and (row < end_row or row == end_row and col < end_col)
+end
+
+local function collect_ts_tokens(node, context)
+  local tokens = {}
+  local function walk(current)
+    if is_function(current:type()) and not contains(current, context.anchor.row, context.anchor.col) then
+      return
+    end
+    if is_identifier(current:type()) then
+      local start_row, start_col, end_row, end_col = current:range()
+      local name = vim.treesitter.get_node_text(current, context.bufnr)
+      if start_row == end_row and name and not context.keywords[name] then
+        tokens[#tokens + 1] = { name = name, line = start_row + 1, start_col = start_col, end_col = end_col }
+      end
+      return
+    end
+    for child in current:iter_children() do
+      if child:named() then
+        walk(child)
+      end
+    end
+  end
+  walk(node)
+  return tokens
+end
+
+local function complex_target(node)
+  local node_type = node:type()
+  if
+    node_type:find("index", 1, true)
+    or node_type:find("field", 1, true)
+    or node_type:find("member", 1, true)
+    or node_type:find("subscript", 1, true)
+    or node_type:find("table", 1, true)
+    or node_type:find("object", 1, true)
+    or node_type:find("array", 1, true)
+  then
+    return true
+  end
+  for child in node:iter_children() do
+    if child:named() and complex_target(child) then
       return true
     end
   end
   return false
 end
 
-local function add_side(tracked, side)
-  local changed = false
-  for _, token in ipairs(side) do
-    if not tracked[token.name] then
-      tracked[token.name] = true
-      changed = true
-    end
+local function assignment_sides(node)
+  local lhs, rhs = {}, {}
+  for _, field in ipairs({ "left", "name", "pattern" }) do
+    vim.list_extend(lhs, node:field(field) or {})
   end
-  return changed
+  for _, field in ipairs({ "right", "value" }) do
+    vim.list_extend(rhs, node:field(field) or {})
+  end
+  if #lhs == 0 and node:named_child_count() >= 2 then
+    lhs = { node:named_child(0) }
+    rhs = { node:named_child(1) }
+  end
+  return lhs, rhs
 end
 
-local function line_facts(analysis)
-  local by_line = {}
-  for _, tokens in pairs(analysis.occurrences) do
-    for _, token in ipairs(tokens) do
-      by_line[token.line] = by_line[token.line] or { line = token.line, tokens = {} }
-      by_line[token.line].tokens[#by_line[token.line].tokens + 1] = token
+function M.analyze_treesitter(context)
+  local ok, analysis = pcall(function()
+    local parser = vim.treesitter.get_parser(context.bufnr)
+    local tree = parser:parse()[1]
+    if not tree then
+      error("missing tree")
     end
-  end
-  for _, assignment in ipairs(analysis.assignments) do
-    by_line[assignment.line] = by_line[assignment.line] or { line = assignment.line, tokens = {} }
-    by_line[assignment.line].assignments = by_line[assignment.line].assignments or {}
-    by_line[assignment.line].assignments[#by_line[assignment.line].assignments + 1] = assignment
-  end
 
-  local facts = vim.tbl_values(by_line)
-  table.sort(facts, function(a, b)
-    return a.line < b.line
+    local result = { assignments = {}, occurrences = {} }
+    local scope_start, scope_end = context.scope.start_line - 1, context.scope.end_line - 1
+    local function walk(node, inside_assignment)
+      local start_row, _, end_row = node:range()
+      if end_row < scope_start or start_row > scope_end then
+        return
+      end
+      if is_function(node:type()) and not contains(node, context.anchor.row, context.anchor.col) then
+        return
+      end
+      if is_identifier(node:type()) then
+        local token = collect_ts_tokens(node, context)[1]
+        if token then
+          result.occurrences[token.name] = result.occurrences[token.name] or {}
+          result.occurrences[token.name][#result.occurrences[token.name] + 1] = token
+        end
+        return
+      end
+
+      local node_type = node:type()
+      local is_assignment = node_type:find("assignment", 1, true)
+        or node_type:find("declarator", 1, true)
+        or node_type == "short_var_declaration"
+        or node_type == "let_declaration"
+      if is_assignment and not inside_assignment then
+        local lhs_nodes, rhs_nodes = assignment_sides(node)
+        local lhs, rhs = {}, {}
+        for _, side in ipairs(lhs_nodes) do
+          if complex_target(side) then
+            lhs = {}
+            break
+          end
+          vim.list_extend(lhs, collect_ts_tokens(side, context))
+        end
+        for _, side in ipairs(rhs_nodes) do
+          vim.list_extend(rhs, collect_ts_tokens(side, context))
+        end
+        if #lhs > 0 then
+          local text = vim.treesitter.get_node_text(node, context.bufnr) or ""
+          if text:find("[+%-*/%%]=") then
+            vim.list_extend(rhs, lhs)
+          end
+          result.assignments[#result.assignments + 1] = { line = lhs[1].line, lhs = lhs, rhs = rhs }
+        end
+      end
+
+      for child in node:iter_children() do
+        if child:named() then
+          walk(child, inside_assignment or is_assignment)
+        end
+      end
+    end
+    walk(tree:root())
+    return result
   end)
-  return facts
+  return ok and analysis or nil, ok and nil or "unavailable"
 end
 
-function M.expand(path_set, symbol_ranges, symbol, analysis, direction)
-  local tracked = { [symbol] = true }
-  local facts = line_facts(analysis)
-  local changed, guard = true, 0
-  while changed and guard < FLOW_MAX_ITER do
-    changed = false
-    guard = guard + 1
-    for _, fact in ipairs(facts) do
-      local line_hit = side_intersects(fact.tokens, tracked)
-      for _, assignment in ipairs(fact.assignments or {}) do
-        local lhs_hit = side_intersects(assignment.lhs, tracked)
-        local rhs_hit = side_intersects(assignment.rhs, tracked)
-        line_hit = line_hit or lhs_hit or rhs_hit
-        if rhs_hit then
-          changed = add_side(tracked, assignment.lhs) or changed
+function M.analyze(context, analyzers)
+  analyzers = analyzers or { "treesitter", "text" }
+  local meta = { flow_analyzers = vim.deepcopy(analyzers), flow_analyzer = nil, flow_fallback = false }
+  local fallback_reason
+  for index, analyzer in ipairs(analyzers) do
+    local analysis, reason
+    if analyzer == "treesitter" then
+      analysis, reason = M.analyze_treesitter(context)
+    elseif analyzer == "text" then
+      analysis = M.analyze_text(context)
+    end
+    if analysis then
+      meta.flow_analyzer = analyzer
+      meta.flow_fallback = index > 1
+      meta.flow_fallback_reason = fallback_reason
+      return analysis, meta
+    end
+    fallback_reason = fallback_reason or reason
+  end
+  meta.flow_fallback_reason = fallback_reason
+  return nil, meta
+end
+
+local function add_edge(edges, from, to)
+  edges[from] = edges[from] or {}
+  edges[from][to] = true
+end
+
+function M.expand(path_set, symbol_ranges, symbol, analysis, direction, max_depth)
+  local edges = {}
+  for _, assignment in ipairs(analysis.assignments) do
+    for _, lhs in ipairs(assignment.lhs) do
+      for _, rhs in ipairs(assignment.rhs) do
+        if direction == "forward" or direction == "both" then
+          add_edge(edges, rhs.name, lhs.name)
         end
-        if direction == "both" and lhs_hit then
-          changed = add_side(tracked, assignment.rhs) or changed
+        if direction == "backward" or direction == "both" then
+          add_edge(edges, lhs.name, rhs.name)
         end
-      end
-      if line_hit then
-        path_set[fact.line] = true
       end
     end
   end
 
+  local depth_limit = math.min(max_depth or FLOW_MAX_ITER, FLOW_MAX_ITER)
+  local tracked, queue = { [symbol] = 0 }, { symbol }
+  local index = 1
+  while queue[index] do
+    local name = queue[index]
+    index = index + 1
+    if tracked[name] < depth_limit then
+      for next_name in pairs(edges[name] or {}) do
+        if tracked[next_name] == nil then
+          tracked[next_name] = tracked[name] + 1
+          queue[#queue + 1] = next_name
+        end
+      end
+    end
+  end
+
+  local added_lines = 0
   for name in pairs(tracked) do
     for _, token in ipairs(analysis.occurrences[name] or {}) do
-      if path_set[token.line] then
-        symbol_ranges[#symbol_ranges + 1] = {
-          line = token.line,
-          start_col = token.start_col,
-          end_col = token.end_col,
-        }
+      if not path_set[token.line] then
+        path_set[token.line] = true
+        added_lines = added_lines + 1
       end
+      symbol_ranges[#symbol_ranges + 1] = {
+        line = token.line,
+        start_col = token.start_col,
+        end_col = token.end_col,
+      }
     end
   end
 
-  return tracked
+  return tracked,
+    {
+      flow_expanded = true,
+      flow_tracked_count = vim.tbl_count(tracked),
+      flow_added_lines = added_lines,
+    }
 end
 
 return M

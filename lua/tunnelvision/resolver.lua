@@ -608,15 +608,6 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
   if uses_word then
     word_lines, word_ranges = collect_word_matches(bufnr, symbol, scope)
   end
-  local analysis = use_flow
-      and flow.analyze_text({
-        anchor = anchor,
-        bufnr = bufnr,
-        keywords = opts.keywords or {},
-        scope = scope,
-        symbol = symbol,
-      })
-    or nil
   local path_set, ranges, meta = resolve_source_chain(sources, {
     anchor = anchor,
     bufnr = bufnr,
@@ -630,12 +621,31 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
     word_lines = word_lines,
     word_ranges = word_ranges,
   })
+  path_set[anchor.row + 1] = true
 
   if use_flow and meta.used_source then
-    flow.expand(path_set, ranges, symbol, analysis, opts.direction)
+    local analysis, flow_meta = flow.analyze({
+      anchor = anchor,
+      bufnr = bufnr,
+      keywords = opts.keywords or {},
+      scope = scope,
+      symbol = symbol,
+    }, opts.analyzers)
+    for key, value in pairs(flow_meta) do
+      meta[key] = value
+    end
+    if analysis then
+      local _, expand_meta = flow.expand(path_set, ranges, symbol, analysis, opts.direction, opts.max_depth)
+      for key, value in pairs(expand_meta) do
+        meta[key] = value
+      end
+    else
+      meta.flow_expanded = false
+      meta.flow_tracked_count = 0
+      meta.flow_added_lines = 0
+    end
   end
 
-  path_set[anchor.row + 1] = true
   return path_set, sorted_lines(path_set), meta, normalize_ranges(bufnr, ranges)
 end
 

@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `dim = "none"` for positive highlighting without dimming.
 - Added `register_source(name, handler)` for custom synchronous Lua sources in
   fallback chains and strict combined source steps.
+- Added ordered `flow_settings.analyzers` with best-effort Tree-sitter analysis
+  and a lightweight text fallback.
+- Added backward flow traversal, optional `flow_settings.max_depth`, and flow
+  analyzer/expansion metadata through `status()`.
 
 ### Changed
 - Structural statement and scope-head highlighting now uses Tree-sitter
@@ -23,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   navigation remains limited to source/flow path lines.
 - Flow expansion now runs after any successful source step, including strict
   LSP, Tree-sitter, and custom sources, instead of requiring `word` in the chain.
+- Text flow analysis now recognizes `let`, `const`, `var`, typed declarations,
+  Go-style `:=`, compound assignments, and simple multiple assignments.
 - Existing setup forms keep line focus with Comment-derived dimming, including
   legacy `source` values and modern `sources` chains.
 - Refactored internal source resolution without changing public behavior.

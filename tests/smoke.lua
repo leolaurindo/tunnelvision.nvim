@@ -230,6 +230,46 @@ tunnelvision.setup({ notify = false }) -- restore
 -- flow_settings defaults
 assert_true(core.state.config.flow_settings.direction == "forward", "default flow_settings.direction")
 assert_true(vim.deep_equal(core.state.config.flow_settings.extra_keywords, {}), "default flow_settings.extra_keywords")
+assert_true(
+  vim.deep_equal(core.state.config.flow_settings.analyzers, { "treesitter", "text" }),
+  "default flow_settings.analyzers"
+)
+assert_true(core.state.config.flow_settings.max_depth == nil, "default flow_settings.max_depth")
+
+tunnelvision.setup({ notify = false, flow_settings = { analyzers = { "text" } } })
+assert_true(vim.deep_equal(core.state.config.flow_settings.analyzers, { "text" }), "configured flow analyzers")
+tunnelvision.setup({ notify = false, flow_settings = { analyzers = { "invalid" } } })
+assert_true(
+  vim.deep_equal(core.state.config.flow_settings.analyzers, { "treesitter", "text" }),
+  "invalid flow analyzers use defaults"
+)
+tunnelvision.setup({ notify = false })
+tunnelvision.setup({ notify = false, flow_settings = { max_depth = 2 } })
+assert_true(core.state.config.flow_settings.max_depth == 2, "configured flow max_depth")
+tunnelvision.setup({ notify = false, flow_settings = { max_depth = 0 } })
+assert_true(core.state.config.flow_settings.max_depth == nil, "invalid flow max_depth")
+tunnelvision.setup({ notify = false, flow_settings = { max_depth = 0.5 } })
+assert_true(core.state.config.flow_settings.max_depth == nil, "fractional flow max_depth below one")
+tunnelvision.setup({ notify = false })
+
+tunnelvision.setup({
+  notify = false,
+  flow_settings = {
+    direction = "backward",
+    analyzers = { "text" },
+    extra_keywords = { "keep" },
+    max_depth = 3,
+  },
+})
+local merged_flow = config.normalize_activation(core.state.config, { flow_settings = { max_depth = 1 } }, 0, {})
+assert_true(merged_flow.flow_settings.direction == "backward", "one-shot flow settings preserve direction")
+assert_true(
+  vim.deep_equal(merged_flow.flow_settings.analyzers, { "text" }),
+  "one-shot flow settings preserve analyzers"
+)
+assert_true(merged_flow.flow_settings.extra_keywords[1] == "keep", "one-shot flow settings preserve keywords")
+assert_true(merged_flow.flow_settings.max_depth == 1, "one-shot flow settings override selected fields")
+tunnelvision.setup({ notify = false })
 
 -- setup with flow_settings
 tunnelvision.setup({ notify = false, flow_settings = { direction = "both", extra_keywords = { "x" } } })
@@ -378,6 +418,7 @@ for _, case in ipairs({
   { "mode", "flow", core.get_mode },
   { "mode", "dynamic", core.get_mode },
   { "mode", "static", core.get_mode },
+  { "direction", "backward", core.get_direction },
   { "direction", "both", core.get_direction },
   { "direction", "forward", core.get_direction },
   { "scope", "buffer", core.get_scope },
@@ -390,6 +431,10 @@ for _, case in ipairs({
   vim.cmd(("TunnelVision %s %s"):format(case[1], case[2]))
   assert_true(case[3]() == case[2], ("%s %s not applied"):format(case[1], case[2]))
 end
+assert_true(
+  vim.tbl_contains(vim.fn.getcompletion("TunnelVision direction b", "cmdline"), "backward"),
+  "direction completion should include backward"
+)
 
 -- Fallback-chain command syntax
 vim.cmd("TunnelVision source lsp,word")
@@ -904,8 +949,97 @@ do
   local same_line_tracked = flow.expand({}, {}, "alpha", same_line, "forward")
   assert_true(same_line_tracked.gamma, "flow interface should retain multiple assignments on one line")
 
-  local guarded_lines = { "print(v32)" }
-  for i = 32, 1, -1 do
+  local text_cases_buf = new_buffer({
+    "let first = source",
+    "const typed: number = first",
+    "var third = typed",
+    "short := third",
+    "short += first",
+    "local left, right = short, third",
+    "obj.field = source",
+    "items[index] = source",
+  })
+  local text_cases = flow.analyze_text({
+    anchor = { row = 0, col = 4 },
+    bufnr = text_cases_buf,
+    keywords = resolver.build_keywords({}),
+    scope = { start_line = 1, end_line = 8 },
+    symbol = "first",
+  })
+  assert_true(#text_cases.assignments == 6, "text analyzer should skip complex assignment targets")
+  assert_ranges(text_cases.assignments[1].lhs, {
+    { name = "first", line = 1, start_col = 4, end_col = 9 },
+  }, "text analyzer should parse let declarations")
+  assert_ranges(text_cases.assignments[2].lhs, {
+    { name = "typed", line = 2, start_col = 6, end_col = 11 },
+  }, "text analyzer should parse typed const declarations")
+  assert_ranges(text_cases.assignments[3].lhs, {
+    { name = "third", line = 3, start_col = 4, end_col = 9 },
+  }, "text analyzer should parse var declarations")
+  assert_ranges(text_cases.assignments[4].lhs, {
+    { name = "short", line = 4, start_col = 0, end_col = 5 },
+  }, "text analyzer should parse short declarations")
+  assert_ranges(text_cases.assignments[5].rhs, {
+    { name = "first", line = 5, start_col = 9, end_col = 14 },
+    { name = "short", line = 5, start_col = 0, end_col = 5 },
+  }, "compound assignment should retain RHS and LHS ranges")
+  assert_ranges(text_cases.assignments[6].lhs, {
+    { name = "left", line = 6, start_col = 6, end_col = 10 },
+    { name = "right", line = 6, start_col = 12, end_col = 17 },
+  }, "text analyzer should retain multiple LHS ranges")
+
+  local c_style_buf =
+    new_buffer({ "int value = source", "value -= source", "value *= source", "value /= source", "value %= source" })
+  local c_style = flow.analyze_text({
+    anchor = { row = 0, col = 4 },
+    bufnr = c_style_buf,
+    keywords = resolver.build_keywords({}),
+    scope = { start_line = 1, end_line = 5 },
+    symbol = "value",
+  })
+  assert_ranges(c_style.assignments[1].lhs, {
+    { name = "value", line = 1, start_col = 4, end_col = 9 },
+  }, "text analyzer should preserve simple C-style declarations")
+  for i = 2, 5 do
+    assert_true(c_style.assignments[i].rhs[2].name == "value", "compound operators should depend on their LHS")
+  end
+
+  local analyzer_buf = new_buffer({ "local alpha = 1", "local beta = alpha", "print(beta)" }, "plaintext")
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  tunnelvision.setup({ notify = false, mode = "flow", source = "word", scope = "buffer" })
+  tunnelvision.on({ flow_settings = { analyzers = { "treesitter" } } })
+  assert_true(not core.get_buf_state(analyzer_buf).path_set[3], "strict treesitter analyzer should not use text")
+  tunnelvision.on({ flow_settings = { analyzers = { "treesitter", "text" } } })
+  local analyzer_state = core.get_buf_state(analyzer_buf)
+  assert_true(analyzer_state.path_set[3], "analyzer chain should fall back to text")
+  assert_true(
+    analyzer_state.last_compute_meta.flow_analyzer == "text" and analyzer_state.last_compute_meta.flow_fallback,
+    "analyzer fallback metadata"
+  )
+  tunnelvision.on({ flow_settings = { analyzers = { "text" } } })
+  local text_state = core.get_buf_state(analyzer_buf)
+  assert_true(text_state.path_set[3], "text-only analyzer should preserve flow behavior")
+  local flow_status = tunnelvision.status()
+  assert_true(
+    flow_status.flow_analyzer == "text"
+      and flow_status.flow_expanded
+      and flow_status.flow_tracked_count == 2
+      and flow_status.flow_added_lines == 1,
+    "status should expose flow analyzer and expansion counts"
+  )
+  vim.cmd("TunnelVision off")
+
+  local backward = flow.expand({}, {}, "gamma", analysis, "backward")
+  assert_true(backward.alpha and backward.beta, "backward flow should follow inputs")
+  local forward = flow.expand({}, {}, "gamma", analysis, "forward")
+  assert_true(not forward.alpha and not forward.beta, "forward flow should not follow inputs")
+  local both = flow.expand({}, {}, "beta", analysis, "both")
+  assert_true(both.alpha and both.gamma, "both flow should follow both directions")
+  local shallow = flow.expand({}, {}, "alpha", analysis, "forward", 1)
+  assert_true(shallow.beta and not shallow.gamma, "max_depth should limit flow hops")
+
+  local guarded_lines = { "print(v33)" }
+  for i = 33, 1, -1 do
     guarded_lines[#guarded_lines + 1] = ("v%d = v%d"):format(i, i - 1)
   end
   guarded_lines[#guarded_lines + 1] = "v0 = 1"
@@ -919,7 +1053,8 @@ do
   })
   local guarded_path = { [#guarded_lines] = true }
   local guarded_tracked = flow.expand(guarded_path, {}, "v0", guarded_analysis, "forward")
-  assert_true(guarded_tracked.v32 and not guarded_path[1], "flow extraction should preserve iteration guard behavior")
+  assert_true(guarded_tracked.v32 and not guarded_tracked.v33, "default flow should preserve the 32-hop guard")
+  assert_true(not guarded_path[1], "identifiers beyond the hard guard should remain hidden")
 end
 
 local dynamic_buf = new_buffer({
@@ -995,11 +1130,21 @@ if vim.lsp.buf_request_all then
   vim.cmd("TunnelVision on")
   local old_marks = #vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {})
   assert_true(old_marks > 0, "word render should create dim extmarks")
+  core.get_buf_state(lsp_buf).last_compute_meta = {
+    flow_analyzer = "text",
+    flow_expanded = true,
+    flow_tracked_count = 2,
+  }
 
   tunnelvision.setup({ notify = false, sources = { "lsp", "word" }, lsp_timeout_ms = 1000 })
   vim.api.nvim_win_set_cursor(0, { 2, 7 })
   vim.cmd("TunnelVision on")
   assert_true(core.get_buf_state(lsp_buf).pending, "async LSP activation should be pending")
+  local pending_status = tunnelvision.status()
+  assert_true(
+    pending_status.flow_analyzer == nil and not pending_status.flow_expanded and pending_status.flow_tracked_count == 0,
+    "pending status should not expose stale flow metadata"
+  )
   assert_true(
     #vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {}) == old_marks,
     "pending render should keep previous dim extmarks"
@@ -1281,6 +1426,40 @@ do
     }, "treesitter-only flow should retain source and propagated ranges")
     vim.cmd("TunnelVision off")
 
+    local ts_analysis = require("tunnelvision.flow").analyze_treesitter({
+      anchor = { row = 0, col = 6 },
+      bufnr = ts_flow_buf,
+      keywords = require("tunnelvision.resolver").build_keywords({}),
+      scope = { start_line = 1, end_line = 3 },
+      symbol = "alpha",
+    })
+    assert_true(ts_analysis and #ts_analysis.assignments >= 2, "treesitter analyzer should extract assignments")
+    assert_ranges(ts_analysis.assignments[2].lhs, {
+      { name = "beta", line = 2, start_col = 6, end_col = 10 },
+    }, "treesitter analyzer should retain exact LHS ranges")
+
+    local nested_flow_buf = new_buffer({
+      "local alpha = 1",
+      "local function nested()",
+      "  local nested_value = alpha",
+      "  print(nested_value)",
+      "end",
+      "local callback = function()",
+      "  local leaked = alpha",
+      "end",
+      "local beta = alpha",
+    })
+    local nested_analysis = require("tunnelvision.flow").analyze_treesitter({
+      anchor = { row = 0, col = 6 },
+      bufnr = nested_flow_buf,
+      keywords = require("tunnelvision.resolver").build_keywords({}),
+      scope = { start_line = 1, end_line = 9 },
+      symbol = "alpha",
+    })
+    assert_true(not nested_analysis.occurrences.nested_value, "treesitter analyzer should skip nested functions")
+    assert_true(not nested_analysis.occurrences.leaked, "treesitter analyzer should skip function expressions")
+    assert_true(#nested_analysis.occurrences.alpha == 2, "nested functions should not leak identifier occurrences")
+
     -- Treesitter excludes string-only occurrences
     local str_buf = new_buffer({
       'local msg = "alpha is here"',
@@ -1344,6 +1523,47 @@ do
       "combine(lsp,treesitter) should trigger fallback when LSP unavailable"
     )
     vim.cmd("TunnelVision off")
+  end
+end
+
+do
+  local go_buf = new_buffer({
+    "alpha := 1",
+    "beta := alpha",
+    "callback := func() { nested := alpha }",
+    "println(beta)",
+  }, "go")
+  local ok_parser, go_parser = pcall(vim.treesitter.get_parser, go_buf, "go")
+  if ok_parser and go_parser then
+    local go_analysis = require("tunnelvision.flow").analyze_treesitter({
+      anchor = { row = 0, col = 0 },
+      bufnr = go_buf,
+      keywords = require("tunnelvision.resolver").build_keywords({}),
+      scope = { start_line = 1, end_line = 4 },
+      symbol = "alpha",
+    })
+    assert_true(#go_analysis.assignments == 3, "treesitter analyzer should parse Go short declarations")
+    local go_path = {}
+    local go_tracked = require("tunnelvision.flow").expand(go_path, {}, "alpha", go_analysis, "forward")
+    assert_true(go_path[4], "Go short declarations should propagate flow")
+    assert_true(not go_tracked.callback, "Go function literals should not leak dependencies")
+  end
+end
+
+do
+  local rust_buf = new_buffer({ "let alpha = 1;", "let beta = alpha;", 'println!("{}", beta);' }, "rust")
+  local ok_parser, rust_parser = pcall(vim.treesitter.get_parser, rust_buf, "rust")
+  if ok_parser and rust_parser then
+    local rust_analysis = require("tunnelvision.flow").analyze_treesitter({
+      anchor = { row = 0, col = 4 },
+      bufnr = rust_buf,
+      keywords = require("tunnelvision.resolver").build_keywords({}),
+      scope = { start_line = 1, end_line = 3 },
+      symbol = "alpha",
+    })
+    local rust_path = {}
+    require("tunnelvision.flow").expand(rust_path, {}, "alpha", rust_analysis, "forward")
+    assert_true(rust_path[3], "Rust let declarations should propagate flow")
   end
 end
 tunnelvision.setup({ notify = false, source = "lsp_else_word" })

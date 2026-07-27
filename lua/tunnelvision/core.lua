@@ -126,6 +126,8 @@ local function configs_equal(a, b)
     and vim.deep_equal(a.highlights, b.highlights)
     and vim.deep_equal(a.dim, b.dim)
     and vim.deep_equal(a.flow_settings.extra_keywords, b.flow_settings.extra_keywords)
+    and vim.deep_equal(a.flow_settings.analyzers, b.flow_settings.analyzers)
+    and a.flow_settings.max_depth == b.flow_settings.max_depth
 end
 
 -- Compatibility alias for the historical top-level flow API.
@@ -258,6 +260,8 @@ local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords,
   bs.path_set, bs.path_order, bs.last_compute_meta, bs.symbol_ranges =
     resolver.compute_path(bufnr, symbol, anchor, scope, {
       direction = cfg.flow_settings.direction,
+      analyzers = cfg.flow_settings.analyzers,
+      max_depth = cfg.flow_settings.max_depth,
       custom_sources = state.custom_sources,
       keywords = keywords,
       lsp_result = lsp_result,
@@ -475,7 +479,7 @@ end
 -- Mutates flow_settings.direction.
 function M.set_direction(direction)
   if not config.valid_directions[direction] then
-    M.notify("TunnelVision: direction must be forward or both", vim.log.levels.ERROR)
+    M.notify("TunnelVision: direction must be forward, backward, or both", vim.log.levels.ERROR)
     return
   end
   state.config.flow_settings.direction = direction
@@ -591,16 +595,26 @@ function M.get_status(bufnr)
 
   local bs = state.bufs[b]
   local cfg = bs and bs.config or state.config
+  local meta = bs and not bs.pending and bs.last_compute_meta or {}
   return {
     active = bs and bs.active or false,
     pending = bs and bs.pending or false,
     symbol = bs and bs.symbol or nil,
     mode = cfg.mode,
     direction = cfg.flow_settings.direction,
+    analyzers = vim.deepcopy(cfg.flow_settings.analyzers),
+    max_depth = cfg.flow_settings.max_depth,
     scope = cfg.scope,
     source = config.legacy_source_from_sources(cfg.sources),
     sources = config.get_sources_copy(cfg.sources),
     sources_label = config.format_sources(cfg.sources),
+    flow_analyzer = meta.flow_analyzer,
+    flow_analyzers = vim.deepcopy(meta.flow_analyzers),
+    flow_expanded = meta.flow_expanded or false,
+    flow_tracked_count = meta.flow_tracked_count or 0,
+    flow_added_lines = meta.flow_added_lines or 0,
+    flow_fallback = meta.flow_fallback or false,
+    flow_fallback_reason = meta.flow_fallback_reason,
   }
 end
 

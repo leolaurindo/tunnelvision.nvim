@@ -22,6 +22,7 @@ local defaults = {
   flow_settings = {
     direction = "forward",
     extra_keywords = {},
+    analyzers = { "treesitter", "text" },
   },
   source = "lsp_else_word",
   sources = { "lsp", "word" },
@@ -38,11 +39,12 @@ M.defaults = defaults
 -- Validation tables
 
 local valid_modes = { static = true, flow = true, dynamic = true }
-local valid_directions = { forward = true, both = true }
+local valid_directions = { forward = true, backward = true, both = true }
 local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
 local valid_source_names = { lsp = true, word = true, treesitter = true }
 local valid_fallback_warn = { once = true, always = true, never = true }
+local valid_analyzers = { treesitter = true, text = true }
 local highlight_contexts = { "scope_head", "statement", "line", "symbol" }
 local color_style_keys = { fg = true, bg = true }
 local boolean_style_keys = {
@@ -59,6 +61,7 @@ M.valid_scopes = valid_scopes
 M.valid_sources = valid_sources
 M.valid_source_names = valid_source_names
 M.valid_fallback_warn = valid_fallback_warn
+M.valid_analyzers = valid_analyzers
 
 M.activation_keys = {
   "mode",
@@ -229,6 +232,23 @@ function M.normalize_highlights(highlights)
   return normalized
 end
 
+function M.normalize_analyzers(analyzers)
+  if type(analyzers) ~= "table" or #analyzers == 0 then
+    return vim.deepcopy(defaults.flow_settings.analyzers)
+  end
+  local normalized, seen = {}, {}
+  for _, analyzer in ipairs(analyzers) do
+    if not valid_analyzers[analyzer] then
+      return vim.deepcopy(defaults.flow_settings.analyzers)
+    end
+    if not seen[analyzer] then
+      normalized[#normalized + 1] = analyzer
+      seen[analyzer] = true
+    end
+  end
+  return normalized
+end
+
 function M.normalize(cfg, custom_sources)
   if not valid_modes[cfg.mode] then
     cfg.mode = defaults.mode
@@ -285,6 +305,12 @@ function M.normalize(cfg, custom_sources)
     cfg.flow_settings.direction = defaults.flow_settings.direction
   end
   cfg.flow_settings.extra_keywords = resolver.sanitize_keywords(cfg.flow_settings.extra_keywords)
+  cfg.flow_settings.analyzers = M.normalize_analyzers(cfg.flow_settings.analyzers)
+  if cfg.flow_settings.max_depth ~= nil then
+    local depth = tonumber(cfg.flow_settings.max_depth)
+    depth = depth and math.floor(depth) or nil
+    cfg.flow_settings.max_depth = depth and depth > 0 and depth or nil
+  end
 
   cfg.max_dim_lines = math.max(1, tonumber(cfg.max_dim_lines) or defaults.max_dim_lines)
   cfg.lsp_timeout_ms = math.max(1, tonumber(cfg.lsp_timeout_ms) or defaults.lsp_timeout_ms)
@@ -294,7 +320,11 @@ function M.normalize_activation(base_config, opts, bufnr, custom_sources)
   local cfg = vim.deepcopy(base_config)
   for _, key in ipairs(M.activation_keys) do
     if opts[key] ~= nil then
-      cfg[key] = opts[key]
+      if key == "flow_settings" and type(opts[key]) == "table" then
+        cfg[key] = vim.tbl_deep_extend("force", cfg[key] or {}, opts[key])
+      else
+        cfg[key] = opts[key]
+      end
     end
   end
 
