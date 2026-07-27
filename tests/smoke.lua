@@ -1196,6 +1196,271 @@ do
 end
 tunnelvision.setup({ notify = false, source = "lsp_else_word" })
 
+-- Structural contexts use exact source columns and remain separate from paths.
+do
+  tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+  vim.cmd("enew")
+  vim.bo.filetype = "lua"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    "local function classify(alpha)",
+    "  local total =",
+    "    alpha +",
+    "    1",
+    "  if alpha > 0 then",
+    "    total = total + alpha",
+    "  elseif alpha < 0 then",
+    "    total = alpha",
+    "  else",
+    "    total = 0",
+    "  end",
+    "  return total",
+    "end",
+  })
+
+  local ok_parser, parser = pcall(vim.treesitter.get_parser, 0, "lua")
+  if ok_parser and parser then
+    local structural_buf = vim.api.nvim_get_current_buf()
+    vim.api.nvim_win_set_cursor(0, { 2, 10 })
+    tunnelvision.on({ highlights = { statement = true, scope_head = true } })
+    local bs = core.get_buf_state(structural_buf)
+
+    assert_true(
+      vim.deep_equal(
+        bs.statement_set,
+        { [2] = true, [3] = true, [4] = true, [6] = true, [8] = true, [10] = true, [12] = true }
+      ),
+      "statement context should include complete conservative statements from exact columns"
+    )
+    assert_true(
+      vim.deep_equal(bs.scope_head_set, { [1] = true, [5] = true, [7] = true, [9] = true }),
+      "scope-head context should include function and conditional clause ancestors"
+    )
+    assert_true(bs.context_set[4] and bs.context_set[9], "dim compatibility context should union structural sets")
+    for _, lnum in ipairs(bs.path_order) do
+      assert_true(not bs.scope_head_set[lnum], "scope heads should not enter path navigation")
+    end
+
+    local parse_count = 0
+    local orig_get_parser = vim.treesitter.get_parser
+    vim.treesitter.get_parser = function()
+      return {
+        parse = function()
+          parse_count = parse_count + 1
+          return parser:parse()
+        end,
+      }
+    end
+    require("tunnelvision.context").evaluate(bs.config, bs.path_set, bs.symbol_ranges, structural_buf, bs.scope)
+    vim.treesitter.get_parser = orig_get_parser
+    assert_true(parse_count == 1, "structural contexts should parse once per evaluation")
+
+    tunnelvision.on({ highlights = { scope_head = true }, force = true })
+    bs = core.get_buf_state(structural_buf)
+    assert_true(next(bs.statement_set) == nil, "statement context should remain disabled independently")
+    assert_true(bs.scope_head_set[9], "scope-head context should remain enabled independently")
+    vim.cmd("TunnelVision off")
+
+    assert_true(
+      tunnelvision.register_source("structural_custom", function()
+        return { [10] = true }
+      end),
+      "structural custom source registers"
+    )
+    vim.api.nvim_win_set_cursor(0, { 1, 25 })
+    tunnelvision.on({
+      sources = { "structural_custom" },
+      highlights = { statement = true, scope_head = true },
+    })
+    bs = core.get_buf_state(structural_buf)
+    assert_true(bs.statement_set[10], "range-less custom path should use its first nonblank statement node")
+    assert_true(bs.scope_head_set[9], "range-less custom path should retain its enclosing else head")
+    vim.cmd("TunnelVision off")
+    assert_true(next(bs.statement_set) == nil, "deactivation should clear statement context")
+    assert_true(next(bs.scope_head_set) == nil, "deactivation should clear scope-head context")
+    assert_true(next(bs.context_set) == nil, "deactivation should clear renderer context")
+  end
+end
+
+-- Structural walking is conservative and falls back on parser/node failures.
+do
+  vim.cmd("enew")
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "alpha(", "  value", ")" })
+  local context = require("tunnelvision.context")
+  local cfg = { highlights = { statement = {} } }
+  local path_set = { [1] = true }
+  local symbol_ranges = { { line = 1, start_col = 3, end_col = 8 } }
+  local scope = { start_line = 1, end_line = 3 }
+  local orig_get_parser = vim.treesitter.get_parser
+  local seen_col
+
+  local statement_node = {
+    type = function()
+      return "expression_statement"
+    end,
+    range = function()
+      return 0, 0, 2, 0
+    end,
+    parent = function()
+      return nil
+    end,
+  }
+  vim.treesitter.get_parser = function()
+    return {
+      parse = function()
+        return {
+          {
+            root = function()
+              return {
+                named_descendant_for_range = function(_, _, col)
+                  seen_col = col
+                  return statement_node
+                end,
+              }
+            end,
+          },
+        }
+      end,
+    }
+  end
+  local statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
+  assert_true(seen_col == 3, "structural lookup should use the exact source byte column")
+  assert_true(vim.deep_equal(statements, { [1] = true, [2] = true }), "column-zero end rows should stay exclusive")
+  assert_true(not fallback.statement, "safe statement resolution should not report fallback")
+
+  local broad_node = {
+    type = function()
+      return "try_statement"
+    end,
+    parent = function()
+      return nil
+    end,
+  }
+  vim.treesitter.get_parser = function()
+    return {
+      parse = function()
+        return {
+          {
+            root = function()
+              return {
+                named_descendant_for_range = function()
+                  return broad_node
+                end,
+              }
+            end,
+          },
+        }
+      end,
+    }
+  end
+  statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
+  assert_true(vim.deep_equal(statements, path_set), "unknown statement containers should fall back to matched lines")
+  assert_true(fallback.statement, "conservative statement rejection should report fallback")
+
+  vim.treesitter.get_parser = function()
+    return {
+      parse = function()
+        return {
+          {
+            root = function()
+              return {
+                named_descendant_for_range = function()
+                  error("broken node traversal")
+                end,
+              }
+            end,
+          },
+        }
+      end,
+    }
+  end
+  statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
+  vim.treesitter.get_parser = orig_get_parser
+  assert_true(vim.deep_equal(statements, path_set), "node traversal errors should fall back to matched lines")
+  assert_true(fallback.statement, "node traversal errors should report structural fallback")
+end
+
+-- Missing structural parsers fall back safely and obey warning policy.
+do
+  local messages = {}
+  local orig_notify = core.notify
+  core.notify = function(msg)
+    messages[#messages + 1] = msg
+  end
+
+  tunnelvision.setup({
+    notify = true,
+    source = "word",
+    scope = "buffer",
+    fallback_warn = "once",
+    highlights = { statement = true, scope_head = true },
+  })
+  vim.cmd("enew")
+  vim.bo.filetype = "plaintext"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "alpha = 1", "print(alpha)" })
+  local structural_fallback_buf = vim.api.nvim_get_current_buf()
+  vim.api.nvim_win_set_cursor(0, { 1, 1 })
+  tunnelvision.on()
+  local bs = core.get_buf_state(structural_fallback_buf)
+  assert_true(vim.deep_equal(bs.statement_set, bs.path_set), "missing parser should fall back to every matched line")
+  assert_true(next(bs.scope_head_set) == nil, "missing parser should skip scope heads")
+  assert_true(messages[1] and messages[1]:find("using matched lines"), "statement fallback should warn")
+  assert_true(messages[2] and messages[2]:find("skipping scope heads"), "scope-head fallback should warn")
+
+  core.activate(structural_fallback_buf, {
+    force = true,
+    silent = false,
+    symbol = "alpha",
+    cursor = { 1, 1 },
+  })
+  assert_true(#messages == 2, "structural fallback warnings should only repeat when configured")
+  vim.cmd("TunnelVision off")
+
+  messages = {}
+  tunnelvision.setup({
+    notify = true,
+    source = "word",
+    scope = "buffer",
+    fallback_warn = "always",
+    highlights = { statement = true, scope_head = true },
+  })
+  vim.api.nvim_win_set_cursor(0, { 1, 1 })
+  tunnelvision.on()
+  core.activate(structural_fallback_buf, {
+    force = true,
+    silent = false,
+    symbol = "alpha",
+    cursor = { 1, 1 },
+  })
+  assert_true(#messages == 4, "fallback_warn always should repeat both structural warnings")
+  vim.cmd("TunnelVision off")
+
+  messages = {}
+  tunnelvision.setup({
+    notify = true,
+    source = "word",
+    scope = "buffer",
+    fallback_warn = "never",
+    highlights = { statement = true, scope_head = true },
+  })
+  vim.api.nvim_win_set_cursor(0, { 1, 1 })
+  tunnelvision.on()
+  assert_true(#messages == 0, "fallback_warn never should silence structural warnings")
+  vim.cmd("TunnelVision off")
+
+  tunnelvision.setup({
+    notify = false,
+    source = "word",
+    scope = "buffer",
+    fallback_warn = "always",
+    highlights = { statement = true, scope_head = true },
+  })
+  vim.api.nvim_win_set_cursor(0, { 1, 1 })
+  tunnelvision.on()
+  assert_true(#messages == 0, "notify false should silence structural fallback warnings")
+  vim.cmd("TunnelVision off")
+  core.notify = orig_notify
+end
+
 -- === Dim API cleanup tests ===
 
 -- Restore to baseline before dim form tests

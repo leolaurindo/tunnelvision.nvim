@@ -51,9 +51,13 @@ function M.get_buf_state(bufnr)
     path_set = {},
     path_order = {},
     symbol_ranges = {},
+    statement_set = {},
+    scope_head_set = {},
     context_set = {},
     warned_lsp_fallback = false,
     warned_lsp_strict = false,
+    warned_statement_fallback = false,
+    warned_scope_head_fallback = false,
     warned_large_buffer = false,
     last_compute_meta = nil,
     pending = false,
@@ -238,6 +242,22 @@ local function maybe_warn_strict_lsp(bs, silent, cfg)
   bs.warned_lsp_strict = true
 end
 
+local function maybe_warn_structural_fallback(bs, silent, cfg, fallback)
+  if silent or not state.config.notify or cfg.fallback_warn == "never" then
+    return
+  end
+
+  local always = cfg.fallback_warn == "always"
+  if fallback.statement and (always or not bs.warned_statement_fallback) then
+    M.notify("TunnelVision: statement structure unavailable; using matched lines", vim.log.levels.WARN)
+    bs.warned_statement_fallback = true
+  end
+  if fallback.scope_head and (always or not bs.warned_scope_head_fallback) then
+    M.notify("TunnelVision: structure unavailable; skipping scope heads", vim.log.levels.WARN)
+    bs.warned_scope_head_fallback = true
+  end
+end
+
 local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, lsp_result)
   bs.pending = false
   bs.request_id = nil
@@ -250,9 +270,14 @@ local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords,
       mode = cfg.mode,
       sources = cfg.sources,
     })
-  bs.context_set = require("tunnelvision.context").evaluate(cfg, bs.path_set, bufnr, symbol, anchor, scope)
+  local structural_fallback
+  bs.statement_set, bs.scope_head_set, structural_fallback =
+    require("tunnelvision.context").evaluate(cfg, bs.path_set, bs.symbol_ranges, bufnr, scope)
+  -- Temporary compatibility union for the line-dimming renderer.
+  bs.context_set = vim.tbl_extend("force", {}, bs.statement_set, bs.scope_head_set)
   maybe_warn_fallback(bs, opts.silent, cfg)
   maybe_warn_strict_lsp(bs, opts.silent, cfg)
+  maybe_warn_structural_fallback(bs, opts.silent, cfg, structural_fallback)
   require("tunnelvision.ui").apply_dim(bufnr)
 end
 
@@ -298,6 +323,8 @@ function M.activate(bufnr, opts)
     bs.path_set = {}
     bs.path_order = {}
     bs.symbol_ranges = {}
+    bs.statement_set = {}
+    bs.scope_head_set = {}
     bs.context_set = {}
     bs.last_compute_meta = nil
     bs.warned_lsp_strict = false
@@ -349,6 +376,8 @@ function M.deactivate(bufnr)
     bs.path_set = {}
     bs.path_order = {}
     bs.symbol_ranges = {}
+    bs.statement_set = {}
+    bs.scope_head_set = {}
     bs.context_set = {}
     bs.last_compute_meta = nil
     bs.warned_large_buffer = false
