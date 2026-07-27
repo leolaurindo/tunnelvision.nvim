@@ -5,18 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - Unreleased
+
+### Added
+- Added composable `highlights` rules for `scope_head`, `statement`, `line`, and
+  exact `symbol` ranges, including attribute inheritance and background
+  pseudo-opacity.
+- Added `dim = "none"` for positive highlighting without dimming.
+
+### Changed
+- Structural statement and scope-head highlighting now uses Tree-sitter
+  independently of source selection, with safe fallbacks controlled by
+  `fallback_warn`.
+- Source and flow resolution now retain exact symbol ranges for visual styling;
+  navigation remains limited to source/flow path lines.
+- Existing setup forms keep line focus with Comment-derived dimming, including
+  legacy `source` values and modern `sources` chains.
+
 ## [0.3.1] - Unreleased
 
 ### Added
 - Added `register_source(name, handler)` for custom synchronous Lua sources in
   fallback chains and strict combined source steps.
-- Added `visible_context` option (`"line"`, `"statement"`, or custom function)
-  that controls what stays undimmed beyond matched path lines. `"statement"`
-  uses Tree-sitter best-effort expansion to keep the containing declaration or
-  statement visible; it falls back silently to line-only behavior when no parser
-  or no safe node is available.
-- Added `preserve_scope_heads` option that, when enabled, keeps enclosing `if`,
-  `for`, `while`, and function header lines undimmed. Off by default.
 
 ### Changed
 - Refactored internal source resolution without changing public behavior.

@@ -80,7 +80,7 @@ use({
 :TunnelVision on|retarget|off|toggle|next|prev|refresh|status
 :TunnelVision mode [static|dynamic|flow]
 :TunnelVision scope [function|buffer]
-:TunnelVision source [lsp|treesitter|word|lsp,word|treesitter,word|lsp,treesitter,word]
+:TunnelVision source [lsp|treesitter|word|lsp,word|treesitter,word|lsp,treesitter,word|lsp_else_word|lsp_and_word]
 :TunnelVision direction [forward|both]
 ```
 
@@ -90,8 +90,7 @@ Run `:help tunnelvision` for full command and option reference.
 
 - `static` (default): track the symbol selected on activation.
 - `dynamic`: retarget as the cursor moves.
-- `flow`: experimental mode that expands to assignment-related lines to follow
-  value flow.
+- `flow`: experimental mode (requires word-enabled chain).
 
 `scope = "function"` uses Tree-sitter when available, otherwise TunnelVision
 falls back to the full buffer.
@@ -123,13 +122,14 @@ require("tunnelvision").setup({
     direction = "forward",
     extra_keywords = {},
   },
+  highlights = { line = true },
   dim = nil,
 })
 ```
 
-By default, TunnelVision derives its dim style from your colorscheme's `Comment`
-highlight. Set `dim` when you want to choose the color or style used for dimmed
-lines yourself:
+By default, matched path lines keep their original colors and everything else
+uses a dim style derived from your colorscheme's `Comment` highlight. Set `dim`
+when you want to choose the color or style yourself:
 
 ```lua
 require("tunnelvision").setup({
@@ -222,8 +222,9 @@ configuration should prefer the composable forms below.
 ### Options
 
 These options can be set as persistent defaults in `setup()`. Core behavior and
-appearance options such as `mode`, `scope`, `sources`, `flow_settings`, and `dim`
-can also be passed to `on(opts)` for one-shot activations.
+appearance options such as `mode`, `scope`, `sources`, `flow_settings`,
+`highlights`, and `dim` can also be passed to `on(opts)` for one-shot
+activations.
 
 | Option | Default | Notes |
 | --- | --- | --- |
@@ -232,50 +233,102 @@ can also be passed to `on(opts)` for one-shot activations.
 | `sources` | `{ "lsp", "word" }` | Ordered fallback chain for source engines. |
 | `flow_settings.direction` | `forward` | Flow mode only. Use `both` to include backward influence. |
 | `flow_settings.extra_keywords` | `{}` | Extra identifiers to ignore in flow analysis. |
-| `fallback_warn` | `once` | Controls warnings when LSP falls back to another source. |
+| `fallback_warn` | `once` | Controls legacy LSP-to-word and structural warnings: once per buffer, always, or never (strict LSP warns once regardless). |
 | `lsp_timeout_ms` | `150` | Timeout for async LSP `documentHighlight` requests. |
-| `dim` | `nil` | Optional dim style: `nil` (`Comment` derived), highlight group name, hex foreground, or highlight table. |
-| `visible_context` | `"line"` | `"line"` (current behavior), `"statement"` (Tree-sitter best-effort expansion), or a custom function. |
-| `preserve_scope_heads` | `false` | When `true`, keep enclosing `if`/`for`/`while`/function headers undimmed. |
+| `highlights` | `{ line = true }` | Visual contexts and their positive styles. |
+| `dim` | `nil` | Dim style: `nil` (`Comment` derived), `"none"` (disabled), highlight group name, hex foreground, or highlight table. |
 | `max_dim_lines` | `6000` | Skip dimming in very large buffers. |
 | `notify` | `true` | Enable plugin notifications. |
 
 Run `:help tunnelvision-config` for the full option reference.
 
-### Visible context and scope heads
+### Visual focus
 
-`visible_context` controls what stays undimmed beyond the matched path lines.
-It is a rendering concern, separate from how matches are found (`sources`).
+`highlights` selects visual contexts and optionally adds positive highlight
+attributes. Omitting it, or passing an empty table, defaults to
+`{ line = true }`. A non-empty table replaces that default; it is not merged
+with it. In `on(opts)`, omitting `highlights` inherits the setup rules; supplying
+an empty table selects the line default, and a non-empty table replaces them for
+that activation. For each context, a missing key or `false` disables it, while
+`true` or `{}` enables it without changing its original syntax colors. A style
+table both enables the context and applies the given attributes.
+
+The four contexts are:
+
+| Context | Range |
+| --- | --- |
+| `scope_head` | First line of enclosing function, conditional, loop, and clause heads found by Tree-sitter. |
+| `statement` | Nearest recognized declaration or statement around each path occurrence, limited to 50 lines and clipped to the active scope. |
+| `line` | Complete source/flow path lines. |
+| `symbol` | Exact source-owned and flow-relevant symbol ranges. With only this context enabled, the rest of each matched line is dimmed (when dimming active). |
+
+Overlapping contexts compose from `scope_head` to `statement` to `line` to
+`symbol`. Later contexts override only attributes they specify and inherit the
+rest. Supported style keys are `fg`, `bg`, `bold`, `italic`, `underline`,
+`undercurl`, and `strikethrough`. `fg` and `bg` accept Neovim color strings or
+numbers; the other standard keys are booleans. Numeric `bg_opacity` is clamped
+to `0` through `1` and pre-blends that context's `bg` against `Normal`; it is
+pseudo-opacity, not alpha blending. Without a usable `bg` or `Normal`
+background, the configured background is used unchanged.
+
+`dim = nil` uses Comment-derived dimming. `dim = "none"` disables dimming while
+leaving positive styles active.
 
 ```lua
--- default (current behavior): keep matched lines visible
-visible_context = "line"
+-- Default line focus
+{}
 
--- Tree-sitter best-effort: keep the containing statement visible
-visible_context = "statement"
+-- Token-only focus, original colors
+{ highlights = { symbol = true } }
 
--- custom function: return a range or nil per path line
-visible_context = function(ctx)
-  -- ctx: { bufnr, symbol, line, col, scope, node }
-  return { start_line = ctx.line - 1, end_line = ctx.line + 1 }
-end
+-- Statement focus with composed line and symbol emphasis
+{
+  highlights = {
+    statement = true,
+    line = { bold = true },
+    symbol = { italic = true, underline = true },
+  },
+}
+
+-- Structural heads with custom styling
+{
+  highlights = {
+    line = true,
+    scope_head = { bold = true },
+  },
+}
+
+-- Positive styles without dimming
+{
+  dim = "none",
+  highlights = { symbol = { bold = true } },
+}
 ```
 
-`visible_context = "statement"` walks Tree-sitter ancestors from each matched
-symbol to find the nearest declaration or statement node. When no parser is
-available or no safe node is found, it falls back silently to line-only
-behavior. Broad nodes (function bodies, class definitions, large control-flow
-blocks) are deliberately excluded to avoid revealing too much code.
+Symbol geometry belongs to the source that wins the chain: LSP uses returned
+document-highlight ranges, Tree-sitter uses exact matching identifier nodes,
+and `word` uses exact whole-word occurrences outside masked strings/comments.
+Custom source lines derive ranges for the active symbol where present. In flow
+mode, ranges for all tracked, flow-relevant identifiers are added on flow path
+lines when the winner includes word.
 
-`preserve_scope_heads = true` adds enclosing `if`, `for`, `while`, and function
-header lines to the visible context. These lines are never navigation targets.
-The option is opt-in and degrades silently without a parser.
+`statement` and `scope_head` use Tree-sitter independently of `sources`; they do
+not require the `treesitter` source, and LSP does not resolve them. Structural
+lookup starts at exact symbol columns, or at the first nonblank column for a
+custom-source line without a symbol range. If structure is unavailable or
+unsafe, `statement` falls back to path lines and `scope_head` is skipped.
+Warnings follow `fallback_warn = "once" | "always" | "never"` (`once` is per
+buffer) and `notify`.
+Structural lines never become navigation targets: `next` and `prev` continue to
+jump only through source/flow path lines.
 
-| Visible Context | Best-Effort Strategy | Fallback |
-|---|---|---|
-| `"line"` | None — matches stay on matched lines. | N/A |
-| `"statement"` | Walk Tree-sitter from symbol upward, pick first safe declaration or statement node. | Line-only behavior when no parser, no safe node, or node is a broad block (`if_statement`, `class_declaration`, etc.). |
-| `function` | User-defined. Receives `{ bufnr, symbol, line, col, scope, node }`. | `nil` return means keep only the matched line. Errors caught with `pcall`. |
+### Compatibility
+
+Version 0.4 adds opt-in visual rules and reorganizes rendering internals, but no
+configuration migration is required. `setup()`, `setup({})`, legacy `source`
+values, and modern `sources` chains retain their released behavior without a
+`highlights` option: line focus with Comment-derived dimming. In particular,
+`source = "lsp_else_word"` maps to `sources = { "lsp", "word" }`.
 
 ## Suggested defaults and keymaps
 
@@ -284,8 +337,6 @@ local tv = require("tunnelvision")
 
 tv.setup({
   sources = { "lsp", "treesitter", "word" },
-  visible_context = "statement",
-  preserve_scope_heads = true,
 })
 ```
 
