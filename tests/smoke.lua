@@ -852,6 +852,74 @@ do
     "failed strict source should keep only anchor"
   )
   assert_ranges(failed_ranges, {}, "failed strict source should not create flow ranges")
+
+  local flow = require("tunnelvision.flow")
+  local analysis = flow.analyze_text({
+    anchor = { row = 0, col = 6 },
+    bufnr = flow_range_buf,
+    keywords = resolver.build_keywords({}),
+    scope = { start_line = 1, end_line = 3 },
+    symbol = "alpha",
+  })
+  assert_true(#analysis.assignments == 3, "text analyzer should collect assignments")
+  assert_ranges(analysis.assignments[2].lhs, {
+    { name = "beta", line = 2, start_col = 6, end_col = 10 },
+  }, "text analyzer should retain exact LHS token ranges")
+  assert_ranges(analysis.assignments[2].rhs, {
+    { name = "alpha", line = 2, start_col = 13, end_col = 18 },
+  }, "text analyzer should retain exact RHS token ranges")
+  assert_ranges(analysis.occurrences.alpha, {
+    { name = "alpha", line = 1, start_col = 6, end_col = 11 },
+    { name = "alpha", line = 2, start_col = 13, end_col = 18 },
+  }, "text analyzer should retain exact occurrence ranges")
+
+  local typed_buf = new_buffer({ "local alpha: alpha = source" })
+  local typed_analysis = flow.analyze_text({
+    anchor = { row = 0, col = 6 },
+    bufnr = typed_buf,
+    keywords = resolver.build_keywords({}),
+    scope = { start_line = 1, end_line = 1 },
+    symbol = "alpha",
+  })
+  assert_ranges(typed_analysis.assignments[1].lhs, {
+    { name = "alpha", line = 1, start_col = 6, end_col = 11 },
+  }, "text analyzer should use the declared identifier range")
+
+  local expanded_path, expanded_ranges = { [1] = true }, {}
+  local tracked = flow.expand(expanded_path, expanded_ranges, "alpha", analysis, "forward")
+  assert_true(tracked.gamma and expanded_path[3], "flow module should expand analyzer results")
+  assert_true(#expanded_ranges == 5, "flow module should add every tracked occurrence range")
+
+  local function token(name, start_col, end_col)
+    return { name = name, line = 1, start_col = start_col, end_col = end_col }
+  end
+  local alpha, beta, gamma = token("alpha", 0, 5), token("beta", 8, 12), token("gamma", 15, 20)
+  local same_line = {
+    assignments = {
+      { line = 1, lhs = { beta }, rhs = { alpha } },
+      { line = 1, lhs = { gamma }, rhs = { beta } },
+    },
+    occurrences = { alpha = { alpha }, beta = { beta }, gamma = { gamma } },
+  }
+  local same_line_tracked = flow.expand({}, {}, "alpha", same_line, "forward")
+  assert_true(same_line_tracked.gamma, "flow interface should retain multiple assignments on one line")
+
+  local guarded_lines = { "print(v32)" }
+  for i = 32, 1, -1 do
+    guarded_lines[#guarded_lines + 1] = ("v%d = v%d"):format(i, i - 1)
+  end
+  guarded_lines[#guarded_lines + 1] = "v0 = 1"
+  local guarded_buf = new_buffer(guarded_lines)
+  local guarded_analysis = flow.analyze_text({
+    anchor = { row = #guarded_lines - 1, col = 0 },
+    bufnr = guarded_buf,
+    keywords = resolver.build_keywords({}),
+    scope = { start_line = 1, end_line = #guarded_lines },
+    symbol = "v0",
+  })
+  local guarded_path = { [#guarded_lines] = true }
+  local guarded_tracked = flow.expand(guarded_path, {}, "v0", guarded_analysis, "forward")
+  assert_true(guarded_tracked.v32 and not guarded_path[1], "flow extraction should preserve iteration guard behavior")
 end
 
 local dynamic_buf = new_buffer({

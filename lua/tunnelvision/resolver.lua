@@ -12,10 +12,9 @@
 -- inputs from tunnelvision.core and returns computed results without owning
 -- buffer lifecycle or UI concerns.
 
-local M = {}
+local flow = require("tunnelvision.flow")
 
-local FLOW_MAX_ITER = 32
-local assign_ops = { "+=", "-=", "*=", "/=", "%=", "=" }
+local M = {}
 
 -- Ignore language keywords when collecting identifiers so word/flow
 -- matching focuses on user symbols instead of syntax tokens.
@@ -91,25 +90,6 @@ local function collect_word_ranges(line, word, lnum)
   return ranges
 end
 
-local function collect_identifiers(text, keywords)
-  local out = {}
-  for id in text:gmatch("[%a_][%w_]*") do
-    if not keywords[id] then
-      out[id] = true
-    end
-  end
-  return out
-end
-
-local function set_intersects(a, b)
-  for name in pairs(a) do
-    if b[name] then
-      return true
-    end
-  end
-  return false
-end
-
 local function add_set(dst, src)
   local changed = false
   for name in pairs(src) do
@@ -149,44 +129,6 @@ local function normalize_ranges(bufnr, ranges)
       or (a.line == b.line and (a.start_col < b.start_col or (a.start_col == b.start_col and a.end_col < b.end_col)))
   end)
   return out
-end
-
-local function find_assign(line)
-  for _, op in ipairs(assign_ops) do
-    local start_col = line:find(op, 1, true)
-    if start_col then
-      local prev = line:sub(start_col - 1, start_col - 1)
-      local next_char = line:sub(start_col + 1, start_col + 1)
-      if op ~= "=" or (prev ~= "=" and prev ~= ">" and prev ~= "<" and prev ~= "!" and next_char ~= "=") then
-        return start_col, op
-      end
-    end
-  end
-end
-
-local function parse_assignment(line, keywords)
-  local assign_col, op = find_assign(line)
-  if not assign_col then
-    return nil, nil
-  end
-
-  local lhs_text = line:sub(1, assign_col - 1)
-  local rhs_text = line:sub(assign_col + #op)
-  if lhs_text:find(",", 1, true) then
-    return nil, nil
-  end
-
-  local lhs_name = lhs_text:match("^%s*local%s+([%a_][%w_]*)") or lhs_text:match("([%a_][%w_]*)%s*$")
-  if not lhs_name or keywords[lhs_name] then
-    return nil, nil
-  end
-
-  local lhs = { [lhs_name] = true }
-  local rhs = collect_identifiers(rhs_text, keywords)
-  if op ~= "=" then
-    rhs[lhs_name] = true
-  end
-  return lhs, rhs
 end
 
 local non_function_scope_types = {
@@ -481,39 +423,22 @@ local function sources_use(sources, source_name)
   return false
 end
 
-local function collect_word_context(bufnr, symbol, scope, keywords, collect_matches, collect_flow)
+local function collect_word_matches(bufnr, symbol, scope)
   local word_set = {}
   local word_ranges = {}
-  local line_info = {}
-
-  if not collect_matches and not collect_flow then
-    return word_set, word_ranges, line_info
-  end
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
   for idx, raw in ipairs(lines) do
     local lnum = scope.start_line + idx - 1
     local cleaned = strip_strings_and_comments(raw)
-    if collect_matches then
-      local ranges = collect_word_ranges(cleaned, symbol, lnum)
-      if #ranges > 0 then
-        word_set[lnum] = true
-        add_ranges(word_ranges, ranges)
-      end
-    end
-    if collect_flow then
-      local lhs, rhs = parse_assignment(cleaned, keywords)
-      line_info[#line_info + 1] = {
-        lnum = lnum,
-        ids = collect_identifiers(cleaned, keywords),
-        lhs = lhs,
-        rhs = rhs,
-        text = cleaned,
-      }
+    local ranges = collect_word_ranges(cleaned, symbol, lnum)
+    if #ranges > 0 then
+      word_set[lnum] = true
+      add_ranges(word_ranges, ranges)
     end
   end
 
-  return word_set, word_ranges, line_info
+  return word_set, word_ranges
 end
 
 local function collect_source_result(name, context)
@@ -675,53 +600,23 @@ local function resolve_source_chain(sources, context)
   return path_set, ranges, meta
 end
 
-local function expand_flow(path_set, symbol, line_info, direction)
-  -- Flow expansion runs after source resolution, using the selected line set.
-  -- Flow mode grows the tracked identifier set until it reaches a fixed point
-  -- or hits a small safety bound. This keeps chained assignments like
-  -- `a = b; c = a` connected without letting pathological buffers loop forever.
-  local tracked = { [symbol] = true }
-  local changed, guard = true, 0
-  while changed and guard < FLOW_MAX_ITER do
-    changed = false
-    guard = guard + 1
-    for _, info in ipairs(line_info) do
-      local lhs_hit = info.lhs and set_intersects(info.lhs, tracked) or false
-      local rhs_hit = info.rhs and set_intersects(info.rhs, tracked) or false
-      if lhs_hit or rhs_hit or set_intersects(info.ids, tracked) then
-        path_set[info.lnum] = true
-      end
-      if rhs_hit and info.lhs then
-        changed = add_set(tracked, info.lhs) or changed
-      end
-      if direction == "both" and lhs_hit and info.rhs then
-        changed = add_set(tracked, info.rhs) or changed
-      end
-    end
-  end
-  return tracked
-end
-
-local function collect_flow_ranges(path_set, tracked, line_info)
-  local ranges = {}
-  for _, info in ipairs(line_info) do
-    if path_set[info.lnum] then
-      for id in pairs(info.ids) do
-        if tracked[id] then
-          add_ranges(ranges, collect_word_ranges(info.text, id, info.lnum))
-        end
-      end
-    end
-  end
-  return ranges
-end
-
 function M.compute_path(bufnr, symbol, anchor, scope, opts)
   local sources = opts.sources or {}
   local uses_word = sources_use(sources, "word")
   local use_flow = opts.mode == "flow"
-  local word_lines, word_ranges, line_info =
-    collect_word_context(bufnr, symbol, scope, opts.keywords or {}, uses_word, use_flow)
+  local word_lines, word_ranges = {}, {}
+  if uses_word then
+    word_lines, word_ranges = collect_word_matches(bufnr, symbol, scope)
+  end
+  local analysis = use_flow
+      and flow.analyze_text({
+        anchor = anchor,
+        bufnr = bufnr,
+        keywords = opts.keywords or {},
+        scope = scope,
+        symbol = symbol,
+      })
+    or nil
   local path_set, ranges, meta = resolve_source_chain(sources, {
     anchor = anchor,
     bufnr = bufnr,
@@ -737,8 +632,7 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
   })
 
   if use_flow and meta.used_source then
-    local tracked = expand_flow(path_set, symbol, line_info, opts.direction)
-    add_ranges(ranges, collect_flow_ranges(path_set, tracked, line_info))
+    flow.expand(path_set, ranges, symbol, analysis, opts.direction)
   end
 
   path_set[anchor.row + 1] = true
