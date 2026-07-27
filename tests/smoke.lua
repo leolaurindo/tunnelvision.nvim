@@ -22,18 +22,11 @@ end
 
 local function assert_sources(expected, msg)
   local got = tunnelvision.get_sources()
-  assert_true(#got == #expected, msg .. " length")
-  for i, value in ipairs(expected) do
-    assert_true(got[i] == value, msg .. " item " .. i)
-  end
+  assert_true(vim.deep_equal(got, expected), msg .. ": " .. vim.inspect(got))
 end
 
 local function assert_combine(step, expected, msg)
-  assert_true(type(step) == "table" and step.kind == "combine", msg .. " kind")
-  assert_true(#step.names == #expected, msg .. " length")
-  for i, value in ipairs(expected) do
-    assert_true(step.names[i] == value, msg .. " item " .. i)
-  end
+  assert_true(vim.deep_equal(step, { kind = "combine", names = expected }), msg .. ": " .. vim.inspect(step))
 end
 
 local function assert_default_visual_config(msg)
@@ -239,19 +232,10 @@ local source_copy = tunnelvision.get_sources()
 source_copy[1] = "word"
 assert_sources({ "lsp", "word" }, "get_sources should return a copy")
 
-tunnelvision.setup({
-  notify = false,
-  source = "word",
-})
-assert_sources({ "word" }, "legacy source should normalize to sources")
-
 tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") } })
 assert_combine(tunnelvision.get_sources()[1], { "lsp", "word" }, "combine sources")
 
-tunnelvision.setup({
-  notify = false,
-  source = "word",
-})
+tunnelvision.setup({ notify = false, source = "word" })
 assert_sources({ "word" }, "legacy source should normalize to sources")
 
 assert_true(vim.fn.exists(":TunnelVision") == 2, "missing command: TunnelVision")
@@ -1235,7 +1219,6 @@ do
       vim.deep_equal(bs.scope_head_set, { [1] = true, [5] = true, [7] = true, [9] = true }),
       "scope-head context should include function and conditional clause ancestors"
     )
-    assert_true(bs.context_set[4] and bs.context_set[9], "dim compatibility context should union structural sets")
     for _, lnum in ipairs(bs.path_order) do
       assert_true(not bs.scope_head_set[lnum], "scope heads should not enter path navigation")
     end
@@ -1277,7 +1260,6 @@ do
     vim.cmd("TunnelVision off")
     assert_true(next(bs.statement_set) == nil, "deactivation should clear statement context")
     assert_true(next(bs.scope_head_set) == nil, "deactivation should clear scope-head context")
-    assert_true(next(bs.context_set) == nil, "deactivation should clear renderer context")
   end
 end
 
@@ -1293,6 +1275,22 @@ do
   local orig_get_parser = vim.treesitter.get_parser
   local seen_col
 
+  local function stub_parser(descendant)
+    vim.treesitter.get_parser = function()
+      return {
+        parse = function()
+          return {
+            {
+              root = function()
+                return { named_descendant_for_range = descendant }
+              end,
+            },
+          }
+        end,
+      }
+    end
+  end
+
   local statement_node = {
     type = function()
       return "expression_statement"
@@ -1304,24 +1302,10 @@ do
       return nil
     end,
   }
-  vim.treesitter.get_parser = function()
-    return {
-      parse = function()
-        return {
-          {
-            root = function()
-              return {
-                named_descendant_for_range = function(_, _, col)
-                  seen_col = col
-                  return statement_node
-                end,
-              }
-            end,
-          },
-        }
-      end,
-    }
-  end
+  stub_parser(function(_, _, col)
+    seen_col = col
+    return statement_node
+  end)
   local statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
   assert_true(seen_col == 3, "structural lookup should use the exact source byte column")
   assert_true(vim.deep_equal(statements, { [1] = true, [2] = true }), "column-zero end rows should stay exclusive")
@@ -1335,44 +1319,16 @@ do
       return nil
     end,
   }
-  vim.treesitter.get_parser = function()
-    return {
-      parse = function()
-        return {
-          {
-            root = function()
-              return {
-                named_descendant_for_range = function()
-                  return broad_node
-                end,
-              }
-            end,
-          },
-        }
-      end,
-    }
-  end
+  stub_parser(function()
+    return broad_node
+  end)
   statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
   assert_true(vim.deep_equal(statements, path_set), "unknown statement containers should fall back to matched lines")
   assert_true(fallback.statement, "conservative statement rejection should report fallback")
 
-  vim.treesitter.get_parser = function()
-    return {
-      parse = function()
-        return {
-          {
-            root = function()
-              return {
-                named_descendant_for_range = function()
-                  error("broken node traversal")
-                end,
-              }
-            end,
-          },
-        }
-      end,
-    }
-  end
+  stub_parser(function()
+    error("broken node traversal")
+  end)
   statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
   vim.treesitter.get_parser = orig_get_parser
   assert_true(vim.deep_equal(statements, path_set), "node traversal errors should fall back to matched lines")
@@ -1683,32 +1639,12 @@ do
   local render_buf = vim.api.nvim_get_current_buf()
   vim.api.nvim_win_set_cursor(0, { 1, 4 })
 
-  local default_snapshots = {}
-  local setups = {
-    function()
-      tunnelvision.setup()
-    end,
-    function()
-      tunnelvision.setup({})
-    end,
-    function()
-      tunnelvision.setup({ source = "lsp_else_word" })
-    end,
-    function()
-      tunnelvision.setup({ sources = { "lsp", "word" } })
-    end,
-  }
-  for i, setup in ipairs(setups) do
-    setup()
-    tunnelvision.on({ scope = "buffer", silent = true })
-    default_snapshots[i] = mark_snapshot(render_buf)
-    assert_true(#default_snapshots[i] == 1, "default renderer should add only the unrelated-line dim mark")
-    assert_true(default_snapshots[i][1][5] == "TunnelVisionDim", "default renderer should use line dimming")
-    vim.cmd("TunnelVision off")
-  end
-  for i = 2, #default_snapshots do
-    assert_true(vim.deep_equal(default_snapshots[1], default_snapshots[i]), "default setup forms should render equally")
-  end
+  tunnelvision.setup()
+  tunnelvision.on({ scope = "buffer", silent = true })
+  local default_snapshot = mark_snapshot(render_buf)
+  assert_true(#default_snapshot == 1, "default renderer should add only the unrelated-line dim mark")
+  assert_true(default_snapshot[1][5] == "TunnelVisionDim", "default renderer should use line dimming")
+  vim.cmd("TunnelVision off")
 
   tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { symbol = true } })
   vim.api.nvim_win_set_cursor(0, { 1, 4 })

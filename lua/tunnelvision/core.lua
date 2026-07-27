@@ -53,7 +53,6 @@ function M.get_buf_state(bufnr)
     symbol_ranges = {},
     statement_set = {},
     scope_head_set = {},
-    context_set = {},
     warned_lsp_fallback = false,
     warned_lsp_strict = false,
     warned_statement_fallback = false,
@@ -276,8 +275,6 @@ local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords,
   local structural_fallback
   bs.statement_set, bs.scope_head_set, structural_fallback =
     require("tunnelvision.context").evaluate(cfg, bs.path_set, bs.symbol_ranges, bufnr, scope)
-  -- Temporary compatibility union for the line-dimming renderer.
-  bs.context_set = vim.tbl_extend("force", {}, bs.statement_set, bs.scope_head_set)
   maybe_warn_fallback(bs, opts.silent, cfg)
   maybe_warn_strict_lsp(bs, opts.silent, cfg)
   maybe_warn_structural_fallback(bs, opts.silent, cfg, structural_fallback)
@@ -328,7 +325,6 @@ function M.activate(bufnr, opts)
     bs.symbol_ranges = {}
     bs.statement_set = {}
     bs.scope_head_set = {}
-    bs.context_set = {}
     bs.last_compute_meta = nil
     bs.warned_lsp_strict = false
   end
@@ -382,7 +378,6 @@ function M.deactivate(bufnr)
     bs.symbol_ranges = {}
     bs.statement_set = {}
     bs.scope_head_set = {}
-    bs.context_set = {}
     bs.last_compute_meta = nil
     bs.warned_large_buffer = false
     bs.config = nil
@@ -445,10 +440,6 @@ function M.refresh(bufnr)
   if bs and bs.active and bs.anchor and vim.api.nvim_buf_is_valid(b) then
     refresh_buffer(b, bs)
   end
-end
-
-function M.refresh_all()
-  refresh_active_buffers()
 end
 
 function M.should_dynamic_retarget(bufnr, symbol, cursor)

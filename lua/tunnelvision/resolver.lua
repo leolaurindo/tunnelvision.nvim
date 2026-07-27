@@ -353,12 +353,8 @@ local function collect_lsp_result(bufnr, responses, scope)
         if r and r.start and r["end"] then
           local from = r.start.line + 1
           local to = r["end"].line + 1
-          for lnum = from, to do
-            if lnum >= scope.start_line and lnum <= scope.end_line then
-              lines[lnum] = true
-            end
-          end
           for lnum = math.max(from, scope.start_line), math.min(to, scope.end_line) do
+            lines[lnum] = true
             local text = buffer_lines[lnum] or ""
             local start_col = lnum == from and lsp_byteindex(text, r.start.character, encoding) or 0
             local end_col = lnum == to and lsp_byteindex(text, r["end"].character, encoding) or #text
@@ -495,7 +491,6 @@ local function collect_source_result(name, context)
       used = used,
       reason = used and nil or "no_matches",
       failed_source = name,
-      has_word = true,
       used_word = true,
     }
   end
@@ -586,12 +581,10 @@ local function collect_source_step(step, context)
     used_custom = false,
     used_word = false,
     has_custom = false,
-    has_word = false,
   }
   for _, name in ipairs(step.names) do
     local source = collect_source_result(name, context)
     result.has_custom = result.has_custom or source.has_custom or false
-    result.has_word = result.has_word or source.has_word or false
     if not source.used then
       return {
         lines = {},
@@ -600,7 +593,6 @@ local function collect_source_step(step, context)
         reason = source.reason,
         failed_source = source.failed_source,
         has_custom = result.has_custom,
-        has_word = result.has_word,
       }
     end
     add_set(result.lines, source.lines)
