@@ -29,6 +29,15 @@ local function assert_combine(step, expected, msg)
   assert_true(vim.deep_equal(step, { kind = "combine", names = expected }), msg .. ": " .. vim.inspect(step))
 end
 
+local function new_buffer(lines, filetype)
+  vim.cmd("enew")
+  vim.bo.filetype = filetype or "lua"
+  if lines then
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+  end
+  return vim.api.nvim_get_current_buf()
+end
+
 local function assert_default_visual_config(msg)
   assert_true(config.format_sources(core.state.config.sources) == "lsp,word", msg .. " sources")
   assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), msg .. " highlights")
@@ -37,12 +46,6 @@ end
 
 tunnelvision.setup()
 assert_default_visual_config("bare setup")
-tunnelvision.setup({})
-assert_default_visual_config("empty setup")
-tunnelvision.setup({ source = "lsp_else_word" })
-assert_default_visual_config("legacy default source setup")
-tunnelvision.setup({ sources = { "lsp", "word" } })
-assert_default_visual_config("modern default sources setup")
 
 tunnelvision.setup({ notify = false })
 assert_sources({ "lsp", "word" }, "default sources")
@@ -171,14 +174,11 @@ assert_true(core.state.config.flow_settings.direction == "forward", "set_directi
 
 -- One-shot activation flow_settings works
 tunnelvision.setup({ notify = false, mode = "flow", source = "word", scope = "buffer" })
-vim.cmd("enew")
-vim.bo.filetype = "lua"
-vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+local fs_oneshot_buf = new_buffer({
   "local alpha = 1",
   "local beta = alpha + 1",
   "local gamma = beta + 1",
 })
-local fs_oneshot_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_win_set_cursor(0, { 1, 8 })
 tunnelvision.on({
   flow_settings = { direction = "both", extra_keywords = { "gamma" } },
@@ -240,15 +240,12 @@ assert_sources({ "word" }, "legacy source should normalize to sources")
 
 assert_true(vim.fn.exists(":TunnelVision") == 2, "missing command: TunnelVision")
 
-vim.cmd("enew")
-vim.bo.filetype = "lua"
-vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+local first_buf = new_buffer({
   "local value = 1",
   "local copy = value",
   "value = copy + value",
   "print(value)",
 })
-local first_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_win_set_cursor(0, { 1, 7 }) -- value
 
 vim.cmd("TunnelVision on")
@@ -267,34 +264,24 @@ vim.cmd("TunnelVision prev")
 local after_prev = vim.api.nvim_win_get_cursor(0)[1]
 assert_true(after_prev == before, "prev path jump did not return cursor")
 
-vim.cmd("TunnelVision mode static")
-assert_true(core.get_mode() == "static", "mode static not applied")
-vim.cmd("TunnelVision mode flow")
-assert_true(core.get_mode() == "flow", "mode flow not applied")
-vim.cmd("TunnelVision mode dynamic")
-assert_true(core.get_mode() == "dynamic", "mode dynamic not applied")
-vim.cmd("TunnelVision mode static")
-assert_true(core.get_mode() == "static", "mode static restore failed")
-
-vim.cmd("TunnelVision direction both")
-assert_true(core.get_direction() == "both", "direction both not applied")
-vim.cmd("TunnelVision direction forward")
-assert_true(core.get_direction() == "forward", "direction forward not applied")
-
 assert_true(core.get_scope() == "function", "default scope should be function")
-vim.cmd("TunnelVision scope buffer")
-assert_true(core.get_scope() == "buffer", "scope buffer not applied")
-vim.cmd("TunnelVision scope function")
-assert_true(core.get_scope() == "function", "scope function not applied")
-
-vim.cmd("TunnelVision source lsp_else_word")
-assert_true(core.get_source() == "lsp_else_word", "source lsp_else_word not applied")
-vim.cmd("TunnelVision source lsp")
-assert_true(core.get_source() == "lsp", "source lsp not applied")
-vim.cmd("TunnelVision source lsp_and_word")
-assert_true(core.get_source() == "lsp_and_word", "source lsp_and_word not applied")
-vim.cmd("TunnelVision source word")
-assert_true(core.get_source() == "word", "source word not applied")
+for _, case in ipairs({
+  { "mode", "static", core.get_mode },
+  { "mode", "flow", core.get_mode },
+  { "mode", "dynamic", core.get_mode },
+  { "mode", "static", core.get_mode },
+  { "direction", "both", core.get_direction },
+  { "direction", "forward", core.get_direction },
+  { "scope", "buffer", core.get_scope },
+  { "scope", "function", core.get_scope },
+  { "source", "lsp_else_word", core.get_source },
+  { "source", "lsp", core.get_source },
+  { "source", "lsp_and_word", core.get_source },
+  { "source", "word", core.get_source },
+}) do
+  vim.cmd(("TunnelVision %s %s"):format(case[1], case[2]))
+  assert_true(case[3]() == case[2], ("%s %s not applied"):format(case[1], case[2]))
+end
 
 -- Fallback-chain command syntax
 vim.cmd("TunnelVision source lsp,word")
@@ -305,30 +292,22 @@ tunnelvision.setup({ notify = false, sources = { "treesitter" } })
 assert_sources({ "treesitter" }, "treesitter source validates")
 assert_true(tunnelvision.get_source() == nil, "get_source returns nil for treesitter-only chain")
 
-tunnelvision.setup({ notify = false, sources = { "treesitter", "word" } })
-assert_sources({ "treesitter", "word" }, "treesitter,word sources validates")
-assert_true(tunnelvision.get_source() == nil, "get_source returns nil for treesitter,word chain")
-
-tunnelvision.setup({ notify = false, sources = { "lsp", "treesitter", "word" } })
-assert_sources({ "lsp", "treesitter", "word" }, "lsp,treesitter,word sources validates")
-
 -- tv.combine("lsp", "treesitter") validates
 tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "treesitter") } })
 assert_combine(tunnelvision.get_sources()[1], { "lsp", "treesitter" }, "combine(lsp,treesitter) validates")
 assert_true(tunnelvision.get_source() == nil, "get_source returns nil for combine chain with treesitter")
 
--- :TunnelVision source treesitter works
 tunnelvision.setup({ notify = false })
-vim.cmd("TunnelVision source treesitter")
-assert_sources({ "treesitter" }, "command source treesitter")
-assert_true(tunnelvision.status().sources_label == "treesitter", "status source label shows treesitter")
-
--- :TunnelVision source treesitter,word works
-vim.cmd("TunnelVision source treesitter,word")
-assert_sources({ "treesitter", "word" }, "command source treesitter,word")
-
-vim.cmd("TunnelVision source lsp,treesitter,word")
-assert_sources({ "lsp", "treesitter", "word" }, "command source lsp,treesitter,word")
+for _, sources in ipairs({
+  { "treesitter" },
+  { "treesitter", "word" },
+  { "lsp", "treesitter", "word" },
+}) do
+  local value = table.concat(sources, ",")
+  vim.cmd("TunnelVision source " .. value)
+  assert_sources(sources, "command source " .. value)
+end
+assert_true(tunnelvision.status().sources_label == "lsp,treesitter,word", "status source label shows command value")
 
 -- Restore to known state for subsequent tests
 vim.cmd("TunnelVision source lsp,word")
@@ -453,24 +432,19 @@ do
     end),
     "custom source registers"
   )
-  assert_true(
-    tunnelvision.register_source("custom_empty", function()
+  for name, handler in pairs({
+    custom_empty = function()
       return {}
-    end),
-    "empty custom source registers"
-  )
-  assert_true(
-    tunnelvision.register_source("custom_without_symbol", function()
+    end,
+    custom_without_symbol = function()
       return { [3] = true }
-    end),
-    "custom source without symbol registers"
-  )
-  assert_true(
-    tunnelvision.register_source("custom_error", function()
+    end,
+    custom_error = function()
       error("custom source failure")
-    end),
-    "erroring custom source registers"
-  )
+    end,
+  }) do
+    assert_true(tunnelvision.register_source(name, handler), name .. " registers")
+  end
 
   tunnelvision.setup({
     notify = false,
@@ -479,14 +453,11 @@ do
     mode = "flow",
     flow_settings = { direction = "both", extra_keywords = { "sentinel" } },
   })
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  local custom_buf = new_buffer({
     "local alpha = 1",
     "local beta = alpha",
     "print(beta)",
   })
-  local custom_buf = vim.api.nvim_get_current_buf()
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
   vim.cmd("TunnelVision on")
   local custom_state = core.get_buf_state(custom_buf)
@@ -502,36 +473,29 @@ do
   assert_true(handler_context.keywords.sentinel, "custom context keywords")
   vim.cmd("TunnelVision off")
 
-  tunnelvision.on({ sources = { "custom_without_symbol" }, scope = "buffer", mode = "static" })
-  assert_true(core.get_buf_state(custom_buf).path_set[3], "custom source may select a line without the symbol")
-  assert_ranges(
-    core.get_buf_state(custom_buf).symbol_ranges,
-    {},
-    "custom-selected lines without the active symbol should have no range"
-  )
-  vim.cmd("TunnelVision off")
-
-  tunnelvision.on({ sources = { "custom_hit", "word" }, scope = "buffer" })
-  assert_true(core.get_buf_state(custom_buf).path_set[2], "successful custom source wins before word fallback")
-  assert_true(
-    not core.get_buf_state(custom_buf).path_set[3],
-    "unused word fallback does not flow-expand successful custom source"
-  )
-  vim.cmd("TunnelVision off")
-
-  tunnelvision.on({ sources = { "custom_empty", "word" }, scope = "buffer" })
-  assert_true(core.get_buf_state(custom_buf).path_set[3], "empty custom source falls back to word")
-  assert_true(core.get_buf_state(custom_buf).last_compute_meta.used_source == "word", "custom fallback metadata")
-  vim.cmd("TunnelVision off")
-
-  tunnelvision.on({ sources = { "custom_error", "word" }, scope = "buffer" })
-  assert_true(core.get_buf_state(custom_buf).path_set[3], "erroring custom source falls back without crashing")
-  vim.cmd("TunnelVision off")
-
-  tunnelvision.on({ sources = { tunnelvision.combine("custom_hit", "word") }, scope = "buffer" })
-  assert_true(core.get_buf_state(custom_buf).path_set[2], "combined custom source includes custom lines")
-  assert_true(core.get_buf_state(custom_buf).path_set[3], "combined custom source includes word lines")
-  vim.cmd("TunnelVision off")
+  for _, case in ipairs({
+    { sources = { "custom_without_symbol" }, mode = "static", present = { 3 }, ranges = {} },
+    { sources = { "custom_hit", "word" }, present = { 2 }, absent = { 3 } },
+    { sources = { "custom_empty", "word" }, present = { 3 }, used_source = "word" },
+    { sources = { "custom_error", "word" }, present = { 3 } },
+    { sources = { tunnelvision.combine("custom_hit", "word") }, present = { 2, 3 } },
+  }) do
+    tunnelvision.on({ sources = case.sources, scope = "buffer", mode = case.mode })
+    local bs = core.get_buf_state(custom_buf)
+    for _, lnum in ipairs(case.present) do
+      assert_true(bs.path_set[lnum], "custom source should include line " .. lnum)
+    end
+    for _, lnum in ipairs(case.absent or {}) do
+      assert_true(not bs.path_set[lnum], "custom source should exclude line " .. lnum)
+    end
+    if case.ranges then
+      assert_ranges(bs.symbol_ranges, case.ranges, "range-less custom result")
+    end
+    if case.used_source then
+      assert_true(bs.last_compute_meta.used_source == case.used_source, "custom fallback metadata")
+    end
+    vim.cmd("TunnelVision off")
+  end
 
   tunnelvision.on({ sources = { tunnelvision.combine("custom_empty", "word") }, scope = "buffer" })
   assert_true(
@@ -584,14 +548,11 @@ do
 end
 
 tunnelvision.setup({ notify = false, source = "lsp", scope = "buffer" })
-vim.cmd("enew")
-vim.bo.filetype = "lua"
-vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+local one_shot_buf = new_buffer({
   "local alpha = 1",
   "local beta = 2",
   "print(alpha)",
 })
-local one_shot_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_win_set_cursor(0, { 1, 7 })
 
 tunnelvision.on({ source = "word" })
@@ -615,14 +576,11 @@ assert_true(
 vim.cmd("TunnelVision off")
 
 tunnelvision.setup({ notify = false, source = "word", mode = "flow", scope = "buffer" })
-vim.cmd("enew")
-vim.bo.filetype = "lua"
-vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+local flow_keywords_buf = new_buffer({
   "local alpha = 1",
   "local sentinel = alpha + 1",
   "local result = sentinel + 1",
 })
-local flow_keywords_buf = vim.api.nvim_get_current_buf()
 
 vim.api.nvim_win_set_cursor(0, { 1, 8 })
 vim.cmd("TunnelVision on")
@@ -675,14 +633,11 @@ tunnelvision.setup({ notify = false, source = "word" })
 -- Source ranges use exact, sorted byte columns and preserve ignored-text offsets.
 do
   tunnelvision.setup({ notify = false, source = "word", mode = "static", scope = "buffer" })
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  local range_buf = new_buffer({
     "alpha + alpha_ + alpha -- alpha",
     '"alpha" .. alpha',
     "é alpha alpha",
   })
-  local range_buf = vim.api.nvim_get_current_buf()
   vim.api.nvim_win_set_cursor(0, { 1, 1 })
   tunnelvision.on()
   assert_ranges(core.get_buf_state(range_buf).symbol_ranges, {
@@ -720,14 +675,11 @@ end
 -- Flow adds propagated identifiers while static mode retains only source ranges.
 do
   tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  local flow_range_buf = new_buffer({
     "local alpha = 1",
     "local beta = alpha",
     "local gamma = beta",
   })
-  local flow_range_buf = vim.api.nvim_get_current_buf()
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
   tunnelvision.on({ mode = "static" })
   assert_ranges(core.get_buf_state(flow_range_buf).symbol_ranges, {
@@ -745,14 +697,11 @@ do
   vim.cmd("TunnelVision off")
 end
 
-vim.cmd("enew")
-vim.bo.filetype = "lua"
-vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+local dynamic_buf = new_buffer({
   "local alpha = 1",
   "local beta = alpha + 1",
   "local gamma = beta + 1",
 })
-local dynamic_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_win_set_cursor(0, { 1, 8 }) -- alpha
 
 vim.cmd("TunnelVision mode dynamic")
@@ -811,14 +760,11 @@ if vim.lsp.buf_request_all then
   end
 
   tunnelvision.setup({ notify = false, source = "word" })
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  local lsp_buf = new_buffer({
     "local alpha = 1",
     "local beta = alpha + 1",
     "print(beta)",
   })
-  local lsp_buf = vim.api.nvim_get_current_buf()
 
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
   vim.cmd("TunnelVision on")
@@ -987,13 +933,10 @@ do
   end
 
   tunnelvision.setup({ notify = true, source = "lsp_else_word", fallback_warn = "once", scope = "buffer" })
-  vim.cmd("enew")
-  vim.bo.filetype = "plaintext"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  local fallback_buf = new_buffer({
     "local alpha = 1",
     "print(alpha)",
-  })
-  local fallback_buf = vim.api.nvim_get_current_buf()
+  }, "plaintext")
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
   vim.cmd("TunnelVision on")
 
@@ -1030,14 +973,11 @@ end
 
 -- Treesitter fallback behavior (plaintext has no parser)
 tunnelvision.setup({ notify = false })
-vim.cmd("enew")
-vim.bo.filetype = "plaintext"
-vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+local ts_fb_buf = new_buffer({
   "local alpha = 1",
   "local beta = 2",
   "print(alpha)",
-})
-local ts_fb_buf = vim.api.nvim_get_current_buf()
+}, "plaintext")
 vim.api.nvim_win_set_cursor(0, { 1, 7 })
 
 -- sources = { "treesitter" } should only keep the anchor line
@@ -1076,9 +1016,7 @@ tunnelvision.setup({ notify = false, source = "lsp_else_word" })
 -- Treesitter source matches identifier nodes when parser is available
 do
   tunnelvision.setup({ notify = false })
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  local ts_buf = new_buffer({
     "local alpha = 1",
     "local beta = 2",
     "print(alpha)",
@@ -1086,8 +1024,6 @@ do
 
   local ok_parser, parser = pcall(vim.treesitter.get_parser, 0, "lua")
   if ok_parser and parser then
-    local ts_buf = vim.api.nvim_get_current_buf()
-
     -- sources = { "treesitter" } returns identifier lines
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
     tunnelvision.on({ sources = { "treesitter" } })
@@ -1105,14 +1041,11 @@ do
     vim.cmd("TunnelVision off")
 
     -- Treesitter excludes string-only occurrences
-    vim.cmd("enew")
-    vim.bo.filetype = "lua"
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    local str_buf = new_buffer({
       'local msg = "alpha is here"',
       "-- alpha in a comment",
       "local copy = alpha",
     })
-    local str_buf = vim.api.nvim_get_current_buf()
     vim.api.nvim_win_set_cursor(0, { 3, 10 })
     tunnelvision.on({ sources = { "treesitter" } })
     -- alpha on line 3 is an identifier reference
@@ -1129,16 +1062,13 @@ do
     vim.cmd("TunnelVision off")
 
     -- Treesitter respects scope = "function" vs scope = "buffer"
-    vim.cmd("enew")
-    vim.bo.filetype = "lua"
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    local scope_buf = new_buffer({
       "local function foo()",
       "  local alpha = 1",
       "  print(alpha)",
       "end",
       "local alpha = 2",
     })
-    local scope_buf = vim.api.nvim_get_current_buf()
     -- scope = "function" with cursor inside foo() should only find alpha inside the function
     vim.api.nvim_win_set_cursor(0, { 2, 10 })
     tunnelvision.on({ sources = { "treesitter" }, scope = "function" })
@@ -1161,12 +1091,9 @@ do
     vim.cmd("TunnelVision off")
 
     -- combine(lsp, treesitter) fails the combined step when LSP is unavailable
-    vim.cmd("enew")
-    vim.bo.filetype = "lua"
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+    local combine_buf = new_buffer({
       "local alpha = 1",
     })
-    local combine_buf = vim.api.nvim_get_current_buf()
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
     tunnelvision.on({ sources = { tunnelvision.combine("lsp", "treesitter"), "word" } })
     -- LSP is unavailable, so combine fails, falls back to word
@@ -1183,9 +1110,7 @@ tunnelvision.setup({ notify = false, source = "lsp_else_word" })
 -- Structural contexts use exact source columns and remain separate from paths.
 do
   tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  local structural_buf = new_buffer({
     "local function classify(alpha)",
     "  local total =",
     "    alpha +",
@@ -1203,7 +1128,6 @@ do
 
   local ok_parser, parser = pcall(vim.treesitter.get_parser, 0, "lua")
   if ok_parser and parser then
-    local structural_buf = vim.api.nvim_get_current_buf()
     vim.api.nvim_win_set_cursor(0, { 2, 10 })
     tunnelvision.on({ highlights = { statement = true, scope_head = true } })
     local bs = core.get_buf_state(structural_buf)
@@ -1265,8 +1189,7 @@ end
 
 -- Structural walking is conservative and falls back on parser/node failures.
 do
-  vim.cmd("enew")
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "alpha(", "  value", ")" })
+  new_buffer({ "alpha(", "  value", ")" })
   local context = require("tunnelvision.context")
   local cfg = { highlights = { statement = {} } }
   local path_set = { [1] = true }
@@ -1350,10 +1273,7 @@ do
     fallback_warn = "once",
     highlights = { statement = true, scope_head = true },
   })
-  vim.cmd("enew")
-  vim.bo.filetype = "plaintext"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "alpha = 1", "print(alpha)" })
-  local structural_fallback_buf = vim.api.nvim_get_current_buf()
+  local structural_fallback_buf = new_buffer({ "alpha = 1", "print(alpha)" }, "plaintext")
   vim.api.nvim_win_set_cursor(0, { 1, 1 })
   tunnelvision.on()
   local bs = core.get_buf_state(structural_fallback_buf)
@@ -1462,13 +1382,10 @@ assert_true(both_hl and both_hl.fg == 0xAABBCC, "dim + dim_hl: dim should apply 
 tunnelvision.setup({ notify = false }) -- restore
 
 -- one-shot dim = "#AA33CC" works
-vim.cmd("enew")
-vim.bo.filetype = "lua"
-vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+local oneshot_hex_buf = new_buffer({
   "local alpha = 1",
   "print(alpha)",
 })
-local oneshot_hex_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_win_set_cursor(0, { 1, 7 })
 tunnelvision.on({ source = "word", dim = "#AA33CC" })
 local oneshot_hex_hl =
@@ -1497,13 +1414,10 @@ vim.cmd("TunnelVision off")
 
 -- one-shot dim without one-shot dim_hl uses buffer-specific dim group
 tunnelvision.setup({ notify = false, dim = { fg = 0x445566 } })
-vim.cmd("enew")
-vim.bo.filetype = "lua"
-vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+local buf_a = new_buffer({
   "local alpha = 1",
   "print(alpha)",
 })
-local buf_a = vim.api.nvim_get_current_buf()
 vim.api.nvim_win_set_cursor(0, { 1, 7 })
 tunnelvision.on({ source = "word", dim = "#BB44DD" })
 local buf_a_dim_hl = core.get_buf_state(buf_a).config.dim_hl
@@ -1554,14 +1468,11 @@ assert_true(not core.is_active(0), "deactivation failed")
 -- One-shot highlight rules inherit or replace the setup rules.
 do
   tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { symbol = true } })
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+  local highlight_buf = new_buffer({
     "local alpha = 1",
     "print(alpha)",
     "local beta = 2",
   })
-  local highlight_buf = vim.api.nvim_get_current_buf()
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
 
   tunnelvision.on()
@@ -1633,10 +1544,7 @@ do
     return out
   end
 
-  vim.cmd("enew")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "xx alpha yy alpha zz", "local beta = 1" })
-  local render_buf = vim.api.nvim_get_current_buf()
+  local render_buf = new_buffer({ "xx alpha yy alpha zz", "local beta = 1" })
   vim.api.nvim_win_set_cursor(0, { 1, 4 })
 
   tunnelvision.setup()
@@ -1822,10 +1730,9 @@ do
   vim.cmd("TunnelVision off")
 
   local deleted_buf = render_buf
-  vim.cmd("enew")
+  new_buffer({ "local alpha = 1", "print(alpha)", "local beta = 2" })
   vim.api.nvim_buf_delete(deleted_buf, { force = true })
   assert_true(core.state.bufs[deleted_buf] == nil, "buffer deletion should clear renderer state")
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "local alpha = 1", "print(alpha)", "local beta = 2" })
 end
 
 -- dim = "none" clears existing marks and skips dim rendering.

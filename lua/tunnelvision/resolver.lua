@@ -155,13 +155,9 @@ local function find_assign(line)
   for _, op in ipairs(assign_ops) do
     local start_col = line:find(op, 1, true)
     if start_col then
-      if op ~= "=" then
-        return start_col, op
-      end
-
-      local prev = start_col > 1 and line:sub(start_col - 1, start_col - 1) or ""
-      local nxt = line:sub(start_col + 1, start_col + 1)
-      if prev ~= "=" and prev ~= ">" and prev ~= "<" and prev ~= "!" and nxt ~= "=" then
+      local prev = line:sub(start_col - 1, start_col - 1)
+      local next_char = line:sub(start_col + 1, start_col + 1)
+      if op ~= "=" or (prev ~= "=" and prev ~= ">" and prev ~= "<" and prev ~= "!" and next_char ~= "=") then
         return start_col, op
       end
     end
@@ -208,24 +204,30 @@ local function is_identifier_like(node_type)
     or node_type == "field"
 end
 
+local function get_treesitter_root(bufnr)
+  local ok, root = pcall(function()
+    local parser = vim.treesitter.get_parser(bufnr)
+    local parsed = parser:parse()
+    return parsed and parsed[1] and parsed[1]:root()
+  end)
+  return ok and root or nil
+end
+
 local function get_scope_range(bufnr, anchor, scope_mode)
   local total = vim.api.nvim_buf_line_count(bufnr)
   if scope_mode == "buffer" then
     return 1, total
   end
 
-  local ok_parser, parser = pcall(vim.treesitter.get_parser, bufnr)
-  if ok_parser and parser then
-    local ok_tree, parsed = pcall(parser.parse, parser)
-    if ok_tree and parsed and parsed[1] then
-      local node = parsed[1]:root():named_descendant_for_range(anchor.row, anchor.col, anchor.row, anchor.col)
-      while node do
-        if is_function_like(node:type()) then
-          local start_row, _, end_row, _ = node:range()
-          return start_row + 1, end_row + 1
-        end
-        node = node:parent()
+  local root = get_treesitter_root(bufnr)
+  if root then
+    local node = root:named_descendant_for_range(anchor.row, anchor.col, anchor.row, anchor.col)
+    while node do
+      if is_function_like(node:type()) then
+        local start_row, _, end_row, _ = node:range()
+        return start_row + 1, end_row + 1
       end
+      node = node:parent()
     end
   end
 
@@ -281,17 +283,11 @@ function M.make_lsp_result(reason, lines, used, ranges)
 end
 
 local function collect_treesitter_lines(bufnr, symbol, scope)
-  local ok_parser, parser = pcall(vim.treesitter.get_parser, bufnr)
-  if not ok_parser or not parser then
+  local root = get_treesitter_root(bufnr)
+  if not root then
     return { lines = {}, ranges = {}, used = false, reason = "unavailable" }
   end
 
-  local ok_tree, parsed = pcall(parser.parse, parser)
-  if not ok_tree or not parsed or not parsed[1] then
-    return { lines = {}, ranges = {}, used = false, reason = "unavailable" }
-  end
-
-  local root = parsed[1]:root()
   local lines = {}
   local ranges = {}
   local scope_start = scope.start_line - 1
@@ -318,10 +314,8 @@ local function collect_treesitter_lines(bufnr, symbol, scope)
   end
   walk(root)
 
-  if next(lines) then
-    return { lines = lines, ranges = ranges, used = true, reason = "ok" }
-  end
-  return { lines = {}, ranges = {}, used = false, reason = "no_matches" }
+  local used = next(lines) ~= nil
+  return { lines = lines, ranges = ranges, used = used, reason = used and "ok" or "no_matches" }
 end
 
 local function lsp_byteindex(line, character, encoding)
@@ -425,10 +419,7 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
 end
 
 local function sorted_lines(path_set)
-  local out = {}
-  for lnum in pairs(path_set) do
-    out[#out + 1] = lnum
-  end
+  local out = vim.tbl_keys(path_set)
   table.sort(out)
   return out
 end
@@ -536,7 +527,8 @@ local function collect_source_result(name, context)
     end
 
     local lines = {}
-    local line_count = vim.api.nvim_buf_line_count(context.bufnr)
+    local ranges = {}
+    local buffer_lines = vim.api.nvim_buf_get_lines(context.bufnr, 0, -1, false)
     for lnum, included in pairs(result) do
       if
         included
@@ -544,17 +536,13 @@ local function collect_source_result(name, context)
         and lnum % 1 == 0
         and lnum >= context.scope.start_line
         and lnum <= context.scope.end_line
-        and lnum <= line_count
+        and lnum <= #buffer_lines
       then
         lines[lnum] = true
+        add_ranges(ranges, collect_word_ranges(buffer_lines[lnum], context.symbol, lnum))
       end
     end
     local used = next(lines) ~= nil
-    local ranges = {}
-    for lnum in pairs(lines) do
-      local text = vim.api.nvim_buf_get_lines(context.bufnr, lnum - 1, lnum, false)[1]
-      add_ranges(ranges, collect_word_ranges(text, context.symbol, lnum))
-    end
     return {
       lines = lines,
       ranges = ranges,
@@ -577,9 +565,6 @@ local function collect_source_step(step, context)
     lines = {},
     ranges = {},
     used = true,
-    used_lsp = false,
-    used_custom = false,
-    used_word = false,
     has_custom = false,
   }
   for _, name in ipairs(step.names) do

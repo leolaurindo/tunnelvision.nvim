@@ -298,62 +298,47 @@ local function ensure_commands(api)
 
   local subcommands = {
     on = {
-      desc = "Activate tunnel vision for symbol under cursor",
       run = api.on,
     },
     retarget = {
-      desc = "Alias of on; retarget to symbol under cursor",
       run = api.on,
     },
     off = {
-      desc = "Deactivate tunnel vision in current buffer",
       run = api.off,
     },
     toggle = {
-      desc = "Toggle tunnel vision for symbol under cursor",
       run = api.toggle,
     },
     next = {
-      desc = "Jump to next path line",
       run = function()
         api.next(vim.v.count1)
       end,
     },
     prev = {
-      desc = "Jump to previous path line",
       run = function()
         api.prev(vim.v.count1)
       end,
     },
     refresh = {
-      desc = "Recompute tunnel vision path for this buffer",
       run = api.refresh,
     },
     mode = {
-      desc = "Query or set tunnel vision mode",
       get = api.get_mode,
-      label = "mode",
       set = api.set_mode,
       values = { "static", "flow", "dynamic" },
     },
     direction = {
-      desc = "Query or set tunnel vision direction",
       get = api.get_direction,
-      label = "direction",
       set = api.set_direction,
       values = { "forward", "both" },
     },
     scope = {
-      desc = "Query or set tunnel vision scope",
       get = api.get_scope,
-      label = "scope",
       set = api.set_scope,
       values = { "function", "buffer" },
     },
     source = {
-      desc = "Query or set tunnel vision source",
       get = core.get_sources_label,
-      label = "source",
       set = core.set_source_command,
       values = {
         "word",
@@ -367,7 +352,6 @@ local function ensure_commands(api)
       },
     },
     status = {
-      desc = "Show tunnel vision status",
       run = function()
         local status = api.status()
         local state_label = status.pending and "pending" or (status.active and "on" or "off")
@@ -420,17 +404,14 @@ local function ensure_commands(api)
     end
 
     if sub.values then
-      if sub.label == "direction" and api.get_mode() ~= "flow" then
+      if args[1] == "direction" and api.get_mode() ~= "flow" then
         core.notify("TunnelVision: direction is used only in flow mode", vim.log.levels.WARN)
       end
 
       local value = args[2]
       if not value or value == "" then
         local current = sub.get()
-        if current == nil then
-          current = core.get_sources_label()
-        end
-        core.notify(("TunnelVision %s: %s"):format(sub.label, current))
+        core.notify(("TunnelVision %s: %s"):format(args[1], current))
         return
       end
       if args[3] then

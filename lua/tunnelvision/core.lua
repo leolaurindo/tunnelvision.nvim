@@ -176,15 +176,7 @@ local function refresh_buffer(bufnr, bs, cfg)
   })
 end
 
-refresh_active_buffers = function()
-  for bufnr, bs in pairs(state.bufs) do
-    if bs.active and vim.api.nvim_buf_is_valid(bufnr) then
-      refresh_buffer(bufnr, bs)
-    end
-  end
-end
-
-local function refresh_active_buffers_with(cfg)
+refresh_active_buffers = function(cfg)
   for bufnr, bs in pairs(state.bufs) do
     if bs.active and vim.api.nvim_buf_is_valid(bufnr) then
       refresh_buffer(bufnr, bs, cfg)
@@ -470,7 +462,7 @@ function M.set_mode(mode)
     return
   end
   state.config.mode = mode
-  refresh_active_buffers_with(state.config)
+  refresh_active_buffers(state.config)
 end
 
 -- Compatibility alias for the historical top-level flow API.
@@ -488,7 +480,7 @@ function M.set_direction(direction)
   end
   state.config.flow_settings.direction = direction
   if state.config.mode == "flow" then
-    refresh_active_buffers_with(state.config)
+    refresh_active_buffers(state.config)
   end
 end
 
@@ -502,7 +494,7 @@ function M.set_scope(scope)
     return
   end
   state.config.scope = scope
-  refresh_active_buffers_with(state.config)
+  refresh_active_buffers(state.config)
 end
 
 function M.get_sources()
@@ -513,7 +505,7 @@ function M.set_sources(sources)
   local normalized = config.normalize_sources(sources, state.custom_sources)
   state.config.sources = normalized
   state.config.source = config.legacy_source_from_sources(normalized) or config.defaults.source
-  refresh_active_buffers_with(state.config)
+  refresh_active_buffers(state.config)
 end
 
 function M.register_source(name, handler)
@@ -588,7 +580,7 @@ function M.set_source(source)
   end
   state.config.sources = config.normalize_sources(config.sources_from_legacy_source(source), state.custom_sources)
   state.config.source = source
-  refresh_active_buffers_with(state.config)
+  refresh_active_buffers(state.config)
 end
 
 function M.get_status(bufnr)
