@@ -7,25 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - Unreleased
 
+Version 0.4 adds a `highlights` table for configuring visible contexts and their
+styles. The default remains unchanged line focus with Comment-derived dimming.
+
 ### Added
-- Added composable `highlights` rules for `scope_head`, `statement`, `line`, and
-  exact `symbol` ranges, including attribute inheritance and background
-  pseudo-opacity.
-- Added `dim = "none"` for positive highlighting without dimming.
+- Added unified `highlights` rules for four increasingly specific contexts:
+  `scope_head`, `statement`, `line`, and exact `symbol` ranges. Rules can preserve
+  original colors with `true` or `{}`, or apply `fg`, `bg`, `bold`, `italic`,
+  `underline`, `undercurl`, `strikethrough`, and `bg_opacity` styles.
+- Added attribute-level composition in `scope_head -> statement -> line -> symbol`
+  order. More-specific contexts override only the attributes they provide.
+- Added token-only focus with exact source-owned ranges. On matched path lines,
+  TunnelVision can now dim only the text around matched symbols while leaving
+  their original syntax colors intact.
+- Added deterministic background pseudo-opacity by blending a configured
+  background with the colorscheme's `Normal` background.
+- Added `dim = "none"` for using positive context styles without dimming unrelated
+  text.
 - Added `register_source(name, handler)` for custom synchronous Lua sources in
   fallback chains and strict combined source steps.
 
 ### Changed
-- Structural statement and scope-head highlighting now uses Tree-sitter
-  independently of source selection, with safe fallbacks controlled by
-  `fallback_warn`.
-- Source and flow resolution now retain exact symbol ranges for visual styling;
-  navigation remains limited to source/flow path lines.
-- Existing setup forms keep line focus with Comment-derived dimming, including
-  legacy `source` values and modern `sources` chains.
+- Statement and scope-head highlighting now uses Tree-sitter independently of
+  symbol source selection. LSP, Tree-sitter, word, and custom source paths can all
+  gain structural context. Unsafe statements fall back to matched lines, missing
+  scope heads are skipped, and structural warnings follow `fallback_warn`.
+- Sources and word-enabled, eligible flow paths now retain exact symbol ranges for
+  visual styling. Structural context remains visual only; navigation continues
+  through source/flow path lines.
+- One-shot `highlights` follows the same replacement semantics as setup: omitted
+  rules inherit setup, an empty table selects default line focus, and a non-empty
+  table replaces the setup rules for that activation.
+- Existing setup forms require no migration. Bare setup, legacy `source` values
+  such as `lsp_else_word`, and modern `sources` chains keep line focus with
+  Comment-derived dimming unless users opt into richer visual rules.
 - Refactored internal source resolution without changing public behavior.
 - Clarified internal fallback metadata for source-chain resolution without
   changing public behavior.
+
+### Fixed
+- Function scope detection now skips Tree-sitter nodes that describe calls,
+  signatures, types, declarators, parameters, and other non-body constructs
+  instead of treating them as enclosing functions. This fixes narrow scopes in
+  Lua calls, C/C++ declarators, Java method invocations, and similar grammar
+  nodes while retaining broad parser compatibility.
+- Added function-scope support for Rust `closure_expression` nodes.
+- Statement context now recognizes standalone Lua function calls and common
+  parameter declaration forms without emitting unnecessary line-fallback
+  warnings. Calls nested in assignments still resolve to the enclosing
+  assignment or declaration.
 
 ## [0.3.0] - 2026-07-02
 

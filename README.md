@@ -309,8 +309,8 @@ Symbol geometry belongs to the source that wins the chain: LSP uses returned
 document-highlight ranges, Tree-sitter uses exact matching identifier nodes,
 and `word` uses exact whole-word occurrences outside masked strings/comments.
 Custom source lines derive ranges for the active symbol where present. In flow
-mode, ranges for all tracked, flow-relevant identifiers are added on flow path
-lines when the winner includes word.
+mode, ranges for tracked, flow-relevant identifiers are added when the configured
+source chain includes `word` and the selected source result is flow-eligible.
 
 `statement` and `scope_head` use Tree-sitter independently of `sources`; they do
 not require the `treesitter` source, and LSP does not resolve them. Structural
