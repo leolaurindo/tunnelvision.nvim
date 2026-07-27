@@ -76,7 +76,104 @@ function M.ensure_highlights(config)
   end
 end
 
-function M.apply_dim(bufnr)
+local style_keys = { "fg", "bg", "bold", "italic", "underline", "undercurl", "strikethrough" }
+
+local function has_style(style)
+  for _, key in ipairs(style_keys) do
+    if style and style[key] ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+local function merge_style(into, style)
+  for key, value in pairs(style or {}) do
+    into[key] = value
+  end
+end
+
+local function resolved_style(style)
+  local resolved = vim.deepcopy(style)
+  local opacity = resolved.bg_opacity
+  resolved.bg_opacity = nil
+  if opacity == nil or resolved.bg == nil then
+    return resolved
+  end
+
+  local hex = type(resolved.bg) == "string" and resolved.bg:match("^#(%x%x%x%x%x%x)$")
+  local bg = type(resolved.bg) == "number" and resolved.bg or hex and tonumber(hex, 16)
+  if not bg and type(resolved.bg) == "string" then
+    local ok_color, color = pcall(vim.api.nvim_get_color_by_name, resolved.bg)
+    bg = ok_color and color >= 0 and color or nil
+  end
+  local ok, normal = pcall(vim.api.nvim_get_hl, 0, { name = "Normal", link = false })
+  if not bg or not ok or not normal or not normal.bg then
+    return resolved
+  end
+
+  local amount = math.max(0, math.min(1, opacity))
+  local blended = 0
+  for shift = 0, 16, 8 do
+    local channel = math.floor(((bg / 2 ^ shift) % 256) * amount + ((normal.bg / 2 ^ shift) % 256) * (1 - amount) + 0.5)
+    blended = blended + channel * 2 ^ shift
+  end
+  resolved.bg = blended
+  return resolved
+end
+
+local function style_group(bufnr, bs, style)
+  local attrs = resolved_style(style)
+  local parts = {}
+  for _, key in ipairs(style_keys) do
+    if attrs[key] ~= nil then
+      parts[#parts + 1] = key .. "=" .. tostring(attrs[key])
+    end
+  end
+  if #parts == 0 then
+    return nil
+  end
+
+  local key = table.concat(parts, ";")
+  bs.render_groups = bs.render_groups or { next = 0 }
+  if bs.render_groups[key] then
+    return bs.render_groups[key]
+  end
+
+  bs.render_groups.next = bs.render_groups.next + 1
+  local group = ("TunnelVisionHighlight%d_%d"):format(bufnr, bs.render_groups.next)
+  local ok = pcall(vim.api.nvim_set_hl, 0, group, attrs)
+  if not ok then
+    return nil
+  end
+  bs.render_groups[key] = group
+  return group
+end
+
+function M.clear_render_groups(bs)
+  for key, group in pairs(bs and bs.render_groups or {}) do
+    if key ~= "next" then
+      pcall(vim.api.nvim_set_hl, 0, group, {})
+    end
+  end
+  if bs then
+    bs.render_groups = nil
+  end
+end
+
+local function range_mark(bufnr, row, start_col, end_col, group, priority)
+  if not group or start_col >= end_col then
+    return
+  end
+  pcall(vim.api.nvim_buf_set_extmark, bufnr, core.state.ns, row, start_col, {
+    end_row = row,
+    end_col = end_col,
+    hl_group = group,
+    priority = priority,
+  })
+end
+
+function M.render(bufnr)
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, core.state.ns, 0, -1)
 
   local bs = core.state.bufs[bufnr]
@@ -85,13 +182,12 @@ function M.apply_dim(bufnr)
   end
 
   local config = bs.config or core.state.config
-  if config.dim == "none" then
-    return
-  end
-  M.ensure_highlights(config)
-
   local total = vim.api.nvim_buf_line_count(bufnr)
-  if total > config.max_dim_lines then
+  local do_dim = config.dim ~= "none" and total <= config.max_dim_lines
+  if config.dim ~= "none" then
+    M.ensure_highlights(config)
+  end
+  if config.dim ~= "none" and not do_dim then
     -- Dimming is an O(total lines) extmark pass, so skip very large buffers
     -- instead of doing expensive redraw work on every refresh.
     if not bs.warned_large_buffer then
@@ -101,18 +197,96 @@ function M.apply_dim(bufnr)
       )
       bs.warned_large_buffer = true
     end
-    return
+  else
+    bs.warned_large_buffer = false
   end
 
-  bs.warned_large_buffer = false
+  local rules = config.highlights
+  local symbols = {}
+  if rules.symbol then
+    for _, range in ipairs(bs.symbol_ranges) do
+      local line_ranges = symbols[range.line] or {}
+      local previous = line_ranges[#line_ranges]
+      if previous and range.start_col <= previous.end_col then
+        previous.end_col = math.max(previous.end_col, range.end_col)
+      else
+        line_ranges[#line_ranges + 1] = vim.deepcopy(range)
+      end
+      symbols[range.line] = line_ranges
+    end
+  end
 
-  for idx = 1, total do
-    if not bs.path_set[idx] and not bs.context_set[idx] then
+  local function render_line(idx, line)
+    local style = {}
+    local whole = false
+    for _, context in ipairs({ "scope_head", "statement", "line" }) do
+      local covered = context == "scope_head" and bs.scope_head_set[idx]
+        or context == "statement" and bs.statement_set[idx]
+        or context == "line" and bs.path_set[idx]
+      if rules[context] and covered then
+        whole = true
+        merge_style(style, rules[context])
+      end
+    end
+
+    local ranges = symbols[idx]
+    if whole then
+      local col = 0
+      for _, range in ipairs(ranges or {}) do
+        range_mark(bufnr, idx - 1, col, range.start_col, style_group(bufnr, bs, style), 1100)
+        local symbol_style = vim.deepcopy(style)
+        merge_style(symbol_style, rules.symbol)
+        range_mark(bufnr, idx - 1, range.start_col, range.end_col, style_group(bufnr, bs, symbol_style), 1100)
+        col = range.end_col
+      end
+      range_mark(bufnr, idx - 1, col, #line, style_group(bufnr, bs, style), 1100)
+    elseif ranges then
+      local col = 0
+      for _, range in ipairs(ranges) do
+        if do_dim then
+          range_mark(bufnr, idx - 1, col, range.start_col, config.dim_hl, 1000)
+        end
+        range_mark(bufnr, idx - 1, range.start_col, range.end_col, style_group(bufnr, bs, rules.symbol), 1100)
+        col = range.end_col
+      end
+      if do_dim then
+        range_mark(bufnr, idx - 1, col, #line, config.dim_hl, 1000)
+      end
+    elseif do_dim then
       pcall(vim.api.nvim_buf_set_extmark, bufnr, core.state.ns, idx - 1, 0, {
         line_hl_group = config.dim_hl,
         priority = 1000,
       })
     end
+  end
+
+  if do_dim then
+    for idx, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
+      render_line(idx, line)
+    end
+    return
+  end
+
+  local positive_lines = {}
+  for context, covered in pairs({
+    scope_head = bs.scope_head_set,
+    statement = bs.statement_set,
+    line = bs.path_set,
+  }) do
+    if has_style(rules[context]) then
+      for lnum in pairs(covered) do
+        positive_lines[lnum] = true
+      end
+    end
+  end
+  if has_style(rules.symbol) then
+    for lnum in pairs(symbols) do
+      positive_lines[lnum] = true
+    end
+  end
+  for lnum in pairs(positive_lines) do
+    local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ""
+    render_line(lnum, line)
   end
 end
 
@@ -299,12 +473,13 @@ local function ensure_autocmds()
     group = state.augroup,
     callback = function()
       M.ensure_highlights()
-      for _, bs in pairs(core.state.bufs) do
+      for bufnr, bs in pairs(core.state.bufs) do
         if bs.active and bs.config then
+          M.clear_render_groups(bs)
           M.ensure_highlights(bs.config)
+          M.render(bufnr)
         end
       end
-      core.refresh_all()
     end,
   })
 

@@ -63,6 +63,7 @@ function M.get_buf_state(bufnr)
     pending = false,
     request_id = nil,
     config = nil,
+    render_groups = nil,
   }
   state.bufs[bufnr] = s
   return s
@@ -70,6 +71,7 @@ end
 
 function M.clear_buf_state(bufnr)
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
+  require("tunnelvision.ui").clear_render_groups(state.bufs[bufnr])
   state.bufs[bufnr] = nil
 end
 
@@ -120,6 +122,7 @@ local function configs_equal(a, b)
     and vim.deep_equal(a.sources, b.sources)
     and a.fallback_warn == b.fallback_warn
     and a.lsp_timeout_ms == b.lsp_timeout_ms
+    and a.max_dim_lines == b.max_dim_lines
     and a.dim_hl == b.dim_hl
     and vim.deep_equal(a.highlights, b.highlights)
     and vim.deep_equal(a.dim, b.dim)
@@ -278,7 +281,7 @@ local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords,
   maybe_warn_fallback(bs, opts.silent, cfg)
   maybe_warn_strict_lsp(bs, opts.silent, cfg)
   maybe_warn_structural_fallback(bs, opts.silent, cfg, structural_fallback)
-  require("tunnelvision.ui").apply_dim(bufnr)
+  require("tunnelvision.ui").render(bufnr)
 end
 
 function M.activate(bufnr, opts)
@@ -367,6 +370,7 @@ end
 function M.deactivate(bufnr)
   local bs = state.bufs[bufnr]
   if bs then
+    require("tunnelvision.ui").clear_render_groups(bs)
     bs.active = false
     bs.pending = false
     bs.request_id = nil

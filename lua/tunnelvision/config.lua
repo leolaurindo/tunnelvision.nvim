@@ -70,6 +70,7 @@ M.activation_keys = {
   "sources",
   "fallback_warn",
   "lsp_timeout_ms",
+  "max_dim_lines",
   "dim",
   "dim_hl",
   "highlights",
