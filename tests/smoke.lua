@@ -1397,6 +1397,73 @@ do
   assert_true(vim.deep_equal(statements, { [1] = true, [2] = true }), "nested Lua calls should defer to assignments")
   assert_true(not fallback.statement, "nested Lua calls inside assignments should resolve structurally")
 
+  local parameters_node = {
+    type = function()
+      return "parameters"
+    end,
+    parent = function()
+      return nil
+    end,
+  }
+  for _, node_type in ipairs({ "typed_default_parameter", "parameter_declaration" }) do
+    local parameter_node = {
+      type = function()
+        return node_type
+      end,
+      range = function()
+        return 0, 0, 0, 8
+      end,
+      parent = function()
+        return parameters_node
+      end,
+    }
+    stub_parser(function()
+      return parameter_node
+    end)
+    statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
+    assert_true(vim.deep_equal(statements, { [1] = true }), node_type .. " should resolve as a parameter declaration")
+    assert_true(not fallback.statement, node_type .. " should not report structural fallback")
+  end
+
+  local bare_parameter = {
+    type = function()
+      return "identifier"
+    end,
+    range = function()
+      return 0, 0, 0, 5
+    end,
+    parent = function()
+      return parameters_node
+    end,
+  }
+  stub_parser(function()
+    return bare_parameter
+  end)
+  statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
+  assert_true(
+    vim.deep_equal(statements, { [1] = true }),
+    "bare parameters should resolve without broadening signatures"
+  )
+  assert_true(not fallback.statement, "bare parameters should not report structural fallback")
+
+  local arguments_node = {
+    type = function()
+      return "arguments"
+    end,
+    parent = function()
+      return nil
+    end,
+  }
+  bare_parameter.parent = function()
+    return arguments_node
+  end
+  stub_parser(function()
+    return bare_parameter
+  end)
+  statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
+  assert_true(vim.deep_equal(statements, path_set), "call arguments should not be classified as parameters")
+  assert_true(fallback.statement, "unresolved call arguments should retain structural fallback")
+
   local broad_node = {
     type = function()
       return "try_statement"

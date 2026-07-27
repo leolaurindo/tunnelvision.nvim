@@ -9,23 +9,47 @@ local STATEMENT_MAX_LINES = 50
 
 local statement_types = {
   assignment = true,
+  assignment_statement = true,
   augmented_assignment = true,
+  class_parameter = true,
   const_declaration = true,
   declaration = true,
+  default_parameter = true,
   expression_statement = true,
   field_declaration = true,
+  formal_parameter = true,
   let_declaration = true,
   local_declaration = true,
   lexical_declaration = true,
-  assignment_statement = true,
+  optional_parameter = true,
+  optional_parameter_declaration = true,
+  parameter = true,
+  parameter_declaration = true,
+  parameter_with_optional_type = true,
+  receiver_parameter = true,
+  required_parameter = true,
+  self_parameter = true,
+  spread_parameter = true,
   return_statement = true,
   short_var_declaration = true,
   throw_statement = true,
+  typed_default_parameter = true,
+  typed_parameter = true,
   variable_declaration = true,
+  variadic_parameter = true,
+  variadic_parameter_declaration = true,
   yield_statement = true,
 }
 
 local standalone_call_parents = { block = true, chunk = true }
+local parameter_containers = {
+  formal_parameters = true,
+  function_value_parameters = true,
+  lambda_parameters = true,
+  parameter_list = true,
+  parameters = true,
+  value_parameters = true,
+}
 
 local scope_head_types = {
   arrow_function = true,
@@ -52,6 +76,7 @@ local function statement_range(node)
     local parent = node:parent()
     local is_statement = statement_types[node_type]
       or node_type == "function_call" and parent and standalone_call_parents[parent:type()]
+      or parent and parameter_containers[parent:type()]
     if is_statement then
       local start_row, _, end_row, end_col = node:range()
       local end_line = end_row + (end_col > 0 and 1 or 0)
