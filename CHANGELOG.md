@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fallback_warn`.
 - Source and flow resolution now retain exact symbol ranges for visual styling;
   navigation remains limited to source/flow path lines.
+- Flow expansion now runs after any successful source step, including strict
+  LSP, Tree-sitter, and custom sources, instead of requiring `word` in the chain.
 - Existing setup forms keep line focus with Comment-derived dimming, including
   legacy `source` values and modern `sources` chains.
 - Refactored internal source resolution without changing public behavior.

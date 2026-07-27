@@ -570,11 +570,14 @@ do
   vim.cmd("TunnelVision on")
   local custom_state = core.get_buf_state(custom_buf)
   assert_true(custom_state.path_set[2], "custom source adds valid returned line")
-  assert_true(not custom_state.path_set[3], "custom source does not add unrelated word line")
-  assert_true(vim.tbl_count(custom_state.path_set) == 2, "custom source ignores invalid lines")
+  assert_true(custom_state.path_set[3], "custom source enables flow expansion")
+  assert_true(vim.tbl_count(custom_state.path_set) == 3, "custom source flow ignores invalid returned lines")
   assert_ranges(custom_state.symbol_ranges, {
+    { line = 1, start_col = 6, end_col = 11 },
+    { line = 2, start_col = 6, end_col = 10 },
     { line = 2, start_col = 13, end_col = 18 },
-  }, "custom source should derive symbol ranges only on selected matching lines")
+    { line = 3, start_col = 6, end_col = 10 },
+  }, "custom source should retain source ranges and add flow ranges")
   assert_true(custom_state.anchor.row == 0 and custom_state.scope.start_line == 1, "custom context is isolated")
   assert_true(handler_context.bufnr == custom_buf and handler_context.symbol == "alpha", "custom context identity")
   assert_true(handler_context.mode == "flow" and handler_context.direction == "both", "custom context mode")
@@ -583,7 +586,7 @@ do
 
   for _, case in ipairs({
     { sources = { "custom_without_symbol" }, mode = "static", present = { 3 }, ranges = {} },
-    { sources = { "custom_hit", "word" }, present = { 2 }, absent = { 3 } },
+    { sources = { "custom_hit", "word" }, present = { 2, 3 } },
     { sources = { "custom_empty", "word" }, present = { 3 }, used_source = "word" },
     { sources = { "custom_error", "word" }, present = { 3 } },
     { sources = { tunnelvision.combine("custom_hit", "word") }, present = { 2, 3 } },
@@ -610,6 +613,7 @@ do
     not core.get_buf_state(custom_buf).path_set[3],
     "failed custom combine does not flow-expand member word lines"
   )
+  assert_true(core.get_buf_state(custom_buf).last_compute_meta.used_source == nil, "failed source does not run flow")
   vim.cmd("TunnelVision off")
 
   tunnelvision.on({
@@ -625,10 +629,13 @@ do
   })
   local failed_combine_state = core.get_buf_state(custom_buf)
   assert_true(failed_combine_state.path_set[2], "failed custom combine uses later source")
-  assert_true(not failed_combine_state.path_set[3], "failed custom combine does not leak partial word lines")
+  assert_true(failed_combine_state.path_set[3], "later custom source independently enables flow")
   assert_ranges(failed_combine_state.symbol_ranges, {
+    { line = 1, start_col = 6, end_col = 11 },
+    { line = 2, start_col = 6, end_col = 10 },
     { line = 2, start_col = 13, end_col = 18 },
-  }, "failed combine should not leak partial member ranges")
+    { line = 3, start_col = 6, end_col = 10 },
+  }, "failed combine should retain only later source and flow ranges")
   assert_true(
     failed_combine_state.last_compute_meta.fallback_source == "custom_empty",
     "custom combine failure metadata"
@@ -803,6 +810,48 @@ do
     { line = 3, start_col = 14, end_col = 18 },
   }, "flow ranges should include propagated tracked identifiers")
   vim.cmd("TunnelVision off")
+
+  local resolver = require("tunnelvision.resolver")
+  local lsp_path, _, lsp_meta, lsp_ranges = resolver.compute_path(flow_range_buf, "alpha", { row = 0, col = 6 }, {
+    start_line = 1,
+    end_line = 3,
+  }, {
+    direction = "forward",
+    keywords = {},
+    lsp_result = resolver.make_lsp_result("ok", { [1] = true }, true, {
+      { line = 1, start_col = 6, end_col = 11 },
+    }),
+    mode = "flow",
+    sources = { { kind = "single", name = "lsp" } },
+  })
+  assert_true(lsp_meta.used_source == "lsp" and lsp_path[3], "LSP-only source should enable flow expansion")
+  assert_ranges(lsp_ranges, {
+    { line = 1, start_col = 6, end_col = 11 },
+    { line = 2, start_col = 6, end_col = 10 },
+    { line = 2, start_col = 13, end_col = 18 },
+    { line = 3, start_col = 6, end_col = 11 },
+    { line = 3, start_col = 14, end_col = 18 },
+  }, "LSP-only flow should preserve source ranges and add propagated ranges")
+
+  local failed_path, _, failed_meta, failed_ranges = resolver.compute_path(
+    flow_range_buf,
+    "alpha",
+    { row = 0, col = 6 },
+    { start_line = 1, end_line = 3 },
+    {
+      direction = "forward",
+      keywords = {},
+      lsp_result = resolver.make_lsp_result("request_failed"),
+      mode = "flow",
+      sources = { { kind = "single", name = "lsp" } },
+    }
+  )
+  assert_true(failed_meta.used_source == nil, "failed strict source should remain unselected")
+  assert_true(
+    failed_path[1] and not failed_path[2] and not failed_path[3],
+    "failed strict source should keep only anchor"
+  )
+  assert_ranges(failed_ranges, {}, "failed strict source should not create flow ranges")
 end
 
 local dynamic_buf = new_buffer({
@@ -1146,6 +1195,22 @@ do
       core.get_buf_state(ts_buf).last_compute_meta.fallback_reason == nil,
       "treesitter should not set fallback_reason on success"
     )
+    vim.cmd("TunnelVision off")
+
+    local ts_flow_buf = new_buffer({
+      "local alpha = 1",
+      "local beta = alpha",
+      "print(beta)",
+    })
+    vim.api.nvim_win_set_cursor(0, { 1, 7 })
+    tunnelvision.on({ sources = { "treesitter" }, scope = "buffer", mode = "flow" })
+    assert_true(core.get_buf_state(ts_flow_buf).path_set[3], "treesitter-only source should enable flow expansion")
+    assert_ranges(core.get_buf_state(ts_flow_buf).symbol_ranges, {
+      { line = 1, start_col = 6, end_col = 11 },
+      { line = 2, start_col = 6, end_col = 10 },
+      { line = 2, start_col = 13, end_col = 18 },
+      { line = 3, start_col = 6, end_col = 10 },
+    }, "treesitter-only flow should retain source and propagated ranges")
     vim.cmd("TunnelVision off")
 
     -- Treesitter excludes string-only occurrences

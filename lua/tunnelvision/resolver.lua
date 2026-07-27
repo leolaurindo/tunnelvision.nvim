@@ -649,7 +649,6 @@ local function resolve_source_chain(sources, context)
     used_lsp = false,
     used_custom = false,
     used_word = false,
-    flow_eligible = true,
     used_fallback = false,
     fallback_reason = nil,
   }
@@ -663,14 +662,8 @@ local function resolve_source_chain(sources, context)
       meta.used_lsp = result.used_lsp or false
       meta.used_custom = result.used_custom or false
       meta.used_word = result.used_word or false
-      meta.flow_eligible = not meta.used_custom or meta.used_word
       meta.used_fallback = i > 1
       return path_set, ranges, meta
-    end
-    if step.kind == "combine" and result.has_custom then
-      meta.flow_eligible = false
-    elseif step.kind == "single" and step.name == "word" then
-      meta.flow_eligible = true
     end
     meta.failed_sources[#meta.failed_sources + 1] = source_step_label(step)
     if not meta.fallback_reason then
@@ -726,7 +719,7 @@ end
 function M.compute_path(bufnr, symbol, anchor, scope, opts)
   local sources = opts.sources or {}
   local uses_word = sources_use(sources, "word")
-  local use_flow = opts.mode == "flow" and uses_word
+  local use_flow = opts.mode == "flow"
   local word_lines, word_ranges, line_info =
     collect_word_context(bufnr, symbol, scope, opts.keywords or {}, uses_word, use_flow)
   local path_set, ranges, meta = resolve_source_chain(sources, {
@@ -743,7 +736,7 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
     word_ranges = word_ranges,
   })
 
-  if use_flow and meta.flow_eligible then
+  if use_flow and meta.used_source then
     local tracked = expand_flow(path_set, symbol, line_info, opts.direction)
     add_ranges(ranges, collect_flow_ranges(path_set, tracked, line_info))
   end
