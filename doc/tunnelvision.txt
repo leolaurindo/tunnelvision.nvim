@@ -152,6 +152,7 @@ Default shape >lua
     flow_settings = {
       direction = "forward",
       extra_keywords = {},
+      analyzers = { "treesitter", "text" },
     },
     fallback_warn = "once",
     lsp_timeout_ms = 150,
@@ -166,8 +167,10 @@ Options >
   mode                          static | flow | dynamic
   scope                         function | buffer
   sources                       ordered source fallback chain
-  flow_settings.direction       forward | both
+  flow_settings.direction       forward | backward | both
   flow_settings.extra_keywords  extra identifiers ignored in flow analysis
+  flow_settings.analyzers       ordered treesitter | text fallback chain
+  flow_settings.max_depth       optional positive hop limit; nil uses 32
   fallback_warn                 legacy LSP-to-word and structural: once | always | never
   lsp_timeout_ms                timeout for async LSP documentHighlight requests
   highlights                    visual contexts and positive styles
@@ -180,6 +183,15 @@ By default, `dim = nil` derives TunnelVision's dim style from your colorscheme's
 `Comment` highlight. Use `dim = "Comment"` only when you want to explicitly copy
 that highlight group. `dim = "none"` disables dimming but retains positive
 highlight styles.
+
+Flow analyzers are separate from sources. Sources choose the initial matching
+path; flow analyzers expand assignments from the active symbol. The default
+`{ "treesitter", "text" }` chain uses best-effort Tree-sitter analysis and
+silently falls back to text. Use a one-item list for strict behavior.
+
+`forward` follows dependencies to dependents, `backward` follows inputs feeding
+the selected symbol, and `both` follows both directions. `status()` exposes the
+analyzer used, fallback state, tracked identifier count, and flow-added lines.
 
 Dim examples >lua
   require("tunnelvision").setup({ dim = nil })

@@ -330,7 +330,7 @@ local function ensure_commands(api)
     direction = {
       get = api.get_direction,
       set = api.set_direction,
-      values = { "forward", "both" },
+      values = { "forward", "backward", "both" },
     },
     scope = {
       get = api.get_scope,

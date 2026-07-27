@@ -121,6 +121,7 @@ require("tunnelvision").setup({
   flow_settings = {
     direction = "forward",
     extra_keywords = {},
+    analyzers = { "treesitter", "text" },
   },
   highlights = { line = true },
   dim = nil,
@@ -231,8 +232,10 @@ activations.
 | `mode` | `static` | `dynamic` retargets as you move; `flow` is experimental. |
 | `scope` | `function` | Uses the nearest function-like scope when Tree-sitter is available. |
 | `sources` | `{ "lsp", "word" }` | Ordered fallback chain for source engines. |
-| `flow_settings.direction` | `forward` | Flow mode only. Use `both` to include backward influence. |
+| `flow_settings.direction` | `forward` | Flow mode only: `forward`, `backward`, or `both`. |
 | `flow_settings.extra_keywords` | `{}` | Extra identifiers to ignore in flow analysis. |
+| `flow_settings.analyzers` | `{ "treesitter", "text" }` | Ordered flow-analysis fallback. Use `{ "treesitter" }` or `{ "text" }` for strict behavior. |
+| `flow_settings.max_depth` | `nil` | Optional positive hop limit; `nil` keeps the internal 32-hop guard. |
 | `fallback_warn` | `once` | Controls legacy LSP-to-word and structural warnings: once per buffer, always, or never (strict LSP warns once regardless). |
 | `lsp_timeout_ms` | `150` | Timeout for async LSP `documentHighlight` requests. |
 | `highlights` | `{ line = true }` | Visual contexts and their positive styles. |
@@ -241,6 +244,16 @@ activations.
 | `notify` | `true` | Enable plugin notifications. |
 
 Run `:help tunnelvision-config` for the full option reference.
+
+Flow analyzers are independent from source engines. Sources choose the initial
+matching path; in flow mode, the first usable analyzer expands assignments from
+the active symbol. Tree-sitter analysis is best-effort and falls back silently
+to text by default when no supported parser is available.
+
+Flow direction follows assignment edges: `forward` moves from dependencies to
+dependents, `backward` finds inputs feeding the selected symbol, and `both`
+combines them. `status()` also exposes the analyzer used, fallback state,
+tracked identifier count, and number of flow-added lines.
 
 ### Visual focus
 

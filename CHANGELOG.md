@@ -26,15 +26,23 @@ styles. The default remains unchanged line focus with Comment-derived dimming.
   text.
 - Added `register_source(name, handler)` for custom synchronous Lua sources in
   fallback chains and strict combined source steps.
+- Added ordered `flow_settings.analyzers` with best-effort Tree-sitter analysis
+  and a lightweight text fallback.
+- Added backward flow traversal, optional `flow_settings.max_depth`, and flow
+  analyzer/expansion metadata through `status()`.
 
 ### Changed
 - Statement and scope-head highlighting now uses Tree-sitter independently of
   symbol source selection. LSP, Tree-sitter, word, and custom source paths can all
   gain structural context. Unsafe statements fall back to matched lines, missing
   scope heads are skipped, and structural warnings follow `fallback_warn`.
-- Sources and word-enabled, eligible flow paths now retain exact symbol ranges for
-  visual styling. Structural context remains visual only; navigation continues
-  through source/flow path lines.
+- Sources and eligible flow paths now retain exact symbol ranges for visual styling.
+  Structural context remains visual only; navigation continues through source/flow
+  path lines.
+- Flow expansion now runs after any successful source step, including strict LSP,
+  Tree-sitter, and custom sources, instead of requiring `word` in the chain.
+- Text flow analysis now recognizes `let`, `const`, `var`, typed declarations,
+  Go-style `:=`, compound assignments, and simple multiple assignments.
 - One-shot `highlights` follows the same replacement semantics as setup: omitted
   rules inherit setup, an empty table selects default line focus, and a non-empty
   table replaces the setup rules for that activation.
