@@ -182,11 +182,9 @@ function M.render(bufnr)
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, core.state.ns, 0, -1)
 
   local config = bs.config or core.state.config
+  M.ensure_highlights(config)
   local total = vim.api.nvim_buf_line_count(bufnr)
   local do_dim = config.dim ~= "none" and total <= config.max_dim_lines
-  if config.dim ~= "none" then
-    M.ensure_highlights(config)
-  end
   if config.dim ~= "none" and not do_dim then
     -- Dimming is an O(total lines) extmark pass, so skip very large buffers
     -- instead of doing expensive redraw work on every refresh.
@@ -457,7 +455,6 @@ local function ensure_autocmds()
       for bufnr, bs in pairs(core.state.bufs) do
         if bs.active and bs.config and not bs.pending then
           M.clear_render_groups(bs)
-          M.ensure_highlights(bs.config)
           M.render(bufnr)
         end
       end

@@ -1916,11 +1916,35 @@ do
     vim.deep_equal(vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true }), old_marks),
     "pending LSP request should retain the previous render"
   )
+  local ui = require("tunnelvision.ui")
+  local orig_ensure_highlights = ui.ensure_highlights
+  local orig_set_hl = vim.api.nvim_set_hl
+  local pending_setup_configs = {}
+  local pending_set_hl_calls = 0
+  local pending_groups = vim.deepcopy(bs.render_groups)
+  local pending_config = bs.config
+  ui.ensure_highlights = function(cfg)
+    pending_setup_configs[#pending_setup_configs + 1] = cfg or false
+    return orig_ensure_highlights(cfg)
+  end
+  vim.api.nvim_set_hl = function(...)
+    pending_set_hl_calls = pending_set_hl_calls + 1
+    return orig_set_hl(...)
+  end
   vim.api.nvim_exec_autocmds("ColorScheme", {})
+  ui.ensure_highlights = orig_ensure_highlights
+  vim.api.nvim_set_hl = orig_set_hl
   assert_true(
     vim.deep_equal(vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true }), old_marks),
     "ColorScheme should preserve retained extmarks while LSP is pending"
   )
+  assert_true(
+    #pending_setup_configs == 1 and pending_setup_configs[1] == false,
+    "pending ColorScheme should setup only the global highlight"
+  )
+  assert_true(pending_set_hl_calls == 1, "pending ColorScheme should define only the global dim highlight")
+  assert_true(bs.config == pending_config, "pending ColorScheme should preserve pending config")
+  assert_true(vim.deep_equal(bs.render_groups, pending_groups), "pending ColorScheme should preserve render groups")
 
   fake_clients[1].offset_encoding = "utf-16"
   respond(batch[1], {
@@ -3126,6 +3150,24 @@ end
 
 -- The renderer dims only the visible union's complement and composes styles.
 do
+  local ui = require("tunnelvision.ui")
+  local orig_ensure_highlights = ui.ensure_highlights
+  local orig_set_hl = vim.api.nvim_set_hl
+  local setup_configs = {}
+  local set_hl_calls = {}
+  local function reset_highlight_calls()
+    setup_configs = {}
+    set_hl_calls = {}
+  end
+  ui.ensure_highlights = function(cfg)
+    setup_configs[#setup_configs + 1] = cfg or false
+    return orig_ensure_highlights(cfg)
+  end
+  vim.api.nvim_set_hl = function(_, group, attrs)
+    set_hl_calls[#set_hl_calls + 1] = { group, attrs }
+    return orig_set_hl(0, group, attrs)
+  end
+
   local function marks(bufnr)
     return vim.api.nvim_buf_get_extmarks(bufnr, core.state.ns, 0, -1, { details = true })
   end
@@ -3150,7 +3192,14 @@ do
   vim.api.nvim_win_set_cursor(0, { 1, 4 })
 
   tunnelvision.setup()
+  reset_highlight_calls()
   tunnelvision.on({ scope = "buffer", silent = true })
+  local bs = core.get_buf_state(render_buf)
+  assert_true(
+    #setup_configs == 1 and setup_configs[1] == bs.config,
+    "ordinary default render should setup its highlights once"
+  )
+  assert_true(#set_hl_calls == 1, "ordinary default render should define one dim highlight")
   local default_snapshot = mark_snapshot(render_buf)
   assert_true(#default_snapshot == 1, "default renderer should add only the unrelated-line dim mark")
   assert_true(default_snapshot[1][5] == "TunnelVisionDim", "default renderer should use line dimming")
@@ -3175,7 +3224,7 @@ do
   )
   assert_true(symbol_marks[4][4].line_hl_group == "TunnelVisionDim", "unrelated lines should retain whole-line dimming")
 
-  local bs = core.get_buf_state(render_buf)
+  bs = core.get_buf_state(render_buf)
   bs.symbol_ranges = {
     { line = 1, start_col = 3, end_col = 8 },
     { line = 1, start_col = 4, end_col = 6 },
@@ -3202,11 +3251,21 @@ do
     },
   })
   vim.api.nvim_win_set_cursor(0, { 1, 4 })
+  reset_highlight_calls()
   tunnelvision.on()
   bs = core.get_buf_state(render_buf)
+  assert_true(
+    #setup_configs == 1 and setup_configs[1] == bs.config,
+    "custom-rules render should setup its composed config once"
+  )
   bs.scope_head_set = { [1] = true }
   bs.statement_set = { [1] = true }
+  reset_highlight_calls()
   require("tunnelvision.ui").render(render_buf)
+  assert_true(
+    #setup_configs == 1 and setup_configs[1] == bs.config,
+    "composed custom-rules rerender should setup its config once"
+  )
   local composed_marks = marks(render_buf)
   assert_true(#composed_marks == 6, "composed whole-line styles should split around two symbol ranges")
   local line_group = composed_marks[1][4].hl_group
@@ -3240,13 +3299,34 @@ do
     highlights = { symbol = { bg = 0xFF0000, bg_opacity = 0.5, bold = true } },
   })
   vim.api.nvim_win_set_cursor(0, { 1, 4 })
+  reset_highlight_calls()
   tunnelvision.on()
+  bs = core.get_buf_state(render_buf)
+  assert_true(
+    #setup_configs == 1 and setup_configs[1] == bs.config,
+    "opacity render should run highlight setup once even with dim disabled"
+  )
+  assert_true(#set_hl_calls == 1, "opacity render should define one reusable positive group")
   local opacity_marks = marks(render_buf)
   assert_true(#opacity_marks == 2, "dim none should retain positive symbol marks")
   local opacity_group = opacity_marks[1][4].hl_group
   assert_true(
     vim.api.nvim_get_hl(0, { name = opacity_group, link = false }).bg == 0x800080,
     "background opacity should blend deterministically against Normal"
+  )
+
+  local opacity_config = bs.config
+  local second_buf = new_buffer({ "local alpha = 1", "print(alpha)" })
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  reset_highlight_calls()
+  tunnelvision.on({ highlights = { line = { underline = true } } })
+  local second_bs = core.get_buf_state(second_buf)
+  local second_config = second_bs.config
+  assert_true(
+    #setup_configs == 1
+      and setup_configs[1] == second_config
+      and not vim.deep_equal(second_config.highlights, core.state.config.highlights),
+    "one-shot highlight-rules config should setup exactly once"
   )
 
   local resolver = require("tunnelvision.resolver")
@@ -3257,17 +3337,42 @@ do
     return orig_compute_path(...)
   end
   vim.api.nvim_set_hl(0, "Normal", { bg = 0x00FF00 })
+  reset_highlight_calls()
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   resolver.compute_path = orig_compute_path
   opacity_marks = marks(render_buf)
   opacity_group = opacity_marks[1][4].hl_group
   assert_true(compute_calls == 0, "ColorScheme should rerender without recomputing sources")
+  local rendered_configs = { [opacity_config] = 0, [second_config] = 0 }
+  for i = 2, #setup_configs do
+    rendered_configs[setup_configs[i]] = (rendered_configs[setup_configs[i]] or 0) + 1
+  end
+  assert_true(
+    #setup_configs == 3
+      and setup_configs[1] == false
+      and rendered_configs[opacity_config] == 1
+      and rendered_configs[second_config] == 1,
+    "ColorScheme should setup the base once and each active buffer config once"
+  )
+  assert_true(
+    bs.config == opacity_config and second_bs.config == second_config,
+    "ColorScheme should preserve each active buffer config"
+  )
+  assert_true(#set_hl_calls == 4, "ColorScheme should clear and rebuild both buffers' groups")
   assert_true(
     vim.api.nvim_get_hl(0, { name = opacity_group, link = false }).bg == 0x808000,
     "ColorScheme should rebuild opacity-derived groups"
   )
 
+  vim.api.nvim_set_current_buf(second_buf)
+  reset_highlight_calls()
+  vim.cmd("TunnelVision off")
+  assert_true(#setup_configs == 0 and #set_hl_calls == 1, "second-buffer cleanup should only clear its group")
+  vim.api.nvim_set_current_buf(render_buf)
+  vim.api.nvim_buf_delete(second_buf, { force = true })
+
   vim.api.nvim_set_hl(0, "Normal", {})
+  reset_highlight_calls()
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   opacity_marks = marks(render_buf)
   opacity_group = opacity_marks[1][4].hl_group
@@ -3275,12 +3380,17 @@ do
     vim.api.nvim_get_hl(0, { name = opacity_group, link = false }).bg == 0xFF0000,
     "missing Normal background should safely retain the configured background"
   )
+  assert_true(#setup_configs == 2, "fallback opacity ColorScheme should retain one setup per rerender")
+  assert_true(#set_hl_calls == 2, "fallback opacity ColorScheme should clear and rebuild its group")
+  reset_highlight_calls()
   vim.cmd("TunnelVision off")
   assert_true(#marks(render_buf) == 0, "deactivation should clear every renderer mark")
   assert_true(
     next(vim.api.nvim_get_hl(0, { name = opacity_group, link = false })) == nil,
     "deactivation should clear buffer-specific highlight definitions"
   )
+  assert_true(#setup_configs == 0, "deactivation should not setup highlights")
+  assert_true(#set_hl_calls == 1, "deactivation should clear its buffer-specific group once")
   vim.cmd("colorscheme default")
 
   tunnelvision.setup({
@@ -3321,9 +3431,15 @@ do
   })
   vim.api.nvim_win_set_cursor(0, { 1, 4 })
   tunnelvision.on()
+  reset_highlight_calls()
   assert_true(
     core.activate(render_buf, { max_dim_lines = 1, symbol = "alpha", cursor = { 1, 4 } }),
     "one-shot max_dim_lines should invalidate same-target rendering"
+  )
+  bs = core.get_buf_state(render_buf)
+  assert_true(
+    #setup_configs == 1 and setup_configs[1] == bs.config,
+    "one-shot config rerender should setup highlights once"
   )
   assert_true(core.get_buf_state(render_buf).config.max_dim_lines == 1, "one-shot max_dim_lines should normalize")
   local large_marks = marks(render_buf)
@@ -3331,10 +3447,24 @@ do
   assert_true(large_marks[1][4].hl_group ~= nil, "large-buffer positive style should use a range highlight")
   vim.cmd("TunnelVision off")
 
+  tunnelvision.setup({
+    notify = false,
+    source = "word",
+    scope = "buffer",
+    dim = "none",
+    highlights = { line = { bold = true } },
+  })
+  tunnelvision.on()
   local deleted_buf = render_buf
   new_buffer({ "local alpha = 1", "print(alpha)", "local beta = 2" })
+  reset_highlight_calls()
   vim.api.nvim_buf_delete(deleted_buf, { force = true })
   assert_true(core.state.bufs[deleted_buf] == nil, "buffer deletion should clear renderer state")
+  assert_true(#setup_configs == 0, "buffer deletion should not setup highlights")
+  assert_true(#set_hl_calls == 1, "buffer deletion should clear its buffer-specific group once")
+
+  ui.ensure_highlights = orig_ensure_highlights
+  vim.api.nvim_set_hl = orig_set_hl
 end
 
 -- dim = "none" clears existing marks and skips dim rendering.
