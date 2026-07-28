@@ -524,7 +524,7 @@ local function sorted_lines(path_set)
   return out
 end
 
-local function collect_word_matches(bufnr, symbol, scope)
+function M.collect_word_matches(bufnr, symbol, scope)
   local word_set = {}
   local word_ranges = {}
 
@@ -549,7 +549,7 @@ local function collect_source_result(name, context)
 
   local result
   if name == "word" then
-    local lines, ranges = collect_word_matches(context.bufnr, context.symbol, context.scope)
+    local lines, ranges = M.collect_word_matches(context.bufnr, context.symbol, context.scope)
     local used = next(lines) ~= nil
     result = {
       lines = lines,

@@ -1172,6 +1172,184 @@ do
   assert_true(not guarded_path[1], "identifiers beyond the hard guard should remain hidden")
 end
 
+-- Word scans stay lazy and cached while flow collects identifiers independently.
+do
+  local resolver = require("tunnelvision.resolver")
+  local flow_buf = new_buffer({
+    "local alpha = 1",
+    "local beta = alpha",
+    "local gamma = beta",
+  })
+  local anchor = { row = 0, col = 6 }
+  local scope = { start_line = 1, end_line = 3 }
+  local expected_path = { [1] = true, [2] = true, [3] = true }
+  local expected_order = { 1, 2, 3 }
+  local expected_ranges = {
+    { line = 1, start_col = 6, end_col = 11 },
+    { line = 2, start_col = 6, end_col = 10 },
+    { line = 2, start_col = 13, end_col = 18 },
+    { line = 3, start_col = 6, end_col = 11 },
+    { line = 3, start_col = 14, end_col = 18 },
+  }
+  local scans = 0
+  local collect_word_matches = resolver.collect_word_matches
+  resolver.collect_word_matches = function(...)
+    scans = scans + 1
+    return collect_word_matches(...)
+  end
+
+  local function compute(sources, extra)
+    return resolver.compute_path(
+      flow_buf,
+      "alpha",
+      anchor,
+      scope,
+      vim.tbl_extend("force", {
+        analyzers = { "text" },
+        custom_sources = {
+          custom_empty = function()
+            return {}
+          end,
+          custom_flow = function()
+            return { [1] = true }
+          end,
+        },
+        direction = "forward",
+        keywords = resolver.build_keywords({}),
+        lsp_result = resolver.make_lsp_result("ok", { [1] = true }, true, {
+          { line = 1, start_col = 6, end_col = 11 },
+        }),
+        mode = "flow",
+        sources = sources,
+      }, extra or {})
+    )
+  end
+
+  local function assert_flow_result(sources, used_source, used, added_lines, msg)
+    scans = 0
+    local path, order, meta, ranges = compute(sources)
+    assert_true(scans == 0, msg .. " should not scan word")
+    assert_true(vim.deep_equal(path, expected_path), msg .. " path: " .. vim.inspect(path))
+    assert_true(vim.deep_equal(order, expected_order), msg .. " order: " .. vim.inspect(order))
+    assert_ranges(ranges, expected_ranges, msg .. " ranges")
+    assert_true(
+      vim.deep_equal(meta, {
+        failed_sources = {},
+        fallback_source = nil,
+        used_lsp = used.lsp or false,
+        used_custom = used.custom or false,
+        used_word = false,
+        used_fallback = false,
+        fallback_reason = nil,
+        used_source = used_source,
+        flow_analyzers = { "text" },
+        flow_analyzer = "text",
+        flow_fallback = false,
+        flow_expanded = true,
+        flow_tracked_count = 3,
+        flow_added_lines = added_lines,
+      }),
+      msg .. " metadata: " .. vim.inspect(meta)
+    )
+  end
+
+  assert_flow_result({ { kind = "single", name = "lsp" }, { kind = "single", name = "word" } }, "lsp", {
+    lsp = true,
+  }, 2, "LSP flow winner")
+  assert_flow_result({ { kind = "single", name = "custom_flow" }, { kind = "single", name = "word" } }, "custom_flow", {
+    custom = true,
+  }, 2, "custom flow winner")
+  assert_flow_result({
+    { kind = "combine", names = { "lsp", "custom_flow" } },
+    { kind = "single", name = "word" },
+  }, "combine(lsp,custom_flow)", { lsp = true, custom = true }, 2, "combined flow winner")
+
+  local orig_get_parser = vim.treesitter.get_parser
+  local orig_get_node_text = vim.treesitter.get_node_text
+  local function node(node_type, row, start_col, end_col, text, children)
+    return {
+      type = function()
+        return node_type
+      end,
+      range = function()
+        return row, start_col, row, end_col
+      end,
+      iter_children = function()
+        local index = 0
+        return function()
+          index = index + 1
+          return (children or {})[index]
+        end
+      end,
+      text = text,
+    }
+  end
+  local ts_root = node("chunk", 0, 0, 0, nil, {
+    node("identifier", 0, 6, 11, "alpha"),
+    node("identifier", 1, 13, 18, "alpha"),
+  })
+  vim.treesitter.get_parser = function()
+    return {
+      parse = function()
+        return { {
+          root = function()
+            return ts_root
+          end,
+        } }
+      end,
+    }
+  end
+  vim.treesitter.get_node_text = function(current)
+    return current.text
+  end
+  assert_flow_result(
+    { { kind = "single", name = "treesitter" }, { kind = "single", name = "word" } },
+    "treesitter",
+    {},
+    1,
+    "Tree-sitter flow winner"
+  )
+  vim.treesitter.get_parser = orig_get_parser
+  vim.treesitter.get_node_text = orig_get_node_text
+
+  scans = 0
+  local failed_path, failed_order, failed_meta, failed_ranges = compute({
+    { kind = "combine", names = { "word", "custom_empty" } },
+  })
+  assert_true(scans == 1, "failed strict combine should scan word once")
+  assert_true(vim.deep_equal(failed_path, { [1] = true }), "failed strict combine should keep only the anchor")
+  assert_true(vim.deep_equal(failed_order, { 1 }), "failed strict combine order should keep only the anchor")
+  assert_ranges(failed_ranges, {}, "failed strict combine should not leak word ranges")
+  assert_true(
+    failed_meta.used_source == nil
+      and failed_meta.fallback_source == "custom_empty"
+      and failed_meta.failed_sources[1] == "combine(word,custom_empty)"
+      and not failed_meta.used_word,
+    "failed strict combine should not leak word metadata"
+  )
+
+  scans = 0
+  local repeated_path, repeated_order, repeated_meta, repeated_ranges = compute({
+    { kind = "combine", names = { "word", "custom_empty" } },
+    { kind = "single", name = "word" },
+  })
+  assert_true(scans == 1, "repeated word references should share one activation scan")
+  assert_true(vim.deep_equal(repeated_path, expected_path), "cached word fallback should preserve flow path")
+  assert_true(vim.deep_equal(repeated_order, expected_order), "cached word fallback should preserve flow order")
+  assert_ranges(repeated_ranges, expected_ranges, "cached word fallback should preserve flow ranges")
+  assert_true(
+    repeated_meta.used_source == "word"
+      and repeated_meta.used_word
+      and repeated_meta.used_fallback
+      and repeated_meta.fallback_source == "custom_empty"
+      and repeated_meta.flow_analyzer == "text"
+      and repeated_meta.flow_tracked_count == 3,
+    "cached word fallback should preserve source and flow metadata"
+  )
+
+  resolver.collect_word_matches = collect_word_matches
+end
+
 local dynamic_buf = new_buffer({
   "local alpha = 1",
   "local beta = alpha + 1",
