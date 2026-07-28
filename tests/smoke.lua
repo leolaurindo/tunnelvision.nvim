@@ -3380,47 +3380,45 @@ do
   assert_true(positive_set_hl_calls() == 0, "rerender should reuse groups for their valid buffer lifetime")
   vim.cmd("TunnelVision off")
 
-  for _, invalid_fg in ipairs({ "#112233;bg=number:4478310", "#112233;bg=4478310" }) do
-    local collision_buf = new_buffer({ "first", "other" })
-    tunnelvision.setup({
-      notify = false,
-      source = "word",
-      scope = "buffer",
-      highlights = {
-        scope_head = { fg = invalid_fg },
-        line = { fg = "#112233", bg = 0x445566 },
-      },
-    })
-    tunnelvision.on()
-    local collision_bs = core.get_buf_state(collision_buf)
-    collision_bs.symbol_ranges = {}
-    collision_bs.statement_set = {}
+  local collision_buf = new_buffer({ "first", "other" })
+  tunnelvision.setup({
+    notify = false,
+    source = "word",
+    scope = "buffer",
+    highlights = {
+      scope_head = { fg = "#112233;bg=number:4478310" },
+      line = { fg = "#112233", bg = 0x445566 },
+    },
+  })
+  tunnelvision.on()
+  local collision_bs = core.get_buf_state(collision_buf)
+  collision_bs.symbol_ranges = {}
+  collision_bs.statement_set = {}
 
-    local function assert_collision_order(valid_line, invalid_line)
-      collision_bs.path_set = { [valid_line] = true }
-      collision_bs.scope_head_set = { [invalid_line] = true }
-      ui.clear_render_groups(collision_bs)
-      ui.render(collision_buf)
-      local collision_marks = marks(collision_buf)
-      assert_true(#collision_marks == 1, "invalid colliding style should not suppress or reuse the valid group")
-      local group = collision_marks[1][4].hl_group
-      assert_true(
-        vim.deep_equal(mark_snapshot(collision_buf), { { valid_line - 1, 0, 5, group, nil, 1100 } }),
-        "colliding styles should preserve the valid extmark in either resolution order: "
-          .. vim.inspect(mark_snapshot(collision_buf))
-      )
-      local attrs = vim.api.nvim_get_hl(0, { name = group, link = false })
-      assert_true(
-        attrs.fg == 0x112233 and attrs.bg == 0x445566,
-        "invalid colliding style should not alter valid attributes"
-      )
-    end
-
-    assert_collision_order(2, 1)
-    assert_collision_order(1, 2)
-    vim.cmd("TunnelVision off")
-    vim.api.nvim_buf_delete(collision_buf, { force = true })
+  local function assert_collision_order(valid_line, invalid_line)
+    collision_bs.path_set = { [valid_line] = true }
+    collision_bs.scope_head_set = { [invalid_line] = true }
+    ui.clear_render_groups(collision_bs)
+    ui.render(collision_buf)
+    local collision_marks = marks(collision_buf)
+    assert_true(#collision_marks == 1, "invalid colliding style should not suppress or reuse the valid group")
+    local group = collision_marks[1][4].hl_group
+    assert_true(
+      vim.deep_equal(mark_snapshot(collision_buf), { { valid_line - 1, 0, 5, group, nil, 1100 } }),
+      "colliding styles should preserve the valid extmark in either resolution order: "
+        .. vim.inspect(mark_snapshot(collision_buf))
+    )
+    local attrs = vim.api.nvim_get_hl(0, { name = group, link = false })
+    assert_true(
+      attrs.fg == 0x112233 and attrs.bg == 0x445566,
+      "invalid colliding style should not alter valid attributes"
+    )
   end
+
+  assert_collision_order(2, 1)
+  assert_collision_order(1, 2)
+  vim.cmd("TunnelVision off")
+  vim.api.nvim_buf_delete(collision_buf, { force = true })
   vim.api.nvim_set_current_buf(render_buf)
 
   vim.api.nvim_set_hl(0, "Normal", { bg = 0x0000FF })

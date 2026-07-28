@@ -98,19 +98,6 @@ local function style_token(key, value)
   return key .. "=" .. #value .. ":" .. value
 end
 
-local function raw_style_key(style)
-  local parts = {}
-  for _, key in ipairs(style_keys) do
-    if style[key] ~= nil then
-      parts[#parts + 1] = style_token(key, style[key])
-    end
-  end
-  if style.bg_opacity ~= nil then
-    parts[#parts + 1] = style_token("bg_opacity", style.bg_opacity)
-  end
-  return table.concat(parts, ";")
-end
-
 local function resolved_style(style, render_cache)
   local resolved = vim.deepcopy(style)
   local opacity = resolved.bg_opacity
@@ -149,9 +136,8 @@ local function resolved_style(style, render_cache)
 end
 
 local function style_group(bufnr, bs, style, render_cache)
-  local raw_key = raw_style_key(style)
-  if render_cache.styles[raw_key] ~= nil then
-    return render_cache.styles[raw_key] or nil
+  if render_cache.styles[style] ~= nil then
+    return render_cache.styles[style] or nil
   end
 
   local attrs = resolved_style(style, render_cache)
@@ -162,26 +148,26 @@ local function style_group(bufnr, bs, style, render_cache)
     end
   end
   if #parts == 0 then
-    render_cache.styles[raw_key] = false
+    render_cache.styles[style] = false
     return nil
   end
 
   local key = table.concat(parts, ";")
   bs.render_groups = bs.render_groups or { next = 0 }
   if bs.render_groups[key] then
-    render_cache.styles[raw_key] = bs.render_groups[key]
-    return render_cache.styles[raw_key]
+    render_cache.styles[style] = bs.render_groups[key]
+    return render_cache.styles[style]
   end
 
   bs.render_groups.next = bs.render_groups.next + 1
   local group = ("TunnelVisionHighlight%d_%d"):format(bufnr, bs.render_groups.next)
   local ok = pcall(vim.api.nvim_set_hl, 0, group, attrs)
   if not ok then
-    render_cache.styles[raw_key] = false
+    render_cache.styles[style] = false
     return nil
   end
   bs.render_groups[key] = group
-  render_cache.styles[raw_key] = group
+  render_cache.styles[style] = group
   return group
 end
 
