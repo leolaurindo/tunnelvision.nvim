@@ -717,6 +717,7 @@ do
   assert_true(handler_context.bufnr == custom_buf and handler_context.symbol == "alpha", "custom context identity")
   assert_true(handler_context.mode == "flow" and handler_context.direction == "both", "custom context mode")
   assert_true(handler_context.keywords.sentinel, "custom context keywords")
+  assert_true(handler_context.get_treesitter == nil, "custom sources should not receive internal activation context")
   vim.cmd("TunnelVision off")
 
   for _, case in ipairs({
@@ -1470,6 +1471,149 @@ do
   vim.api.nvim_buf_get_lines = original_get_lines
 end
 
+-- Tree-sitter consumers share one lazy changedtick snapshot per activation.
+do
+  local resolver = require("tunnelvision.resolver")
+  local orig_get_parser = vim.treesitter.get_parser
+  local orig_get_node_text = vim.treesitter.get_node_text
+  local parse_count = 0
+
+  local function node(node_type, row, parent, text)
+    return {
+      type = function()
+        return node_type
+      end,
+      range = function()
+        return row, 0, row, 5
+      end,
+      parent = function()
+        return parent
+      end,
+      iter_children = function()
+        return function() end
+      end,
+      text = text,
+    }
+  end
+
+  local function make_root(start_row, end_row)
+    local function_node = node("function_definition", start_row)
+    function_node.range = function()
+      return start_row, 0, end_row, 5
+    end
+    local assignments, identifiers = {}, {}
+    for row = start_row, end_row do
+      assignments[row] = node("assignment_statement", row, function_node)
+      identifiers[#identifiers + 1] = node("identifier", row, assignments[row], "alpha")
+    end
+    return {
+      named_descendant_for_range = function(_, row)
+        return identifiers[row - start_row + 1] or identifiers[1]
+      end,
+      type = function()
+        return "chunk"
+      end,
+      iter_children = function()
+        local index = 0
+        return function()
+          index = index + 1
+          return identifiers[index]
+        end
+      end,
+    }
+  end
+
+  local current_root = make_root(0, 2)
+  vim.treesitter.get_parser = function()
+    return {
+      parse = function()
+        parse_count = parse_count + 1
+        return { {
+          root = function()
+            return current_root
+          end,
+        } }
+      end,
+    }
+  end
+  vim.treesitter.get_node_text = function(current)
+    return current.text
+  end
+
+  local shared_buf = new_buffer({ "alpha = 1", "alpha = 2", "alpha = 3" }, "shared-ts")
+  tunnelvision.setup({
+    notify = false,
+    sources = { "treesitter" },
+    scope = "function",
+    mode = "static",
+    highlights = { statement = true },
+  })
+  core.activate(shared_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 0 } })
+  local shared_state = core.get_buf_state(shared_buf)
+  assert_true(parse_count == 1, "scope, source, and structural context should share one parse")
+  assert_true(shared_state.path_set[1] and shared_state.path_set[3], "shared snapshot should feed the source")
+  assert_true(shared_state.statement_set[1] and shared_state.statement_set[3], "shared snapshot should feed context")
+  vim.cmd("TunnelVision off")
+
+  parse_count = 0
+  tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { line = true } })
+  core.activate(shared_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 0 } })
+  assert_true(parse_count == 0, "activations without Tree-sitter consumers should not request a parser")
+  vim.cmd("TunnelVision off")
+
+  local parser_requests = 0
+  vim.treesitter.get_parser = function()
+    parser_requests = parser_requests + 1
+    error("parser unavailable")
+  end
+  tunnelvision.setup({
+    notify = false,
+    sources = { "treesitter", "word" },
+    scope = "function",
+    mode = "static",
+    highlights = { statement = true },
+  })
+  core.activate(shared_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 0 } })
+  local fallback_state = core.get_buf_state(shared_buf)
+  assert_true(parser_requests == 1, "an unavailable parser should be cached for all activation consumers")
+  assert_true(
+    fallback_state.last_compute_meta.used_source == "word"
+      and fallback_state.last_compute_meta.fallback_reason == "unavailable",
+    "a cached Tree-sitter failure should preserve source fallback"
+  )
+  assert_true(
+    vim.deep_equal(fallback_state.statement_set, fallback_state.path_set),
+    "a cached Tree-sitter failure should preserve structural fallback"
+  )
+  vim.cmd("TunnelVision off")
+
+  parse_count = 0
+  current_root = make_root(0, 0)
+  vim.treesitter.get_parser = function()
+    return {
+      parse = function()
+        parse_count = parse_count + 1
+        return { {
+          root = function()
+            return current_root
+          end,
+        } }
+      end,
+    }
+  end
+  local activation_context = {}
+  local old_scope = resolver.resolve_scope(shared_buf, { row = 0, col = 0 }, nil, "function", activation_context)
+  current_root = make_root(1, 2)
+  vim.api.nvim_buf_set_lines(shared_buf, 0, 1, false, { "edited alpha" })
+  local new_scope = resolver.resolve_scope(shared_buf, { row = 1, col = 0 }, nil, "function", activation_context)
+  assert_true(parse_count == 2, "changedtick changes should replace the cached snapshot")
+  assert_true(old_scope.start_line == 1 and old_scope.end_line == 1, "initial snapshot geometry")
+  assert_true(new_scope.start_line == 2 and new_scope.end_line == 3, "edited buffers should not expose stale nodes")
+
+  vim.treesitter.get_parser = orig_get_parser
+  vim.treesitter.get_node_text = orig_get_node_text
+end
+
 local dynamic_buf = new_buffer({
   "local alpha = 1",
   "local beta = alpha + 1",
@@ -1678,6 +1822,33 @@ do
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
   local resume_batch = take_batch()
   assert_true(bs.pending and custom_resume_calls == 1, "strict combine should pause when it reaches LSP")
+  local forbidden_state_keys = {
+    context = true,
+    get_treesitter = true,
+    line_cache = true,
+    parser = true,
+    resolution_context = true,
+    root = true,
+    source_results = true,
+    tree = true,
+    treesitter = true,
+  }
+  local function assert_private_resolver_context(value, seen)
+    seen = seen or {}
+    if type(value) ~= "table" or seen[value] then
+      return
+    end
+    seen[value] = true
+    for key, child in pairs(value) do
+      assert_true(not forbidden_state_keys[key], "pending buffer state should not expose resolver field " .. key)
+      assert_private_resolver_context(child, seen)
+    end
+  end
+  assert_private_resolver_context(bs)
+  assert_true(
+    type(bs.request_token) == "table" and next(bs.request_token) == nil,
+    "pending state should expose only an opaque token"
+  )
   respond(resume_batch[1], {
     { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } },
   })
@@ -1691,6 +1862,7 @@ do
       and bs.path_set[2],
     "resumed strict combine should merge cached custom and LSP results"
   )
+  assert_true(bs.request_token == nil, "completed requests should clear their opaque token")
 
   tunnelvision.setup({ notify = false, sources = { "custom_empty", "lsp" }, scope = "buffer" })
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
@@ -1892,6 +2064,7 @@ do
 
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 5 } })
   local stale_batch = take_batch()
+  local stale_token = bs.request_token
   respond(stale_batch[1], {})
   respond(stale_batch[4], {})
   local retained_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
@@ -1900,6 +2073,8 @@ do
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
   sync_cancel_callbacks = false
   local current_batch = take_batch()
+  local current_token = bs.request_token
+  assert_true(current_token ~= stale_token, "supersession should replace the opaque request token")
   assert_true(
     #cancellations == cancellation_cursor + 1
       and cancellations[#cancellations].client_id == 2
@@ -1914,18 +2089,25 @@ do
   respond(stale_batch[1], {})
   respond(stale_batch[2], {})
   respond(stale_batch[4], {})
-  assert_true(bs.pending and bs.anchor.row == 1, "older completed requests should remain stale")
+  assert_true(
+    bs.pending and bs.anchor.row == 1 and bs.request_token == current_token,
+    "older completed requests should remain stale"
+  )
   respond(
     current_batch[1],
     { { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } } }
   )
   respond(current_batch[2], {})
   respond(current_batch[4], {})
-  assert_true(not bs.pending and bs.path_set[2], "current request should apply after stale response")
+  assert_true(
+    not bs.pending and bs.path_set[2] and bs.request_token == nil,
+    "current request should apply after stale response"
+  )
 
   local config_stale_path = vim.deepcopy(bs.path_set)
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
   batch = take_batch()
+  local config_token = bs.request_token
   bs.config = vim.deepcopy(bs.config)
   respond(batch[1], {
     { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } },
@@ -1933,7 +2115,7 @@ do
   respond(batch[2], {})
   respond(batch[4], {})
   assert_true(
-    bs.pending and vim.deep_equal(bs.path_set, config_stale_path),
+    bs.pending and bs.request_token == config_token and vim.deep_equal(bs.path_set, config_stale_path),
     "response for stale config identity should not resume"
   )
 

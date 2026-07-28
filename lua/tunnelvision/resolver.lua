@@ -252,22 +252,52 @@ local function is_identifier_like(node_type)
     or node_type == "field"
 end
 
-local function get_treesitter_root(bufnr)
-  local ok, root = pcall(function()
-    local parser = vim.treesitter.get_parser(bufnr)
-    local parsed = parser:parse()
-    return parsed and parsed[1] and parsed[1]:root()
-  end)
-  return ok and root or nil
+local function get_treesitter_snapshot(context)
+  local changedtick = vim.api.nvim_buf_get_changedtick(context.bufnr)
+  if context.treesitter and context.treesitter.changedtick == changedtick then
+    return not context.treesitter.failed and context.treesitter or nil
+  end
+
+  local snapshot = { changedtick = changedtick, failed = true }
+  context.treesitter = snapshot
+  local ok, parser = pcall(vim.treesitter.get_parser, context.bufnr)
+  if not ok or not parser then
+    return nil
+  end
+  local ok_parse, parsed = pcall(parser.parse, parser)
+  local tree = ok_parse and parsed and parsed[1]
+  if not tree then
+    return nil
+  end
+  local ok_root, root = pcall(tree.root, tree)
+  if not ok_root or not root then
+    return nil
+  end
+  snapshot.parser, snapshot.tree, snapshot.root, snapshot.failed = parser, tree, root, false
+
+  if vim.api.nvim_buf_get_changedtick(context.bufnr) ~= changedtick then
+    return get_treesitter_snapshot(context)
+  end
+  return snapshot
 end
 
-local function get_scope_range(bufnr, anchor, scope_mode)
+local function prepare_context(context, bufnr)
+  context = context or {}
+  context.bufnr = bufnr
+  context.get_treesitter = context.get_treesitter or function()
+    return get_treesitter_snapshot(context)
+  end
+  return context
+end
+
+local function get_scope_range(bufnr, anchor, scope_mode, context)
   local total = vim.api.nvim_buf_line_count(bufnr)
   if scope_mode == "buffer" then
     return 1, total
   end
 
-  local root = get_treesitter_root(bufnr)
+  local snapshot = prepare_context(context, bufnr).get_treesitter()
+  local root = snapshot and snapshot.root
   if root then
     local node = root:named_descendant_for_range(anchor.row, anchor.col, anchor.row, anchor.col)
     while node do
@@ -300,7 +330,7 @@ function M.anchors_equal(a, b)
   return a and b and a.row == b.row and a.col == b.col or false
 end
 
-function M.resolve_scope(bufnr, anchor, current_scope, scope_mode)
+function M.resolve_scope(bufnr, anchor, current_scope, scope_mode, context)
   local line = anchor.row + 1
   local changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
   local reusable = current_scope
@@ -312,7 +342,7 @@ function M.resolve_scope(bufnr, anchor, current_scope, scope_mode)
     return current_scope
   end
 
-  local start_line, end_line = get_scope_range(bufnr, anchor, scope_mode)
+  local start_line, end_line = get_scope_range(bufnr, anchor, scope_mode, context)
   if reusable and current_scope.start_line == start_line and current_scope.end_line == end_line then
     return current_scope
   end
@@ -365,8 +395,9 @@ function M.make_lsp_result(reason, lines, used, ranges)
   }
 end
 
-local function collect_treesitter_lines(bufnr, symbol, scope)
-  local root = get_treesitter_root(bufnr)
+local function collect_treesitter_lines(bufnr, symbol, scope, context)
+  local snapshot = prepare_context(context, bufnr).get_treesitter()
+  local root = snapshot and snapshot.root
   if not root then
     return { lines = {}, ranges = {}, used = false, reason = "unavailable" }
   end
@@ -641,7 +672,7 @@ local function collect_source_result(name, context)
       failed_source = name,
     }
   elseif name == "treesitter" then
-    result = collect_treesitter_lines(context.bufnr, context.symbol, context.scope)
+    result = collect_treesitter_lines(context.bufnr, context.symbol, context.scope, context)
     result.failed_source = name
   elseif context.custom_sources[name] then
     local handler = context.custom_sources[name]
@@ -791,21 +822,14 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
     lsp_result = M.make_lsp_result("disabled")
   end
   local context = opts.resolution_context
-    or {
-      anchor = anchor,
-      analyzers = opts.analyzers,
-      bufnr = bufnr,
-      custom_sources = opts.custom_sources or {},
-      direction = opts.direction,
-      keywords = opts.keywords or {},
-      lsp_result = lsp_result,
-      max_depth = opts.max_depth,
-      mode = opts.mode,
-      scope = scope,
-      source_results = {},
-      sources = opts.sources or {},
-      symbol = symbol,
-    }
+  if not context or not context.source_results then
+    context = prepare_context(context, bufnr)
+    context.anchor, context.scope, context.symbol = anchor, scope, symbol
+    context.analyzers, context.direction, context.max_depth = opts.analyzers, opts.direction, opts.max_depth
+    context.custom_sources, context.keywords = opts.custom_sources or {}, opts.keywords or {}
+    context.lsp_result, context.mode = lsp_result, opts.mode
+    context.source_results, context.sources = {}, opts.sources or {}
+  end
   context.get_lines = context.get_lines
     or function(start_line, end_line)
       return get_lines(context, start_line, end_line)

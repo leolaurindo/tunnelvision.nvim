@@ -97,7 +97,12 @@ local function add_range(out, start_line, end_line, scope, line_count)
   end
 end
 
-local function parse_root(bufnr)
+local function parse_root(bufnr, context)
+  if context and context.get_treesitter then
+    local snapshot = context.get_treesitter()
+    return snapshot and snapshot.root
+  end
+
   local ok_parser, parser = pcall(vim.treesitter.get_parser, bufnr)
   if not ok_parser or not parser then
     return nil
@@ -130,7 +135,7 @@ local function positions_by_line(path_set, symbol_ranges, bufnr)
   return positions
 end
 
-function M.evaluate(cfg, path_set, symbol_ranges, bufnr, scope)
+function M.evaluate(cfg, path_set, symbol_ranges, bufnr, scope, context)
   local statement_set = {}
   local scope_head_set = {}
   local fallback = { statement = false, scope_head = false }
@@ -140,7 +145,7 @@ function M.evaluate(cfg, path_set, symbol_ranges, bufnr, scope)
     return statement_set, scope_head_set, fallback
   end
 
-  local root = parse_root(bufnr)
+  local root = parse_root(bufnr, context)
   local ok = root
     and pcall(function()
       local line_count = vim.api.nvim_buf_line_count(bufnr)

@@ -69,7 +69,7 @@ function M.get_buf_state(bufnr)
     pending = false,
     request_id = nil,
     request_handles = {},
-    resolution_context = nil,
+    request_token = nil,
     config = nil,
     render_groups = nil,
   }
@@ -265,22 +265,22 @@ local function maybe_warn_structural_fallback(bs, silent, cfg, fallback)
   end
 end
 
-local function apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, ranges)
+local function apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, ranges, context)
   bs.pending = false
   bs.request_id = nil
   bs.request_handles = {}
-  bs.resolution_context = nil
+  bs.request_token = nil
   bs.path_set, bs.path_order, bs.last_compute_meta, bs.symbol_ranges = path_set, path_order, meta, ranges
   local structural_fallback
   bs.statement_set, bs.scope_head_set, structural_fallback =
-    require("tunnelvision.context").evaluate(cfg, bs.path_set, bs.symbol_ranges, bufnr, bs.scope)
+    require("tunnelvision.context").evaluate(cfg, bs.path_set, bs.symbol_ranges, bufnr, bs.scope, context)
   maybe_warn_fallback(bs, opts.silent, cfg)
   maybe_warn_strict_lsp(bs, opts.silent, cfg)
   maybe_warn_structural_fallback(bs, opts.silent, cfg, structural_fallback)
   require("tunnelvision.ui").render(bufnr)
 end
 
-local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context, lsp_result)
+local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context, token, lsp_result)
   local path_set, path_order, meta, ranges, pending = resolver.compute_path(bufnr, symbol, anchor, scope, {
     direction = cfg.flow_settings.direction,
     analyzers = cfg.flow_settings.analyzers,
@@ -294,14 +294,15 @@ local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keyword
     sources = cfg.sources,
   })
   if not pending then
-    apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, ranges)
+    apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, ranges, context)
     return
   end
 
-  bs.resolution_context = pending
+  bs.request_token = token
   local available, reason = resolver.get_lsp_status(bufnr)
   if not available then
-    resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, pending, resolver.make_lsp_result(reason))
+    local result = resolver.make_lsp_result(reason)
+    resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, pending, token, result)
     return
   end
 
@@ -317,7 +318,7 @@ local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keyword
       or current.request_id ~= request_id
       or current.symbol ~= symbol
       or current.config ~= cfg
-      or current.resolution_context ~= pending
+      or current.request_token ~= token
     then
       return
     end
@@ -328,7 +329,7 @@ local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keyword
       return
     end
 
-    resolve_path(bufnr, current, symbol, anchor, scope, opts, cfg, keywords, pending, result)
+    resolve_path(bufnr, current, symbol, anchor, scope, opts, cfg, keywords, pending, token, result)
   end, pending)
   if bs.request_id == request_id then
     bs.request_handles = handles
@@ -351,10 +352,11 @@ function M.activate(bufnr, opts)
   local cursor = opts.cursor or vim.api.nvim_win_get_cursor(0)
   local anchor = { row = cursor[1] - 1, col = cursor[2] }
   local cfg, keywords = activation_config(bufnr, opts)
+  local context = { bufnr = bufnr }
 
   local bs = M.get_buf_state(bufnr)
   local reuse_scope = not opts.force and opts.reuse_scope ~= false
-  local scope = resolver.resolve_scope(bufnr, anchor, reuse_scope and bs.scope or nil, cfg.scope)
+  local scope = resolver.resolve_scope(bufnr, anchor, reuse_scope and bs.scope or nil, cfg.scope, context)
   local keep_render = bs.active and not bs.pending and next(bs.path_set) ~= nil
   if
     bs.active
@@ -369,7 +371,7 @@ function M.activate(bufnr, opts)
 
   bs.pending = false
   bs.request_id = nil
-  bs.resolution_context = nil
+  bs.request_token = nil
   cancel_requests(bs)
   bs.active = true
   bs.symbol = symbol
@@ -387,7 +389,7 @@ function M.activate(bufnr, opts)
     bs.warned_lsp_strict = false
   end
 
-  resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords)
+  resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context, {})
 
   return true
 end
@@ -398,7 +400,7 @@ function M.deactivate(bufnr)
     bs.active = false
     bs.pending = false
     bs.request_id = nil
-    bs.resolution_context = nil
+    bs.request_token = nil
     cancel_requests(bs)
     require("tunnelvision.ui").clear_render_groups(bs)
     bs.request_handles = {}
