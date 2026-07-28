@@ -31,6 +31,13 @@ M.state = state
 
 local refresh_active_buffers = function() end
 
+local function cancel_requests(bs)
+  if bs then
+    resolver.cancel_lsp_requests(bs.request_handles)
+    bs.request_handles = {}
+  end
+end
+
 function M.notify(msg, level)
   if state.config.notify then
     vim.notify(msg, level or vim.log.levels.INFO)
@@ -70,9 +77,11 @@ function M.get_buf_state(bufnr)
 end
 
 function M.clear_buf_state(bufnr)
-  pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
-  require("tunnelvision.ui").clear_render_groups(state.bufs[bufnr])
+  local bs = state.bufs[bufnr]
   state.bufs[bufnr] = nil
+  cancel_requests(bs)
+  pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
+  require("tunnelvision.ui").clear_render_groups(bs)
 end
 
 local function get_line_target_col(line, symbol)
@@ -311,12 +320,13 @@ function M.activate(bufnr, opts)
     return false
   end
 
-  bs.active = true
   bs.pending = false
+  bs.request_id = nil
+  cancel_requests(bs)
+  bs.active = true
   bs.symbol = symbol
   bs.anchor = anchor
   bs.scope = scope
-  bs.request_id = nil
   bs.request_handles = {}
   bs.config = cfg
   if not keep_render then
@@ -372,10 +382,11 @@ end
 function M.deactivate(bufnr)
   local bs = state.bufs[bufnr]
   if bs then
-    require("tunnelvision.ui").clear_render_groups(bs)
     bs.active = false
     bs.pending = false
     bs.request_id = nil
+    cancel_requests(bs)
+    require("tunnelvision.ui").clear_render_groups(bs)
     bs.request_handles = {}
     bs.symbol = nil
     bs.anchor = nil

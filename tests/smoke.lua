@@ -1174,7 +1174,9 @@ assert_true(no_op == false, "identical activate should no-op")
 vim.cmd("TunnelVision off")
 
 do
+  local cancellations = {}
   local requests = {}
+  local sync_cancel_callbacks = false
   local timers = {}
   local fake_clients = {
     { id = 1, offset_encoding = "utf-8", server_capabilities = {} },
@@ -1193,6 +1195,25 @@ do
       error("explicit self required")
     end
     return method == "textDocument/documentHighlight"
+  end
+  fake_clients[1].cancel_request = function(handle)
+    cancellations[#cancellations + 1] = { client_id = 1, handle = handle }
+    if sync_cancel_callbacks then
+      requests[handle - 100].callback(nil, {
+        { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
+      })
+    end
+  end
+  fake_clients[2].cancel_request = function(self, handle)
+    if type(self) ~= "table" then
+      error("explicit self required")
+    end
+    cancellations[#cancellations + 1] = { client_id = self.id, handle = handle }
+    if sync_cancel_callbacks then
+      requests[handle - 100].callback(nil, {
+        { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
+      })
+    end
   end
   for _, client in ipairs(fake_clients) do
     local request_client = client
@@ -1214,8 +1235,12 @@ do
   end
 
   local orig_defer_fn = vim.defer_fn
+  local orig_get_client_by_id = vim.lsp.get_client_by_id
   vim.defer_fn = function(callback)
     timers[#timers + 1] = callback
+  end
+  vim.lsp.get_client_by_id = function(client_id)
+    return fake_clients[client_id]
   end
   local restore_clients
   if vim.lsp.get_clients then
@@ -1300,6 +1325,8 @@ do
     { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
   })
   assert_true(bs.pending, "partial LSP results should wait for remaining clients")
+  assert_true(bs.request_handles[1] == nil, "completed clients should release their request handles")
+  assert_true(bs.request_handles[2] and bs.request_handles[4], "incomplete client handles should remain pending")
   respond(batch[4], {
     { range = { start = { line = 0, character = 2 }, ["end"] = { line = 0, character = 7 } } },
   })
@@ -1327,7 +1354,14 @@ do
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 3, 0 } })
   batch, timeout = take_batch()
   respond(batch[1], { { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } } })
+  local cancellation_cursor = #cancellations
   timeout()
+  assert_true(
+    #cancellations == cancellation_cursor + 1
+      and cancellations[#cancellations].client_id == 2
+      and cancellations[#cancellations].handle == batch[2].handle,
+    "partial timeout should cancel only unresolved supported clients"
+  )
   assert_true(not bs.pending, "partial result should complete at the global timeout")
   assert_true(bs.path_set[3], "timed-out clients should not discard valid partial results")
   local timeout_ranges = vim.deepcopy(bs.symbol_ranges)
@@ -1350,10 +1384,21 @@ do
   )
 
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-  timeout = select(2, take_batch())
+  batch, timeout = take_batch()
+  local total_timeout_handles = { [batch[1].handle] = true, [batch[2].handle] = true }
+  cancellation_cursor = #cancellations
+  sync_cancel_callbacks = true
   timeout()
+  sync_cancel_callbacks = false
+  assert_true(
+    #cancellations == cancellation_cursor + 2
+      and total_timeout_handles[cancellations[cancellation_cursor + 1].handle]
+      and total_timeout_handles[cancellations[cancellation_cursor + 2].handle]
+      and cancellations[cancellation_cursor + 1].handle ~= cancellations[cancellation_cursor + 2].handle,
+    "total timeout should cancel all unresolved supported clients"
+  )
   assert_true(not bs.pending, "total timeout should resolve pending state")
-  assert_true(bs.last_compute_meta.used_source == "word", "total timeout should use fallback chain")
+  assert_true(bs.last_compute_meta.used_source == "word", "reentrant timeout responses should not prevent fallback")
 
   tunnelvision.setup({ notify = false, sources = { "lsp" }, scope = "buffer", lsp_timeout_ms = 1000 })
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
@@ -1417,12 +1462,26 @@ do
 
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 5 } })
   local stale_batch = take_batch()
+  respond(stale_batch[1], {})
+  respond(stale_batch[4], {})
+  local retained_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
+  cancellation_cursor = #cancellations
+  sync_cancel_callbacks = true
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  sync_cancel_callbacks = false
   local current_batch = take_batch()
-  respond(
-    stale_batch[1],
-    { { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } } }
+  assert_true(
+    #cancellations == cancellation_cursor + 1
+      and cancellations[#cancellations].client_id == 2
+      and cancellations[#cancellations].handle == stale_batch[2].handle,
+    "supersession should cancel only incomplete cancellable clients"
   )
+  assert_true(bs.pending and bs.anchor.row == 1, "synchronous cancellation callbacks should leave replacement pending")
+  assert_true(
+    vim.deep_equal(vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true }), retained_marks),
+    "synchronous cancellation callbacks should preserve the pending render"
+  )
+  respond(stale_batch[1], {})
   respond(stale_batch[2], {})
   respond(stale_batch[4], {})
   assert_true(bs.pending and bs.anchor.row == 1, "older completed requests should remain stale")
@@ -1443,9 +1502,38 @@ do
   respond(batch[4], {})
   assert_true(bs.pending, "pre-edit responses should remain stale")
   assert_ranges(bs.symbol_ranges, current_ranges, "pre-edit response should not render")
+
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  respond(batch[4], {})
+  cancellation_cursor = #cancellations
+  sync_cancel_callbacks = true
   vim.cmd("TunnelVision off")
+  sync_cancel_callbacks = false
+  assert_true(#cancellations == cancellation_cursor + 2, "deactivation should cancel all supported pending clients")
   assert_true(next(bs.request_handles) == nil, "deactivation should clear retained request handles")
+  for _, request in pairs(batch) do
+    respond(request, {})
+  end
+  assert_true(not bs.active and not bs.pending, "late callbacks after deactivation should remain stale")
+
+  local deleted_buf = new_buffer({ "local alpha = 1", "print(alpha)" })
+  core.activate(deleted_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 6 } })
+  batch = take_batch()
+  respond(batch[4], {})
+  cancellation_cursor = #cancellations
+  sync_cancel_callbacks = true
+  vim.api.nvim_buf_delete(deleted_buf, { force = true })
+  sync_cancel_callbacks = false
+  assert_true(#cancellations == cancellation_cursor + 2, "buffer deletion should cancel supported pending clients")
+  assert_true(core.state.bufs[deleted_buf] == nil, "buffer deletion should clear request state")
+  for _, request in pairs(batch) do
+    respond(request, {})
+  end
+  assert_true(core.state.bufs[deleted_buf] == nil, "late callbacks after buffer deletion should remain stale")
+
   vim.defer_fn = orig_defer_fn
+  vim.lsp.get_client_by_id = orig_get_client_by_id
   restore_clients()
 end
 

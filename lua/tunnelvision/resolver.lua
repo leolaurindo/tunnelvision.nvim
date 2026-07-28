@@ -420,6 +420,24 @@ function M.get_lsp_status(bufnr)
   return true, "ok"
 end
 
+function M.cancel_lsp_requests(handles)
+  for client_id, request_id in pairs(handles or {}) do
+    local client
+    if vim.lsp.get_client_by_id then
+      local ok
+      ok, client = pcall(vim.lsp.get_client_by_id, client_id)
+      client = ok and client or nil
+    end
+    if client and client.cancel_request then
+      local ok = pcall(client.cancel_request, request_id)
+      if not ok then
+        pcall(client.cancel_request, client, request_id)
+      end
+    end
+    handles[client_id] = nil
+  end
+end
+
 function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
   local clients = {}
   for _, client in pairs(get_attached_clients(bufnr)) do
@@ -436,6 +454,10 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
       return
     end
     done = true
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+      on_done(M.make_lsp_result("request_failed"))
+      return
+    end
     if not has_lsp_results(responses) then
       on_done(M.make_lsp_result("request_failed"))
       return
@@ -450,6 +472,7 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
       return
     end
     terminal[client.id] = true
+    handles[client.id] = nil
     pending = pending - 1
     if not err and result ~= nil then
       responses[client.id] = { result = result, offset_encoding = encoding }
@@ -490,6 +513,7 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
   end
   vim.defer_fn(function()
     finish()
+    M.cancel_lsp_requests(handles)
   end, timeout_ms)
   return handles
 end
