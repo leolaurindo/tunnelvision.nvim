@@ -61,6 +61,7 @@ function M.get_buf_state(bufnr)
     last_compute_meta = nil,
     pending = false,
     request_id = nil,
+    request_handles = {},
     config = nil,
     render_groups = nil,
   }
@@ -257,6 +258,7 @@ end
 local function apply_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, lsp_result)
   bs.pending = false
   bs.request_id = nil
+  bs.request_handles = {}
   bs.path_set, bs.path_order, bs.last_compute_meta, bs.symbol_ranges =
     resolver.compute_path(bufnr, symbol, anchor, scope, {
       direction = cfg.flow_settings.direction,
@@ -315,6 +317,7 @@ function M.activate(bufnr, opts)
   bs.anchor = anchor
   bs.scope = scope
   bs.request_id = nil
+  bs.request_handles = {}
   bs.config = cfg
   if not keep_render then
     bs.path_set = {}
@@ -345,7 +348,7 @@ function M.activate(bufnr, opts)
   -- Activation is async when LSP highlights are available. Track the request id
   -- and re-check the buffer state on completion so older responses cannot clobber
   -- a newer symbol, cursor position, or scope.
-  resolver.request_lsp_highlight(bufnr, anchor, scope, cfg.lsp_timeout_ms, function(lsp_result)
+  local handles = resolver.request_lsp_highlight(bufnr, anchor, scope, cfg.lsp_timeout_ms, function(lsp_result)
     local current = state.bufs[bufnr]
     if not current or not current.active or current.request_id ~= request_id or current.symbol ~= symbol then
       return
@@ -359,6 +362,9 @@ function M.activate(bufnr, opts)
 
     apply_path(bufnr, current, symbol, anchor, scope, opts, cfg, keywords, lsp_result)
   end)
+  if bs.request_id == request_id then
+    bs.request_handles = handles
+  end
 
   return true
 end
@@ -370,6 +376,7 @@ function M.deactivate(bufnr)
     bs.active = false
     bs.pending = false
     bs.request_id = nil
+    bs.request_handles = {}
     bs.symbol = nil
     bs.anchor = nil
     bs.scope = nil

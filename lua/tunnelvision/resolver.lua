@@ -269,10 +269,24 @@ local function get_attached_clients(bufnr)
   return vim.lsp.buf_get_clients(bufnr)
 end
 
+local function supports_document_highlight(client, bufnr)
+  if client.supports_method then
+    local ok, supported = pcall(client.supports_method, "textDocument/documentHighlight", { bufnr = bufnr })
+    if not ok then
+      ok, supported = pcall(client.supports_method, client, "textDocument/documentHighlight", { bufnr = bufnr })
+    end
+    if ok and type(supported) == "boolean" then
+      return supported
+    end
+  end
+
+  local caps = client.server_capabilities or client.resolved_capabilities
+  return caps and (caps.documentHighlightProvider or caps.document_highlight)
+end
+
 local function has_document_highlight_provider(bufnr)
   for _, client in pairs(get_attached_clients(bufnr)) do
-    local caps = client.server_capabilities or client.resolved_capabilities
-    if caps and (caps.documentHighlightProvider or caps.document_highlight) then
+    if supports_document_highlight(client, bufnr) then
       return true
     end
   end
@@ -339,15 +353,33 @@ local function lsp_byteindex(line, character, encoding)
   return ok and byte or #line
 end
 
+local function lsp_character(line, byte, encoding)
+  byte = math.max(0, math.min(byte or 0, #line))
+  encoding = encoding or "utf-16"
+  if encoding == "utf-8" then
+    return byte
+  end
+
+  local ok, character = pcall(vim.str_utfindex, line, encoding, byte, false)
+  if ok then
+    return character
+  end
+
+  local utf32, utf16
+  ok, utf32, utf16 = pcall(vim.str_utfindex, line, byte)
+  if not ok then
+    return byte
+  end
+  return encoding == "utf-16" and utf16 or utf32
+end
+
 local function collect_lsp_result(bufnr, responses, scope)
   local lines = {}
   local ranges = {}
   local buffer_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  for client_id, resp in pairs(responses or {}) do
+  for _, resp in pairs(responses or {}) do
     if resp and resp.result then
-      local id = tonumber(client_id) or resp.client_id
-      local client = id and vim.lsp.get_client_by_id and vim.lsp.get_client_by_id(id) or nil
-      local encoding = client and client.offset_encoding or "utf-16"
+      local encoding = resp.offset_encoding or "utf-16"
       for _, item in ipairs(resp.result) do
         local r = item.range
         if r and r.start and r["end"] then
@@ -389,39 +421,77 @@ function M.get_lsp_status(bufnr)
 end
 
 function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
-  local done = false
-  local params = {
-    textDocument = vim.lsp.util.make_text_document_params(bufnr),
-    position = { line = anchor.row, character = anchor.col },
-  }
+  local clients = {}
+  for _, client in pairs(get_attached_clients(bufnr)) do
+    if supports_document_highlight(client, bufnr) then
+      clients[#clients + 1] = client
+    end
+  end
 
-  local function finish(result)
+  local done, pending = false, #clients
+  local handles, responses, terminal = {}, {}, {}
+
+  local function finish()
     if done then
       return
     end
     done = true
-    on_done(result)
-  end
-
-  local ok = pcall(vim.lsp.buf_request_all, bufnr, "textDocument/documentHighlight", params, function(responses)
-    if not responses or vim.tbl_isempty(responses) or not has_lsp_results(responses) then
-      finish(M.make_lsp_result("request_failed"))
+    if not has_lsp_results(responses) then
+      on_done(M.make_lsp_result("request_failed"))
       return
     end
 
     local lines, ranges = collect_lsp_result(bufnr, responses, scope)
-    finish(M.make_lsp_result("ok", lines, true, ranges))
-  end)
-  if not ok then
-    finish(M.make_lsp_result("request_failed"))
-    return
+    on_done(M.make_lsp_result("ok", lines, true, ranges))
   end
 
+  local function complete(client, encoding, err, result)
+    if done or terminal[client.id] then
+      return
+    end
+    terminal[client.id] = true
+    pending = pending - 1
+    if not err and result ~= nil then
+      responses[client.id] = { result = result, offset_encoding = encoding }
+    end
+    if pending == 0 then
+      finish()
+    end
+  end
+
+  local line = vim.api.nvim_buf_get_lines(bufnr, anchor.row, anchor.row + 1, false)[1] or ""
+  for _, client in ipairs(clients) do
+    local request_client = client
+    local encoding = request_client.offset_encoding
+    local params = {
+      textDocument = vim.lsp.util.make_text_document_params(bufnr),
+      position = {
+        line = anchor.row,
+        character = lsp_character(line, anchor.col, encoding),
+      },
+    }
+    local callback = function(err, result)
+      complete(request_client, encoding, err, result)
+    end
+    local ok, sent, handle = pcall(request_client.request, "textDocument/documentHighlight", params, callback, bufnr)
+    if not ok then
+      ok, sent, handle =
+        pcall(request_client.request, request_client, "textDocument/documentHighlight", params, callback, bufnr)
+    end
+    if ok and sent and not terminal[request_client.id] then
+      handles[request_client.id] = handle
+    else
+      complete(request_client, encoding, true)
+    end
+  end
+
+  if pending == 0 then
+    finish()
+  end
   vim.defer_fn(function()
-    -- Some servers never answer documentHighlight requests. The `done` guard keeps
-    -- the timeout path and the callback path from racing into duplicate updates.
-    finish(M.make_lsp_result("request_failed"))
+    finish()
   end, timeout_ms)
+  return handles
 end
 
 local function sorted_lines(path_set)

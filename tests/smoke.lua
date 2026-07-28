@@ -1173,20 +1173,51 @@ assert_true(no_op == false, "identical activate should no-op")
 
 vim.cmd("TunnelVision off")
 
-if vim.lsp.buf_request_all then
+do
+  local requests = {}
+  local timers = {}
   local fake_clients = {
-    { id = 1, offset_encoding = "utf-8", server_capabilities = { documentHighlightProvider = true } },
+    { id = 1, offset_encoding = "utf-8", server_capabilities = {} },
     { id = 2, offset_encoding = "utf-16", server_capabilities = { documentHighlightProvider = true } },
+    { id = 3, offset_encoding = "utf-8", server_capabilities = { documentHighlightProvider = true } },
+    { id = 4, offset_encoding = "utf-32", server_capabilities = {} },
   }
-  local callbacks = {}
-  local restore_clients
-  local orig_buf_request_all = vim.lsp.buf_request_all
-  local orig_get_client_by_id = vim.lsp.get_client_by_id
-
-  vim.lsp.get_client_by_id = function(id)
-    return fake_clients[id]
+  fake_clients[1].supports_method = function(method)
+    return method == "textDocument/documentHighlight"
+  end
+  fake_clients[3].supports_method = function()
+    return false
+  end
+  fake_clients[4].supports_method = function(self, method)
+    if type(self) ~= "table" then
+      error("explicit self required")
+    end
+    return method == "textDocument/documentHighlight"
+  end
+  for _, client in ipairs(fake_clients) do
+    local request_client = client
+    client.request = function(method, params, callback, bufnr)
+      local handle = 101 + #requests
+      requests[#requests + 1] = {
+        bufnr = bufnr,
+        callback = callback,
+        client_id = request_client.id,
+        handle = handle,
+        method = method,
+        params = params,
+      }
+      if request_client.sync_result then
+        callback(nil, request_client.sync_result)
+      end
+      return true, handle
+    end
   end
 
+  local orig_defer_fn = vim.defer_fn
+  vim.defer_fn = function(callback)
+    timers[#timers + 1] = callback
+  end
+  local restore_clients
   if vim.lsp.get_clients then
     local orig_get_clients = vim.lsp.get_clients
     vim.lsp.get_clients = function()
@@ -1205,203 +1236,216 @@ if vim.lsp.buf_request_all then
     end
   end
 
-  vim.lsp.buf_request_all = function(_, _, _, cb)
-    callbacks[#callbacks + 1] = cb
+  local function respond(request, result, err)
+    request.callback(err, result, { client_id = request.client_id })
   end
 
-  tunnelvision.setup({ notify = false, source = "word" })
-  local lsp_buf = new_buffer({
-    "local alpha = 1",
-    "local beta = alpha + 1",
-    "print(beta)",
-  })
+  local request_cursor, timer_cursor = 0, 0
+  local function take_batch()
+    local batch = {}
+    for i = request_cursor + 1, #requests do
+      batch[requests[i].client_id] = requests[i]
+    end
+    request_cursor = #requests
+    timer_cursor = timer_cursor + 1
+    assert_true(timers[timer_cursor] ~= nil, "each activation should create one global timeout")
+    return batch, timers[timer_cursor]
+  end
 
-  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  local lsp_buf = new_buffer({ "😀 alpha alpha", "plain alpha", "alpha", "beta" })
+  tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+  vim.api.nvim_win_set_cursor(0, { 2, 6 })
   vim.cmd("TunnelVision on")
-  local old_marks = #vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {})
-  assert_true(old_marks > 0, "word render should create dim extmarks")
-  core.get_buf_state(lsp_buf).last_compute_meta = {
-    flow_analyzer = "text",
-    flow_expanded = true,
-    flow_tracked_count = 2,
-  }
+  local bs = core.get_buf_state(lsp_buf)
+  local old_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
+  assert_true(#old_marks > 0, "word render should create dim extmarks")
+  bs.last_compute_meta = { flow_analyzer = "text", flow_expanded = true, flow_tracked_count = 2 }
 
-  tunnelvision.setup({ notify = false, sources = { "lsp", "word" }, lsp_timeout_ms = 1000 })
-  vim.api.nvim_win_set_cursor(0, { 2, 7 })
-  vim.cmd("TunnelVision on")
-  assert_true(core.get_buf_state(lsp_buf).pending, "async LSP activation should be pending")
+  tunnelvision.setup({ notify = false, sources = { "lsp", "word" }, scope = "buffer", lsp_timeout_ms = 1000 })
+  core.activate(lsp_buf, { silent = true, symbol = "alpha", cursor = { 1, 5 } })
+  local batch = take_batch()
+  local timeout
+  assert_true(batch[1] and batch[2] and batch[4] and not batch[3], "only supporting clients should be requested")
+  for _, request in pairs(batch) do
+    assert_true(request.method == "textDocument/documentHighlight", "per-client request method")
+    assert_true(request.bufnr == lsp_buf, "per-client request buffer")
+  end
+  assert_true(batch[1].params.position.character == 5, "UTF-8 request should use byte offset")
+  assert_true(batch[2].params.position.character == 3, "UTF-16 request should count astral code units")
+  assert_true(batch[4].params.position.character == 2, "UTF-32 request should count astral characters")
+  assert_true(
+    bs.request_handles[1] == batch[1].handle
+      and bs.request_handles[2] == batch[2].handle
+      and bs.request_handles[4] == batch[4].handle,
+    "request handles should be retained by client"
+  )
+  assert_true(bs.pending, "async LSP activation should be pending")
   local pending_status = tunnelvision.status()
   assert_true(
     pending_status.flow_analyzer == nil and not pending_status.flow_expanded and pending_status.flow_tracked_count == 0,
     "pending status should not expose stale flow metadata"
   )
   assert_true(
-    #vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {}) == old_marks,
-    "pending render should keep previous dim extmarks"
+    vim.deep_equal(vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true }), old_marks),
+    "pending LSP request should retain the previous render"
   )
-  local retained_marks = vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, { details = true })
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   assert_true(
-    vim.deep_equal(vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, { details = true }), retained_marks),
+    vim.deep_equal(vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true }), old_marks),
     "ColorScheme should preserve retained extmarks while LSP is pending"
   )
 
-  vim.api.nvim_win_set_cursor(0, { 1, 7 })
-  vim.cmd("TunnelVision on")
-  assert_true(#callbacks == 2, "expected two async LSP requests")
-
-  callbacks[1]({
-    [1] = {
-      result = {
-        { range = { start = { line = 0 }, ["end"] = { line = 0 } } },
-      },
-    },
+  fake_clients[1].offset_encoding = "utf-16"
+  respond(batch[1], {
+    { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
   })
-  assert_true(core.get_buf_state(lsp_buf).pending, "stale LSP response should be ignored")
-  assert_true(core.get_buf_state(lsp_buf).symbol == "alpha", "stale response should not retarget symbol")
+  assert_true(bs.pending, "partial LSP results should wait for remaining clients")
+  respond(batch[4], {
+    { range = { start = { line = 0, character = 2 }, ["end"] = { line = 0, character = 7 } } },
+  })
+  respond(batch[2], {
+    { range = { start = { line = 0, character = 3 }, ["end"] = { line = 0, character = 8 } } },
+    { range = { start = { line = 0, character = 9 }, ["end"] = { line = 0, character = 14 } } },
+  })
+  fake_clients[1].offset_encoding = "utf-8"
+  assert_true(not bs.pending and next(bs.request_handles) == nil, "terminal responses should clear pending handles")
+  assert_ranges(bs.symbol_ranges, {
+    { line = 1, start_col = 5, end_col = 10 },
+    { line = 1, start_col = 11, end_col = 16 },
+  }, "mixed response encodings should normalize and deduplicate byte ranges")
 
-  local notify_calls = 0
-  local orig_notify = core.notify
-  core.notify = function()
-    notify_calls = notify_calls + 1
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  assert_true(batch[1].params.position.character == 6, "ASCII UTF-8 offset should remain unchanged")
+  assert_true(batch[2].params.position.character == 6, "ASCII UTF-16 offset should remain unchanged")
+  assert_true(batch[4].params.position.character == 6, "ASCII UTF-32 offset should remain unchanged")
+  respond(batch[1], { { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } } })
+  respond(batch[2], nil, { code = -1, message = "boom" })
+  respond(batch[4], nil, { code = -1, message = "boom" })
+  assert_true(not bs.pending and bs.path_set[2], "valid partial results should survive another client error")
+
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 3, 0 } })
+  batch, timeout = take_batch()
+  respond(batch[1], { { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } } })
+  timeout()
+  assert_true(not bs.pending, "partial result should complete at the global timeout")
+  assert_true(bs.path_set[3], "timed-out clients should not discard valid partial results")
+  local timeout_ranges = vim.deepcopy(bs.symbol_ranges)
+  respond(batch[2], { { range = { start = { line = 1, character = 0 }, ["end"] = { line = 1, character = 5 } } } })
+  assert_ranges(bs.symbol_ranges, timeout_ranges, "late responses after timeout should be ignored")
+
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  for _, request in pairs(batch) do
+    respond(request, nil, { code = -1, message = "boom" })
   end
-  callbacks[2]({
-    [1] = {
-      result = {
-        { range = { start = { line = 0 }, ["end"] = { line = 1 } } },
-      },
-    },
-  })
-  assert_true(not core.get_buf_state(lsp_buf).pending, "current LSP response should resolve pending state")
-  assert_true(core.get_buf_state(lsp_buf).path_set[2], "resolved LSP response should update path")
-  assert_true(core.get_buf_state(lsp_buf).last_compute_meta.used_source == "lsp", "first lsp source selected")
-  assert_true(not core.get_buf_state(lsp_buf).last_compute_meta.used_fallback, "first lsp source is not fallback")
-  assert_true(notify_calls == 0, "successful first lsp source does not warn")
-  core.notify = orig_notify
-
-  vim.api.nvim_win_set_cursor(0, { 2, 7 })
-  vim.cmd("TunnelVision on")
-  callbacks[3]({
-    [1] = {
-      err = { code = -1, message = "boom" },
-    },
-  })
-  assert_true(not core.get_buf_state(lsp_buf).pending, "error response should resolve pending state")
-  assert_true(core.get_buf_state(lsp_buf).path_set[2], "error response should fallback to word matching")
-
-  tunnelvision.setup({ notify = false, sources = { "lsp" }, lsp_timeout_ms = 1000 })
-  vim.cmd("TunnelVision off")
-  vim.api.nvim_win_set_cursor(0, { 2, 7 })
-  vim.cmd("TunnelVision on")
-  assert_true(#callbacks == 4, "expected strict lsp async request")
-  callbacks[4]({
-    [1] = {
-      err = { code = -1, message = "boom" },
-    },
-  })
-  assert_true(not core.get_buf_state(lsp_buf).pending, "strict lsp error should resolve pending state")
-  assert_true(not core.get_buf_state(lsp_buf).path_set[3], "strict lsp source should not fallback to word")
-
-  tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") }, lsp_timeout_ms = 1000 })
-  vim.cmd("TunnelVision off")
-  vim.api.nvim_win_set_cursor(0, { 2, 7 })
-  vim.cmd("TunnelVision on")
-  assert_true(#callbacks == 5, "expected combined source async request")
-  callbacks[5]({
-    [1] = {
-      result = {
-        { range = { start = { line = 0 }, ["end"] = { line = 0 } } },
-      },
-    },
-  })
-  assert_true(not core.get_buf_state(lsp_buf).pending, "combined source should resolve pending state")
-  assert_true(core.get_buf_state(lsp_buf).path_set[1], "combined source should include lsp lines")
-  assert_true(core.get_buf_state(lsp_buf).path_set[3], "combined source should include word lines")
-
-  vim.cmd("TunnelVision off")
-  vim.api.nvim_win_set_cursor(0, { 2, 7 })
-  vim.cmd("TunnelVision on")
-  assert_true(#callbacks == 6, "expected combined source empty lsp request")
-  callbacks[6]({
-    [1] = {
-      result = {},
-    },
-  })
-  assert_true(not core.get_buf_state(lsp_buf).pending, "empty combined source should resolve pending state")
-  assert_true(core.get_buf_state(lsp_buf).path_set[2], "empty combined source should keep anchor line")
-  assert_true(not core.get_buf_state(lsp_buf).path_set[3], "empty combined source should not fallback to word")
+  local fallback_meta = bs.last_compute_meta
+  assert_true(not bs.pending and fallback_meta.used_source == "word", "total errors should use fallback chain")
   assert_true(
-    core.get_buf_state(lsp_buf).last_compute_meta.fallback_reason == "no_matches",
-    "empty lsp result records no_matches"
+    fallback_meta.failed_sources[1] == "lsp"
+      and fallback_meta.fallback_source == "lsp"
+      and fallback_meta.fallback_reason == "request_failed"
+      and fallback_meta.used_fallback,
+    "total errors should preserve fallback metadata"
   )
-  assert_true(
-    core.get_buf_state(lsp_buf).last_compute_meta.fallback_source == "lsp",
-    "empty lsp result records failed member"
-  )
+
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  timeout = select(2, take_batch())
+  timeout()
+  assert_true(not bs.pending, "total timeout should resolve pending state")
+  assert_true(bs.last_compute_meta.used_source == "word", "total timeout should use fallback chain")
+
+  tunnelvision.setup({ notify = false, sources = { "lsp" }, scope = "buffer", lsp_timeout_ms = 1000 })
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  for _, request in pairs(batch) do
+    respond(request, nil, { code = -1, message = "boom" })
+  end
+  assert_true(bs.last_compute_meta.used_source == nil, "strict LSP total failure should not select a fallback")
+  assert_true(not bs.path_set[1] and not bs.path_set[3], "strict LSP total failure should keep only the anchor")
+
+  tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") }, scope = "buffer" })
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  respond(batch[1], { { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } } })
+  respond(batch[2], {})
+  respond(batch[4], {})
+  assert_true(bs.last_compute_meta.used_source == "combine(lsp,word)", "combined source should succeed")
+  assert_true(bs.path_set[1] and bs.path_set[3], "combined source should include LSP and word lines")
+
+  tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") }, scope = "buffer" })
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  for _, request in pairs(batch) do
+    respond(request, {})
+  end
+  assert_true(bs.last_compute_meta.used_source == nil, "empty LSP should fail an all-or-nothing combined source")
+  assert_true(bs.last_compute_meta.fallback_source == "lsp", "empty combined source should record its failed member")
 
   tunnelvision.setup({
     notify = false,
     sources = { tunnelvision.combine("lsp", "treesitter"), "word" },
-    lsp_timeout_ms = 1000,
+    scope = "buffer",
   })
-  vim.cmd("TunnelVision off")
-  vim.bo.filetype = "plaintext"
-  vim.api.nvim_win_set_cursor(0, { 2, 7 })
-  vim.cmd("TunnelVision on")
-  assert_true(#callbacks == 7, "expected combined source request for later-member failure")
-  callbacks[7]({
-    [1] = {
-      result = {
-        { range = { start = { line = 1 }, ["end"] = { line = 1 } } },
-      },
-    },
-  })
-  local combined_later_meta = core.get_buf_state(lsp_buf).last_compute_meta
-  assert_true(combined_later_meta.used_source == "word", "later combined failure falls back to word")
-  assert_true(combined_later_meta.fallback_source == "treesitter", "later combined failure records member")
-  assert_true(combined_later_meta.failed_sources[1] == "combine(lsp,treesitter)", "later combined failure records step")
+  vim.bo[lsp_buf].filetype = "plaintext"
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  respond(batch[1], { { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } } })
+  respond(batch[2], {})
+  respond(batch[4], {})
+  assert_true(bs.last_compute_meta.used_source == "word", "later combined member failure should use next source")
+  assert_true(bs.last_compute_meta.fallback_source == "treesitter", "combined failure should record later member")
+  assert_true(
+    bs.last_compute_meta.failed_sources[1] == "combine(lsp,treesitter)",
+    "combined failure should record the failed step"
+  )
 
-  tunnelvision.setup({ notify = false, source = "lsp", scope = "buffer", lsp_timeout_ms = 1000 })
-  vim.cmd("TunnelVision off")
-  vim.bo.filetype = "lua"
-  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "é alpha alpha" })
-  vim.api.nvim_win_set_cursor(0, { 1, 3 })
-  vim.cmd("TunnelVision on")
-  callbacks[8]({
-    [1] = {
-      result = {
-        { range = { start = { line = 0, character = 3 }, ["end"] = { line = 0, character = 8 } } },
-      },
-    },
-    [2] = {
-      result = {
-        { range = { start = { line = 0, character = 2 }, ["end"] = { line = 0, character = 7 } } },
-        { range = { start = { line = 0, character = 8 }, ["end"] = { line = 0, character = 13 } } },
-      },
-    },
-  })
-  assert_ranges(core.get_buf_state(lsp_buf).symbol_ranges, {
-    { line = 1, start_col = 3, end_col = 8 },
-    { line = 1, start_col = 9, end_col = 14 },
-  }, "LSP ranges should convert each client's encoding to deduplicated byte columns")
+  tunnelvision.setup({ notify = false, sources = { "lsp", "word" }, scope = "buffer" })
+  fake_clients[4].sync_result = {}
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  assert_true(bs.request_handles[4] == nil, "synchronously completed requests should not retain handles")
+  assert_true(bs.request_handles[1] and bs.request_handles[2], "pending asynchronous handles should remain available")
+  respond(batch[1], {})
+  respond(batch[2], {})
+  fake_clients[4].sync_result = nil
+  assert_true(bs.last_compute_meta.used_source == "word", "empty successful LSP response should follow source chain")
+  assert_true(
+    bs.last_compute_meta.fallback_reason == "no_matches",
+    "empty successful response should report no_matches"
+  )
 
-  local current_ranges = vim.deepcopy(core.get_buf_state(lsp_buf).symbol_ranges)
-  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 3 } })
-  assert_true(#callbacks == 9, "expected async request before edit")
-  vim.api.nvim_buf_set_lines(lsp_buf, 0, 1, false, { "edited alpha alpha" })
-  callbacks[9]({
-    [1] = {
-      result = {
-        { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 6 } } },
-      },
-    },
-  })
-  assert_true(core.get_buf_state(lsp_buf).pending, "pre-edit LSP responses should remain stale")
-  assert_ranges(core.get_buf_state(lsp_buf).symbol_ranges, current_ranges, "pre-edit LSP response should not render")
-  vim.cmd("TunnelVision off")
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 5 } })
+  local stale_batch = take_batch()
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  local current_batch = take_batch()
+  respond(
+    stale_batch[1],
+    { { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } } }
+  )
+  respond(stale_batch[2], {})
+  respond(stale_batch[4], {})
+  assert_true(bs.pending and bs.anchor.row == 1, "older completed requests should remain stale")
+  respond(
+    current_batch[1],
+    { { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } } }
+  )
+  respond(current_batch[2], {})
+  respond(current_batch[4], {})
+  assert_true(not bs.pending and bs.path_set[2], "current request should apply after stale response")
 
-  vim.lsp.buf_request_all = orig_buf_request_all
-  vim.lsp.get_client_by_id = orig_get_client_by_id
+  local current_ranges = vim.deepcopy(bs.symbol_ranges)
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  vim.api.nvim_buf_set_lines(lsp_buf, 1, 2, false, { "edited alpha" })
+  respond(batch[1], {})
+  respond(batch[2], {})
+  respond(batch[4], {})
+  assert_true(bs.pending, "pre-edit responses should remain stale")
+  assert_ranges(bs.symbol_ranges, current_ranges, "pre-edit response should not render")
+  vim.cmd("TunnelVision off")
+  assert_true(next(bs.request_handles) == nil, "deactivation should clear retained request handles")
+  vim.defer_fn = orig_defer_fn
   restore_clients()
 end
 
