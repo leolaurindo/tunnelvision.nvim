@@ -3152,20 +3152,63 @@ end
 do
   local ui = require("tunnelvision.ui")
   local orig_ensure_highlights = ui.ensure_highlights
+  local orig_deepcopy = vim.deepcopy
+  local orig_get_hl = vim.api.nvim_get_hl
   local orig_set_hl = vim.api.nvim_set_hl
+  local deepcopy_calls = 0
+  local normal_bg_calls = 0
   local setup_configs = {}
   local set_hl_calls = {}
+  local style_deepcopy_calls = 0
   local function reset_highlight_calls()
+    deepcopy_calls = 0
+    normal_bg_calls = 0
     setup_configs = {}
     set_hl_calls = {}
+    style_deepcopy_calls = 0
   end
   ui.ensure_highlights = function(cfg)
     setup_configs[#setup_configs + 1] = cfg or false
     return orig_ensure_highlights(cfg)
   end
+  vim.deepcopy = function(value, ...)
+    deepcopy_calls = deepcopy_calls + 1
+    if
+      type(value) == "table"
+      and (
+        value.fg ~= nil
+        or value.bg ~= nil
+        or value.bold ~= nil
+        or value.italic ~= nil
+        or value.underline ~= nil
+        or value.undercurl ~= nil
+        or value.strikethrough ~= nil
+        or value.bg_opacity ~= nil
+      )
+    then
+      style_deepcopy_calls = style_deepcopy_calls + 1
+    end
+    return orig_deepcopy(value, ...)
+  end
+  vim.api.nvim_get_hl = function(namespace, opts)
+    if opts.name == "Normal" then
+      normal_bg_calls = normal_bg_calls + 1
+    end
+    return orig_get_hl(namespace, opts)
+  end
   vim.api.nvim_set_hl = function(_, group, attrs)
     set_hl_calls[#set_hl_calls + 1] = { group, attrs }
     return orig_set_hl(0, group, attrs)
+  end
+
+  local function positive_set_hl_calls()
+    local count = 0
+    for _, call in ipairs(set_hl_calls) do
+      if call[1]:match("^TunnelVisionHighlight") then
+        count = count + 1
+      end
+    end
+    return count
   end
 
   local function marks(bufnr)
@@ -3207,9 +3250,14 @@ do
 
   tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { symbol = true } })
   vim.api.nvim_win_set_cursor(0, { 1, 4 })
+  reset_highlight_calls()
   tunnelvision.on()
+  reset_highlight_calls()
+  ui.render(render_buf)
   local symbol_marks = marks(render_buf)
   assert_true(#symbol_marks == 4, "empty symbol style should create three complement dims and one line dim")
+  assert_true(deepcopy_calls == 3, "repeated empty styles should resolve once after range normalization")
+  assert_true(positive_set_hl_calls() == 0, "empty styles should not define positive groups")
   assert_true(
     symbol_marks[1][3] == 0 and symbol_marks[1][4].end_col == 3 and symbol_marks[1][4].hl_group == "TunnelVisionDim",
     "symbol renderer should dim bytes before the first range"
@@ -3223,6 +3271,15 @@ do
     "symbol renderer should dim bytes after the last range"
   )
   assert_true(symbol_marks[4][4].line_hl_group == "TunnelVisionDim", "unrelated lines should retain whole-line dimming")
+  assert_true(
+    vim.deep_equal(mark_snapshot(render_buf), {
+      { 0, 0, 3, "TunnelVisionDim", nil, 1000 },
+      { 0, 8, 12, "TunnelVisionDim", nil, 1000 },
+      { 0, 17, 20, "TunnelVisionDim", nil, 1000 },
+      { 1, 0, nil, nil, "TunnelVisionDim", 1000 },
+    }),
+    "empty styles should preserve exact visible geometry"
+  )
 
   bs = core.get_buf_state(render_buf)
   bs.symbol_ranges = {
@@ -3260,8 +3317,9 @@ do
   )
   bs.scope_head_set = { [1] = true }
   bs.statement_set = { [1] = true }
+  ui.clear_render_groups(bs)
   reset_highlight_calls()
-  require("tunnelvision.ui").render(render_buf)
+  ui.render(render_buf)
   assert_true(
     #setup_configs == 1 and setup_configs[1] == bs.config,
     "composed custom-rules rerender should setup its config once"
@@ -3270,6 +3328,8 @@ do
   assert_true(#composed_marks == 6, "composed whole-line styles should split around two symbol ranges")
   local line_group = composed_marks[1][4].hl_group
   local symbol_group = composed_marks[2][4].hl_group
+  assert_true(deepcopy_calls == 4 and style_deepcopy_calls == 2, "each composed effective style should resolve once")
+  assert_true(positive_set_hl_calls() == 2, "each new composed effective style should define one group")
   local line_hl = vim.api.nvim_get_hl(0, { name = line_group, link = false })
   local symbol_hl = vim.api.nvim_get_hl(0, { name = symbol_group, link = false })
   assert_true(
@@ -3288,7 +3348,70 @@ do
     "positive groups should be buffer-specific"
   )
   assert_true(composed_marks[6][4].priority == 1000, "dim priority should remain below positive styles")
+  local composed_snapshot = mark_snapshot(render_buf)
+  assert_true(
+    vim.deep_equal(composed_snapshot, {
+      { 0, 0, 3, line_group, nil, 1100 },
+      { 0, 3, 8, symbol_group, nil, 1100 },
+      { 0, 8, 12, line_group, nil, 1100 },
+      { 0, 12, 17, symbol_group, nil, 1100 },
+      { 0, 17, 20, line_group, nil, 1100 },
+      { 1, 0, nil, nil, "TunnelVisionDim", 1000 },
+    }),
+    "composed styles should preserve exact extmark geometry and order"
+  )
+  reset_highlight_calls()
+  ui.render(render_buf)
+  assert_true(
+    vim.deep_equal(mark_snapshot(render_buf), composed_snapshot),
+    "composed rerender should preserve extmarks"
+  )
+  assert_true(deepcopy_calls == 4 and style_deepcopy_calls == 2, "rerender should retain bounded style resolution")
+  assert_true(positive_set_hl_calls() == 0, "rerender should reuse groups for their valid buffer lifetime")
   vim.cmd("TunnelVision off")
+
+  for _, invalid_fg in ipairs({ "#112233;bg=number:4478310", "#112233;bg=4478310" }) do
+    local collision_buf = new_buffer({ "first", "other" })
+    tunnelvision.setup({
+      notify = false,
+      source = "word",
+      scope = "buffer",
+      highlights = {
+        scope_head = { fg = invalid_fg },
+        line = { fg = "#112233", bg = 0x445566 },
+      },
+    })
+    tunnelvision.on()
+    local collision_bs = core.get_buf_state(collision_buf)
+    collision_bs.symbol_ranges = {}
+    collision_bs.statement_set = {}
+
+    local function assert_collision_order(valid_line, invalid_line)
+      collision_bs.path_set = { [valid_line] = true }
+      collision_bs.scope_head_set = { [invalid_line] = true }
+      ui.clear_render_groups(collision_bs)
+      ui.render(collision_buf)
+      local collision_marks = marks(collision_buf)
+      assert_true(#collision_marks == 1, "invalid colliding style should not suppress or reuse the valid group")
+      local group = collision_marks[1][4].hl_group
+      assert_true(
+        vim.deep_equal(mark_snapshot(collision_buf), { { valid_line - 1, 0, 5, group, nil, 1100 } }),
+        "colliding styles should preserve the valid extmark in either resolution order: "
+          .. vim.inspect(mark_snapshot(collision_buf))
+      )
+      local attrs = vim.api.nvim_get_hl(0, { name = group, link = false })
+      assert_true(
+        attrs.fg == 0x112233 and attrs.bg == 0x445566,
+        "invalid colliding style should not alter valid attributes"
+      )
+    end
+
+    assert_collision_order(2, 1)
+    assert_collision_order(1, 2)
+    vim.cmd("TunnelVision off")
+    vim.api.nvim_buf_delete(collision_buf, { force = true })
+  end
+  vim.api.nvim_set_current_buf(render_buf)
 
   vim.api.nvim_set_hl(0, "Normal", { bg = 0x0000FF })
   tunnelvision.setup({
@@ -3314,6 +3437,19 @@ do
     vim.api.nvim_get_hl(0, { name = opacity_group, link = false }).bg == 0x800080,
     "background opacity should blend deterministically against Normal"
   )
+  local opacity_snapshot = mark_snapshot(render_buf)
+  reset_highlight_calls()
+  ui.render(render_buf)
+  assert_true(
+    vim.deep_equal(mark_snapshot(render_buf), opacity_snapshot),
+    "repeated opacity style should preserve extmarks"
+  )
+  assert_true(
+    deepcopy_calls == 3 and style_deepcopy_calls == 1,
+    "repeated raw styles should deepcopy and resolve only once per render"
+  )
+  assert_true(normal_bg_calls == 1, "opacity styles should share one Normal background lookup per render")
+  assert_true(positive_set_hl_calls() == 0, "opacity rerender should reuse its existing render group")
 
   local opacity_config = bs.config
   local second_buf = new_buffer({ "local alpha = 1", "print(alpha)" })
@@ -3359,6 +3495,7 @@ do
     "ColorScheme should preserve each active buffer config"
   )
   assert_true(#set_hl_calls == 4, "ColorScheme should clear and rebuild both buffers' groups")
+  assert_true(normal_bg_calls == 1, "ColorScheme rerenders should perform one fresh Normal lookup for opacity")
   assert_true(
     vim.api.nvim_get_hl(0, { name = opacity_group, link = false }).bg == 0x808000,
     "ColorScheme should rebuild opacity-derived groups"
@@ -3382,6 +3519,7 @@ do
   )
   assert_true(#setup_configs == 2, "fallback opacity ColorScheme should retain one setup per rerender")
   assert_true(#set_hl_calls == 2, "fallback opacity ColorScheme should clear and rebuild its group")
+  assert_true(normal_bg_calls == 1, "missing Normal backgrounds should still be looked up only once per render")
   reset_highlight_calls()
   vim.cmd("TunnelVision off")
   assert_true(#marks(render_buf) == 0, "deactivation should clear every renderer mark")
@@ -3464,6 +3602,8 @@ do
   assert_true(#set_hl_calls == 1, "buffer deletion should clear its buffer-specific group once")
 
   ui.ensure_highlights = orig_ensure_highlights
+  vim.deepcopy = orig_deepcopy
+  vim.api.nvim_get_hl = orig_get_hl
   vim.api.nvim_set_hl = orig_set_hl
 end
 

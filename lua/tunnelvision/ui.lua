@@ -93,7 +93,25 @@ local function merge_style(into, style)
   end
 end
 
-local function resolved_style(style)
+local function style_token(key, value)
+  value = type(value) .. ":" .. tostring(value)
+  return key .. "=" .. #value .. ":" .. value
+end
+
+local function raw_style_key(style)
+  local parts = {}
+  for _, key in ipairs(style_keys) do
+    if style[key] ~= nil then
+      parts[#parts + 1] = style_token(key, style[key])
+    end
+  end
+  if style.bg_opacity ~= nil then
+    parts[#parts + 1] = style_token("bg_opacity", style.bg_opacity)
+  end
+  return table.concat(parts, ";")
+end
+
+local function resolved_style(style, render_cache)
   local resolved = vim.deepcopy(style)
   local opacity = resolved.bg_opacity
   resolved.bg_opacity = nil
@@ -107,46 +125,63 @@ local function resolved_style(style)
     local ok_color, color = pcall(vim.api.nvim_get_color_by_name, resolved.bg)
     bg = ok_color and color >= 0 and color or nil
   end
-  local ok, normal = pcall(vim.api.nvim_get_hl, 0, { name = "Normal", link = false })
-  if not bg or not ok or not normal or not normal.bg then
+  if not bg then
+    return resolved
+  end
+  if not render_cache.normal_bg_loaded then
+    local ok, normal = pcall(vim.api.nvim_get_hl, 0, { name = "Normal", link = false })
+    render_cache.normal_bg = ok and normal and normal.bg or false
+    render_cache.normal_bg_loaded = true
+  end
+  if not render_cache.normal_bg then
     return resolved
   end
 
   local amount = math.max(0, math.min(1, opacity))
   local blended = 0
   for shift = 0, 16, 8 do
-    local channel = math.floor(((bg / 2 ^ shift) % 256) * amount + ((normal.bg / 2 ^ shift) % 256) * (1 - amount) + 0.5)
+    local channel =
+      math.floor(((bg / 2 ^ shift) % 256) * amount + ((render_cache.normal_bg / 2 ^ shift) % 256) * (1 - amount) + 0.5)
     blended = blended + channel * 2 ^ shift
   end
   resolved.bg = blended
   return resolved
 end
 
-local function style_group(bufnr, bs, style)
-  local attrs = resolved_style(style)
+local function style_group(bufnr, bs, style, render_cache)
+  local raw_key = raw_style_key(style)
+  if render_cache.styles[raw_key] ~= nil then
+    return render_cache.styles[raw_key] or nil
+  end
+
+  local attrs = resolved_style(style, render_cache)
   local parts = {}
   for _, key in ipairs(style_keys) do
     if attrs[key] ~= nil then
-      parts[#parts + 1] = key .. "=" .. tostring(attrs[key])
+      parts[#parts + 1] = style_token(key, attrs[key])
     end
   end
   if #parts == 0 then
+    render_cache.styles[raw_key] = false
     return nil
   end
 
   local key = table.concat(parts, ";")
   bs.render_groups = bs.render_groups or { next = 0 }
   if bs.render_groups[key] then
-    return bs.render_groups[key]
+    render_cache.styles[raw_key] = bs.render_groups[key]
+    return render_cache.styles[raw_key]
   end
 
   bs.render_groups.next = bs.render_groups.next + 1
   local group = ("TunnelVisionHighlight%d_%d"):format(bufnr, bs.render_groups.next)
   local ok = pcall(vim.api.nvim_set_hl, 0, group, attrs)
   if not ok then
+    render_cache.styles[raw_key] = false
     return nil
   end
   bs.render_groups[key] = group
+  render_cache.styles[raw_key] = group
   return group
 end
 
@@ -200,6 +235,7 @@ function M.render(bufnr)
   end
 
   local rules = config.highlights
+  local render_cache = { coverage = {}, styles = {} }
   local symbols = {}
   if rules.symbol then
     for _, range in ipairs(bs.symbol_ranges) do
@@ -215,36 +251,55 @@ function M.render(bufnr)
   end
 
   local function render_line(idx, line)
-    local style = {}
-    local whole = false
-    for _, context in ipairs({ "scope_head", "statement", "line" }) do
-      local covered = context == "scope_head" and bs.scope_head_set[idx]
-        or context == "statement" and bs.statement_set[idx]
-        or context == "line" and bs.path_set[idx]
-      if rules[context] and covered then
-        whole = true
-        merge_style(style, rules[context])
+    local coverage = (rules.scope_head and bs.scope_head_set[idx] and 1 or 0)
+      + (rules.statement and bs.statement_set[idx] and 2 or 0)
+      + (rules.line and bs.path_set[idx] and 4 or 0)
+    local styles = render_cache.coverage[coverage]
+    if not styles then
+      styles = { whole = coverage ~= 0, line = {} }
+      for bit, context in ipairs({ "scope_head", "statement", "line" }) do
+        if coverage % 2 ^ bit >= 2 ^ (bit - 1) then
+          merge_style(styles.line, rules[context])
+        end
       end
+      render_cache.coverage[coverage] = styles
     end
 
     local ranges = symbols[idx]
-    if whole then
+    if styles.whole then
+      if ranges and not styles.symbol then
+        styles.symbol = {}
+        merge_style(styles.symbol, styles.line)
+        merge_style(styles.symbol, rules.symbol)
+      end
       local col = 0
       for _, range in ipairs(ranges or {}) do
-        range_mark(bufnr, idx - 1, col, range.start_col, style_group(bufnr, bs, style), 1100)
-        local symbol_style = vim.deepcopy(style)
-        merge_style(symbol_style, rules.symbol)
-        range_mark(bufnr, idx - 1, range.start_col, range.end_col, style_group(bufnr, bs, symbol_style), 1100)
+        range_mark(bufnr, idx - 1, col, range.start_col, style_group(bufnr, bs, styles.line, render_cache), 1100)
+        range_mark(
+          bufnr,
+          idx - 1,
+          range.start_col,
+          range.end_col,
+          style_group(bufnr, bs, styles.symbol, render_cache),
+          1100
+        )
         col = range.end_col
       end
-      range_mark(bufnr, idx - 1, col, #line, style_group(bufnr, bs, style), 1100)
+      range_mark(bufnr, idx - 1, col, #line, style_group(bufnr, bs, styles.line, render_cache), 1100)
     elseif ranges then
       local col = 0
       for _, range in ipairs(ranges) do
         if do_dim then
           range_mark(bufnr, idx - 1, col, range.start_col, config.dim_hl, 1000)
         end
-        range_mark(bufnr, idx - 1, range.start_col, range.end_col, style_group(bufnr, bs, rules.symbol), 1100)
+        range_mark(
+          bufnr,
+          idx - 1,
+          range.start_col,
+          range.end_col,
+          style_group(bufnr, bs, rules.symbol, render_cache),
+          1100
+        )
         col = range.end_col
       end
       if do_dim then
