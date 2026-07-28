@@ -131,6 +131,73 @@ do
     local scope = resolver.resolve_scope(scope_buf, { row = 1, col = 0 }, nil, "function")
     assert_true(scope.start_line == 2 and scope.end_line == 3, node_type .. " should remain a function scope")
   end
+
+  leaf = node("function_definition", 1, 2)
+  local function_scope = resolver.resolve_scope(scope_buf, { row = 1, col = 0 }, nil, "function")
+  assert_true(function_scope.scope_mode == "function", "resolved scope should record its mode")
+  assert_true(
+    function_scope.changedtick == vim.api.nvim_buf_get_changedtick(scope_buf),
+    "resolved scope should record its changed tick"
+  )
+
+  local buffer_scope = resolver.resolve_scope(scope_buf, { row = 1, col = 0 }, function_scope, "buffer")
+  assert_true(buffer_scope.start_line == 1 and buffer_scope.end_line == 4, "scope mode changes should invalidate reuse")
+  assert_true(buffer_scope.scope_mode == "buffer", "changed scope mode should be recorded")
+
+  vim.api.nvim_buf_set_lines(scope_buf, 0, 0, false, { "zero" })
+  leaf = node("function_definition", 0, 3)
+  local edited_scope = resolver.resolve_scope(scope_buf, { row = 1, col = 0 }, function_scope, "function")
+  assert_true(edited_scope.start_line == 1 and edited_scope.end_line == 4, "edits should invalidate scope geometry")
+  assert_true(edited_scope.changedtick ~= function_scope.changedtick, "edits should invalidate the scope tick")
+
+  local outer = node("function_definition", 0, 4)
+  local inner = node("function_definition", 1, 3, outer)
+  leaf = node("identifier", 2, 2, inner)
+  local outer_scope = {
+    start_line = 1,
+    end_line = 5,
+    scope_mode = "function",
+    changedtick = vim.api.nvim_buf_get_changedtick(scope_buf),
+  }
+  local nested_scope = resolver.resolve_scope(scope_buf, { row = 2, col = 0 }, outer_scope, "function")
+  assert_true(
+    nested_scope.start_line == 2 and nested_scope.end_line == 4,
+    "nested functions should narrow reused scope"
+  )
+
+  core.configure({ notify = false, source = "word", mode = "dynamic", scope = "function" })
+  core.activate(scope_buf, { silent = true, symbol = "value", cursor = { 3, 0 } })
+  local nested_state = core.get_buf_state(scope_buf)
+  assert_true(
+    nested_state.scope.start_line == 2 and nested_state.scope.end_line == 4,
+    "activation should use the nearest function scope"
+  )
+  core.set_scope("buffer")
+  assert_true(
+    nested_state.scope.start_line == 1 and nested_state.scope.end_line == 5,
+    "buffer scope setter should refresh active geometry"
+  )
+  core.set_scope("function")
+  assert_true(
+    nested_state.scope.start_line == 2 and nested_state.scope.end_line == 4,
+    "function scope setter should refresh active geometry"
+  )
+
+  nested_state.scope = outer_scope
+  assert_true(
+    core.should_dynamic_retarget(scope_buf, "value", { 3, 0 }),
+    "dynamic movement should retarget into nested functions"
+  )
+  core.clear_buf_state(scope_buf)
+
+  vim.treesitter.get_parser = function()
+    error("parser unavailable")
+  end
+  local fallback_scope = resolver.resolve_scope(scope_buf, { row = 1, col = 0 }, nil, "function")
+  assert_true(
+    fallback_scope.start_line == 1 and fallback_scope.end_line == 5,
+    "missing parsers should use buffer scope"
+  )
   vim.treesitter.get_parser = orig_get_parser
 
   local lua_buf = new_buffer({
@@ -158,6 +225,29 @@ assert_default_visual_config("bare setup")
 tunnelvision.setup({ notify = false })
 assert_sources({ "lsp", "word" }, "default sources")
 assert_true(config.format_sources(core.state.config.sources) == "lsp,word", "format_sources default")
+
+local forced_scope_buf = new_buffer({ "one", "two", "three" }, "plaintext")
+tunnelvision.on({ source = "word", scope = "buffer", symbol = "two", cursor = { 2, 0 } })
+local forced_state = core.get_buf_state(forced_scope_buf)
+forced_state.scope = {
+  start_line = 2,
+  end_line = 2,
+  scope_mode = "buffer",
+  changedtick = vim.api.nvim_buf_get_changedtick(forced_scope_buf),
+}
+core.activate(forced_scope_buf, {
+  config = forced_state.config,
+  cursor = { 2, 0 },
+  force = true,
+  reuse_scope = true,
+  silent = true,
+  symbol = "two",
+})
+assert_true(
+  forced_state.scope.start_line == 1 and forced_state.scope.end_line == 3,
+  "force should recompute scope geometry"
+)
+tunnelvision.off()
 
 -- Highlight rules normalize without deep-merging the default line context.
 tunnelvision.setup({ notify = false, highlights = {} })
@@ -1294,6 +1384,21 @@ if vim.lsp.buf_request_all then
     { line = 1, start_col = 3, end_col = 8 },
     { line = 1, start_col = 9, end_col = 14 },
   }, "LSP ranges should convert each client's encoding to deduplicated byte columns")
+
+  local current_ranges = vim.deepcopy(core.get_buf_state(lsp_buf).symbol_ranges)
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 3 } })
+  assert_true(#callbacks == 9, "expected async request before edit")
+  vim.api.nvim_buf_set_lines(lsp_buf, 0, 1, false, { "edited alpha alpha" })
+  callbacks[9]({
+    [1] = {
+      result = {
+        { range = { start = { line = 0, character = 0 }, ["end"] = { line = 0, character = 6 } } },
+      },
+    },
+  })
+  assert_true(core.get_buf_state(lsp_buf).pending, "pre-edit LSP responses should remain stale")
+  assert_ranges(core.get_buf_state(lsp_buf).symbol_ranges, current_ranges, "pre-edit LSP response should not render")
+  vim.cmd("TunnelVision off")
 
   vim.lsp.buf_request_all = orig_buf_request_all
   vim.lsp.get_client_by_id = orig_get_client_by_id

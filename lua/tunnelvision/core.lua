@@ -295,7 +295,8 @@ function M.activate(bufnr, opts)
   local cfg, keywords = activation_config(bufnr, opts)
 
   local bs = M.get_buf_state(bufnr)
-  local scope = resolver.resolve_scope(bufnr, anchor, opts.reuse_scope ~= false and bs.scope or nil, cfg.scope)
+  local reuse_scope = not opts.force and opts.reuse_scope ~= false
+  local scope = resolver.resolve_scope(bufnr, anchor, reuse_scope and bs.scope or nil, cfg.scope)
   local keep_render = bs.active and not bs.pending and next(bs.path_set) ~= nil
   if
     bs.active
@@ -350,6 +351,9 @@ function M.activate(bufnr, opts)
       return
     end
     if not resolver.anchors_equal(current.anchor, anchor) or not resolver.scopes_equal(current.scope, scope) then
+      return
+    end
+    if vim.api.nvim_buf_get_changedtick(bufnr) ~= scope.changedtick then
       return
     end
 
@@ -448,7 +452,9 @@ function M.should_dynamic_retarget(bufnr, symbol, cursor)
     return true
   end
 
-  return not resolver.scope_contains_line(bs.scope, cursor[1])
+  local anchor = { row = cursor[1] - 1, col = cursor[2] }
+  local scope = resolver.resolve_scope(bufnr, anchor, bs.scope, bs.config.scope)
+  return not resolver.scopes_equal(bs.scope, scope)
 end
 
 function M.get_active_mode(bufnr)

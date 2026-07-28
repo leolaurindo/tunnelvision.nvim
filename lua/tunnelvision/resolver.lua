@@ -224,7 +224,13 @@ function M.scope_contains_line(scope, line)
 end
 
 function M.scopes_equal(a, b)
-  return a and b and a.start_line == b.start_line and a.end_line == b.end_line or false
+  return a
+      and b
+      and a.start_line == b.start_line
+      and a.end_line == b.end_line
+      and a.scope_mode == b.scope_mode
+      and a.changedtick == b.changedtick
+    or false
 end
 
 function M.anchors_equal(a, b)
@@ -233,12 +239,27 @@ end
 
 function M.resolve_scope(bufnr, anchor, current_scope, scope_mode)
   local line = anchor.row + 1
-  if M.scope_contains_line(current_scope, line) then
+  local changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
+  local reusable = current_scope
+    and current_scope.scope_mode == scope_mode
+    and current_scope.changedtick == changedtick
+    and M.scope_contains_line(current_scope, line)
+
+  if reusable and scope_mode == "buffer" then
     return current_scope
   end
 
   local start_line, end_line = get_scope_range(bufnr, anchor, scope_mode)
-  return { start_line = start_line, end_line = end_line }
+  if reusable and current_scope.start_line == start_line and current_scope.end_line == end_line then
+    return current_scope
+  end
+
+  return {
+    start_line = start_line,
+    end_line = end_line,
+    scope_mode = scope_mode,
+    changedtick = changedtick,
+  }
 end
 
 local function get_attached_clients(bufnr)
