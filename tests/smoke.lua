@@ -920,6 +920,31 @@ do
     { line = 1, start_col = 0, end_col = 5 },
     { line = 1, start_col = 17, end_col = 31 },
   }, "computed ranges should clamp, deduplicate, discard empties, and sort")
+
+  local direct_path, direct_order, direct_meta, _, pending = resolver.compute_path(
+    range_buf,
+    "alpha",
+    { row = 0, col = 0 },
+    { start_line = 1, end_line = 3 },
+    {
+      direction = "forward",
+      keywords = {},
+      mode = "static",
+      sources = { { kind = "single", name = "lsp" }, { kind = "single", name = "word" } },
+    }
+  )
+  assert_true(pending == nil, "direct compute_path without LSP data should remain synchronous")
+  assert_true(
+    direct_path[1] and direct_path[2] and direct_path[3],
+    "direct LSP fallback should include anchor and word matches"
+  )
+  assert_true(#direct_order == 3, "direct LSP fallback should return ordinary path order")
+  assert_true(
+    direct_meta.used_source == "word"
+      and direct_meta.fallback_source == "lsp"
+      and direct_meta.fallback_reason == "disabled",
+    "direct LSP fallback should preserve disabled metadata"
+  )
 end
 
 -- Flow adds propagated identifiers while static mode retains only source ranges.
@@ -1278,15 +1303,88 @@ do
   end
 
   local lsp_buf = new_buffer({ "😀 alpha alpha", "plain alpha", "alpha", "beta" })
+  local request_count = #requests
+  tunnelvision.setup({ notify = false, sources = { "word", "lsp" }, scope = "buffer" })
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  local bs = core.get_buf_state(lsp_buf)
+  assert_true(#requests == request_count and not bs.pending, "successful word before LSP should avoid requests")
+  assert_true(bs.last_compute_meta.used_source == "word", "word-first resolution should select word")
+
+  local ok_parser, parser = pcall(vim.treesitter.get_parser, lsp_buf, "lua")
+  if ok_parser and parser then
+    tunnelvision.setup({ notify = false, sources = { "treesitter", "lsp" }, scope = "buffer" })
+    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+    assert_true(#requests == request_count and not bs.pending, "successful treesitter before LSP should avoid requests")
+    assert_true(
+      bs.last_compute_meta.used_source == "treesitter",
+      "treesitter-first resolution should select treesitter"
+    )
+  end
+
+  tunnelvision.setup({
+    notify = false,
+    sources = { tunnelvision.combine("custom_empty", "lsp"), "word" },
+    scope = "buffer",
+  })
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  assert_true(#requests == request_count, "failed earlier combine member should not request a later LSP member")
+  assert_true(bs.last_compute_meta.used_source == "word", "failed strict combine should use the next source")
+  assert_true(
+    bs.last_compute_meta.fallback_source == "custom_empty",
+    "strict combine should preserve the first failed member metadata"
+  )
+
+  local custom_resume_calls = 0
+  assert_true(
+    tunnelvision.register_source("custom_resume", function()
+      custom_resume_calls = custom_resume_calls + 1
+      return { [1] = true }
+    end),
+    "resumable custom source registers"
+  )
+  tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("custom_resume", "lsp") }, scope = "buffer" })
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  local resume_batch = take_batch()
+  assert_true(bs.pending and custom_resume_calls == 1, "strict combine should pause when it reaches LSP")
+  respond(resume_batch[1], {
+    { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } },
+  })
+  respond(resume_batch[2], {})
+  respond(resume_batch[4], {})
+  assert_true(custom_resume_calls == 1, "resume should not rerun a completed custom source")
+  assert_true(
+    not bs.pending
+      and bs.last_compute_meta.used_source == "combine(custom_resume,lsp)"
+      and bs.path_set[1]
+      and bs.path_set[2],
+    "resumed strict combine should merge cached custom and LSP results"
+  )
+
+  tunnelvision.setup({ notify = false, sources = { "custom_empty", "lsp" }, scope = "buffer" })
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  local fallback_batch = take_batch()
+  assert_true(bs.pending, "failed earlier source should continue to LSP")
+  respond(fallback_batch[1], {
+    { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } },
+  })
+  respond(fallback_batch[2], {})
+  respond(fallback_batch[4], {})
+  assert_true(
+    bs.last_compute_meta.used_source == "lsp"
+      and bs.last_compute_meta.used_fallback
+      and bs.last_compute_meta.fallback_source == "custom_empty",
+    "LSP reached after an earlier failure should retain fallback metadata"
+  )
+
   tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
   vim.api.nvim_win_set_cursor(0, { 2, 6 })
   vim.cmd("TunnelVision on")
-  local bs = core.get_buf_state(lsp_buf)
+  bs = core.get_buf_state(lsp_buf)
   local old_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
   assert_true(#old_marks > 0, "word render should create dim extmarks")
   bs.last_compute_meta = { flow_analyzer = "text", flow_expanded = true, flow_tracked_count = 2 }
 
-  tunnelvision.setup({ notify = false, sources = { "lsp", "word" }, scope = "buffer", lsp_timeout_ms = 1000 })
+  tunnelvision.setup({ notify = false, scope = "buffer", lsp_timeout_ms = 1000 })
   core.activate(lsp_buf, { silent = true, symbol = "alpha", cursor = { 1, 5 } })
   local batch = take_batch()
   local timeout
@@ -1304,7 +1402,7 @@ do
       and bs.request_handles[4] == batch[4].handle,
     "request handles should be retained by client"
   )
-  assert_true(bs.pending, "async LSP activation should be pending")
+  assert_true(bs.pending, "default LSP-first activation should be pending")
   local pending_status = tunnelvision.status()
   assert_true(
     pending_status.flow_analyzer == nil and not pending_status.flow_expanded and pending_status.flow_tracked_count == 0,
@@ -1492,6 +1590,29 @@ do
   respond(current_batch[2], {})
   respond(current_batch[4], {})
   assert_true(not bs.pending and bs.path_set[2], "current request should apply after stale response")
+
+  local config_stale_path = vim.deepcopy(bs.path_set)
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  bs.config = vim.deepcopy(bs.config)
+  respond(batch[1], {
+    { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } },
+  })
+  respond(batch[2], {})
+  respond(batch[4], {})
+  assert_true(
+    bs.pending and vim.deep_equal(bs.path_set, config_stale_path),
+    "response for stale config identity should not resume"
+  )
+
+  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+  batch = take_batch()
+  respond(batch[1], {
+    { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } },
+  })
+  respond(batch[2], {})
+  respond(batch[4], {})
+  assert_true(not bs.pending and bs.path_set[2], "replacement config identity should resume normally")
 
   local current_ranges = vim.deepcopy(bs.symbol_ranges)
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })

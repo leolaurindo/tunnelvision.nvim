@@ -524,20 +524,6 @@ local function sorted_lines(path_set)
   return out
 end
 
-local function sources_use(sources, source_name)
-  for _, step in ipairs(sources) do
-    if step.name == source_name then
-      return true
-    end
-    for _, name in ipairs(step.names or {}) do
-      if name == source_name then
-        return true
-      end
-    end
-  end
-  return false
-end
-
 local function collect_word_matches(bufnr, symbol, scope)
   local word_set = {}
   local word_ranges = {}
@@ -557,21 +543,29 @@ local function collect_word_matches(bufnr, symbol, scope)
 end
 
 local function collect_source_result(name, context)
+  if context.source_results[name] then
+    return context.source_results[name]
+  end
+
+  local result
   if name == "word" then
-    local used = next(context.word_lines) ~= nil
-    return {
-      lines = context.word_lines,
-      ranges = context.word_ranges,
+    local lines, ranges = collect_word_matches(context.bufnr, context.symbol, context.scope)
+    local used = next(lines) ~= nil
+    result = {
+      lines = lines,
+      ranges = ranges,
       used = used,
       reason = used and nil or "no_matches",
       failed_source = name,
       used_word = true,
     }
-  end
-  if name == "lsp" then
+  elseif name == "lsp" then
+    if not context.lsp_result then
+      return { pending_lsp = true }
+    end
     local lines = context.lsp_result.lines or {}
     local used = next(lines) ~= nil
-    return {
+    result = {
       lines = lines,
       ranges = context.lsp_result.ranges or {},
       used = used,
@@ -579,17 +573,12 @@ local function collect_source_result(name, context)
       used_lsp = true,
       failed_source = name,
     }
-  end
-  if name == "treesitter" then
-    if not context.treesitter_result then
-      context.treesitter_result = collect_treesitter_lines(context.bufnr, context.symbol, context.scope)
-    end
-    context.treesitter_result.failed_source = name
-    return context.treesitter_result
-  end
-  local handler = context.custom_sources[name]
-  if handler then
-    local ok, result = pcall(handler, {
+  elseif name == "treesitter" then
+    result = collect_treesitter_lines(context.bufnr, context.symbol, context.scope)
+    result.failed_source = name
+  elseif context.custom_sources[name] then
+    local handler = context.custom_sources[name]
+    local ok, raw_result = pcall(handler, {
       anchor = { row = context.anchor.row, col = context.anchor.col },
       bufnr = context.bufnr,
       direction = context.direction,
@@ -598,8 +587,8 @@ local function collect_source_result(name, context)
       scope = { start_line = context.scope.start_line, end_line = context.scope.end_line },
       symbol = context.symbol,
     })
-    if not ok or type(result) ~= "table" then
-      return {
+    if not ok or type(raw_result) ~= "table" then
+      result = {
         lines = {},
         ranges = {},
         used = false,
@@ -607,36 +596,40 @@ local function collect_source_result(name, context)
         failed_source = name,
         has_custom = true,
       }
-    end
-
-    local lines = {}
-    local ranges = {}
-    local buffer_lines = vim.api.nvim_buf_get_lines(context.bufnr, 0, -1, false)
-    for lnum, included in pairs(result) do
-      if
-        included
-        and type(lnum) == "number"
-        and lnum % 1 == 0
-        and lnum >= context.scope.start_line
-        and lnum <= context.scope.end_line
-        and lnum <= #buffer_lines
-      then
-        lines[lnum] = true
-        add_ranges(ranges, collect_word_ranges(buffer_lines[lnum], context.symbol, lnum))
+    else
+      local lines = {}
+      local ranges = {}
+      local buffer_lines = vim.api.nvim_buf_get_lines(context.bufnr, 0, -1, false)
+      for lnum, included in pairs(raw_result) do
+        if
+          included
+          and type(lnum) == "number"
+          and lnum % 1 == 0
+          and lnum >= context.scope.start_line
+          and lnum <= context.scope.end_line
+          and lnum <= #buffer_lines
+        then
+          lines[lnum] = true
+          add_ranges(ranges, collect_word_ranges(buffer_lines[lnum], context.symbol, lnum))
+        end
       end
+      local used = next(lines) ~= nil
+      result = {
+        lines = lines,
+        ranges = ranges,
+        used = used,
+        reason = used and nil or "no_matches",
+        failed_source = name,
+        has_custom = true,
+        used_custom = true,
+      }
     end
-    local used = next(lines) ~= nil
-    return {
-      lines = lines,
-      ranges = ranges,
-      used = used,
-      reason = used and nil or "no_matches",
-      failed_source = name,
-      has_custom = true,
-      used_custom = true,
-    }
+  else
+    result = { lines = {}, ranges = {}, used = false, reason = "unavailable", failed_source = name }
   end
-  return { lines = {}, ranges = {}, used = false, reason = "unavailable", failed_source = name }
+
+  context.source_results[name] = result
+  return result
 end
 
 local function collect_source_step(step, context)
@@ -652,6 +645,9 @@ local function collect_source_step(step, context)
   }
   for _, name in ipairs(step.names) do
     local source = collect_source_result(name, context)
+    if source.pending_lsp then
+      return source
+    end
     result.has_custom = result.has_custom or source.has_custom or false
     if not source.used then
       return {
@@ -695,6 +691,9 @@ local function resolve_source_chain(sources, context)
 
   for i, step in ipairs(sources) do
     local result = collect_source_step(step, context)
+    if result.pending_lsp then
+      return nil, nil, nil, context
+    end
     if result.used then
       add_set(path_set, result.lines)
       add_ranges(ranges, result.ranges)
@@ -716,41 +715,49 @@ local function resolve_source_chain(sources, context)
 end
 
 function M.compute_path(bufnr, symbol, anchor, scope, opts)
-  local sources = opts.sources or {}
-  local uses_word = sources_use(sources, "word")
-  local use_flow = opts.mode == "flow"
-  local word_lines, word_ranges = {}, {}
-  if uses_word then
-    word_lines, word_ranges = collect_word_matches(bufnr, symbol, scope)
+  local lsp_result = opts.lsp_result
+  if not opts.pause_for_lsp and not lsp_result then
+    lsp_result = M.make_lsp_result("disabled")
   end
-  local path_set, ranges, meta = resolve_source_chain(sources, {
-    anchor = anchor,
-    bufnr = bufnr,
-    custom_sources = opts.custom_sources or {},
-    direction = opts.direction,
-    keywords = opts.keywords or {},
-    lsp_result = opts.lsp_result or M.make_lsp_result("disabled"),
-    mode = opts.mode,
-    scope = scope,
-    symbol = symbol,
-    word_lines = word_lines,
-    word_ranges = word_ranges,
-  })
+  local context = opts.resolution_context
+    or {
+      anchor = anchor,
+      analyzers = opts.analyzers,
+      bufnr = bufnr,
+      custom_sources = opts.custom_sources or {},
+      direction = opts.direction,
+      keywords = opts.keywords or {},
+      lsp_result = lsp_result,
+      max_depth = opts.max_depth,
+      mode = opts.mode,
+      scope = scope,
+      source_results = {},
+      sources = opts.sources or {},
+      symbol = symbol,
+    }
+  if opts.resolution_context and opts.lsp_result then
+    context.lsp_result = opts.lsp_result
+  end
+
+  local path_set, ranges, meta, pending = resolve_source_chain(context.sources, context)
+  if pending then
+    return nil, nil, nil, nil, pending
+  end
   path_set[anchor.row + 1] = true
 
-  if use_flow and meta.used_source then
+  if context.mode == "flow" and meta.used_source then
     local analysis, flow_meta = flow.analyze({
       anchor = anchor,
       bufnr = bufnr,
-      keywords = opts.keywords or {},
+      keywords = context.keywords,
       scope = scope,
       symbol = symbol,
-    }, opts.analyzers)
+    }, context.analyzers)
     for key, value in pairs(flow_meta) do
       meta[key] = value
     end
     if analysis then
-      local _, expand_meta = flow.expand(path_set, ranges, symbol, analysis, opts.direction, opts.max_depth)
+      local _, expand_meta = flow.expand(path_set, ranges, symbol, analysis, context.direction, context.max_depth)
       for key, value in pairs(expand_meta) do
         meta[key] = value
       end
