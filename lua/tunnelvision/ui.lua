@@ -174,12 +174,12 @@ local function range_mark(bufnr, row, start_col, end_col, group, priority)
 end
 
 function M.render(bufnr)
-  pcall(vim.api.nvim_buf_clear_namespace, bufnr, core.state.ns, 0, -1)
-
   local bs = core.state.bufs[bufnr]
   if not bs or not bs.active or bs.pending or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
+
+  pcall(vim.api.nvim_buf_clear_namespace, bufnr, core.state.ns, 0, -1)
 
   local config = bs.config or core.state.config
   local total = vim.api.nvim_buf_line_count(bufnr)
@@ -455,7 +455,7 @@ local function ensure_autocmds()
     callback = function()
       M.ensure_highlights()
       for bufnr, bs in pairs(core.state.bufs) do
-        if bs.active and bs.config then
+        if bs.active and bs.config and not bs.pending then
           M.clear_render_groups(bs)
           M.ensure_highlights(bs.config)
           M.render(bufnr)

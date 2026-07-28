@@ -1149,6 +1149,12 @@ if vim.lsp.buf_request_all then
     #vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {}) == old_marks,
     "pending render should keep previous dim extmarks"
   )
+  local retained_marks = vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, { details = true })
+  vim.api.nvim_exec_autocmds("ColorScheme", {})
+  assert_true(
+    vim.deep_equal(vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, { details = true }), retained_marks),
+    "ColorScheme should preserve retained extmarks while LSP is pending"
+  )
 
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
   vim.cmd("TunnelVision on")
