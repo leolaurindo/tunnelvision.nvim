@@ -1285,7 +1285,7 @@ do
       text = text,
     }
   end
-  local ts_root = node("chunk", 0, 0, 0, nil, {
+  local ts_root = node("chunk", 0, 0, 18, nil, {
     node("identifier", 0, 6, 11, "alpha"),
     node("identifier", 1, 13, 18, "alpha"),
   })
@@ -3218,6 +3218,224 @@ do
     "setup dim none should create no dim extmarks"
   )
   vim.cmd("TunnelVision off")
+end
+
+-- Tree-sitter source prunes complete out-of-scope subtrees without changing results.
+do
+  local resolver = require("tunnelvision.resolver")
+  local orig_get_parser = vim.treesitter.get_parser
+  local orig_get_node_text = vim.treesitter.get_node_text
+  local calls
+
+  local function node(name, node_type, range, text, children)
+    local result = {
+      type = function()
+        calls.types[name] = (calls.types[name] or 0) + 1
+        return node_type
+      end,
+      iter_children = function()
+        calls.children[name] = (calls.children[name] or 0) + 1
+        local index = 0
+        return function()
+          index = index + 1
+          return (children or {})[index]
+        end
+      end,
+      text = text,
+    }
+    if type(range) == "table" and range.values then
+      result.range = function()
+        calls.ranges[name] = (calls.ranges[name] or 0) + 1
+        return unpack(range.values)
+      end
+    else
+      result.range = range
+    end
+    return result
+  end
+
+  local function ranged(name, node_type, start_row, start_col, end_row, end_col, text, children)
+    return node(name, node_type, { values = { start_row, start_col, end_row, end_col } }, text, children)
+  end
+
+  local before_id = ranged("before_id", "identifier", 0, 0, 0, 5, "alpha")
+  local exclusive_id = ranged("exclusive_id", "identifier", 1, 0, 1, 5, "alpha")
+  local zero_id = ranged("zero_id", "identifier", 2, 0, 2, 5, "alpha")
+  local span_start = ranged("span_start", "identifier", 2, 6, 2, 11, "alpha")
+  local span_end = ranged("span_end", "identifier", 4, 6, 4, 11, "alpha")
+  local intersect_id = ranged("intersect_id", "identifier", 4, 13, 4, 18, "alpha")
+  local after_id = ranged("after_id", "identifier", 6, 0, 6, 5, "alpha")
+  local missing_id = ranged("missing_id", "identifier", 3, 0, 3, 5, "alpha")
+  local malformed_id = ranged("malformed_id", "identifier", 3, 6, 3, 11, "alpha")
+  local nonfunction_id = ranged("nonfunction_id", "identifier", 3, 12, 3, 17, "alpha")
+  local reversed_id = ranged("reversed_id", "identifier", 2, 12, 2, 17, "alpha")
+  local negative_id = ranged("negative_id", "identifier", 2, 18, 2, 23, "alpha")
+  local ts_root = ranged("root", "chunk", 0, 0, 8, 0, nil, {
+    ranged("before", "parent", 0, 0, 1, 5, nil, { before_id }),
+    ranged("exclusive", "parent", 0, 0, 2, 0, nil, { exclusive_id }),
+    ranged("zero", "parent", 2, 0, 2, 0, nil, { zero_id }),
+    ranged("spanning", "parent", 1, 0, 6, 0, nil, { span_start, span_end }),
+    ranged("intersecting", "parent", 4, 0, 5, 0, nil, { intersect_id }),
+    ranged("after", "parent", 5, 0, 7, 0, nil, { after_id }),
+    node("missing", "parent", nil, nil, { missing_id }),
+    node("malformed", "parent", { values = { "bad", 0, nil, 0 } }, nil, { malformed_id }),
+    node("nonfunction", "parent", {}, nil, { nonfunction_id }),
+    node("reversed", "parent", { values = { 5, 0, 1, 0 } }, nil, { reversed_id }),
+    node("negative", "parent", { values = { -1, 0, -1, 5 } }, nil, { negative_id }),
+  })
+  vim.treesitter.get_parser = function()
+    return {
+      parse = function()
+        return { {
+          root = function()
+            return ts_root
+          end,
+        } }
+      end,
+    }
+  end
+  vim.treesitter.get_node_text = function(current)
+    return current.text
+  end
+  local prune_buf = new_buffer(vim.fn["repeat"]({ (" "):rep(30) }, 8), "prune-ts")
+  local source = { { kind = "single", name = "treesitter" } }
+  local expected_meta = {
+    failed_sources = {},
+    fallback_source = nil,
+    used_lsp = false,
+    used_custom = false,
+    used_word = false,
+    used_fallback = false,
+    fallback_reason = nil,
+    used_source = "treesitter",
+  }
+  local function compute(scope)
+    calls = { types = {}, ranges = {}, children = {} }
+    return resolver.compute_path(prune_buf, "alpha", { row = 2, col = 6 }, scope, {
+      direction = "forward",
+      keywords = {},
+      mode = "static",
+      sources = source,
+    })
+  end
+
+  local path, order, meta, ranges = compute({ start_line = 3, end_line = 5 })
+  assert_true(vim.deep_equal(path, { [3] = true, [4] = true, [5] = true }), "pruned path: " .. vim.inspect(path))
+  assert_true(vim.deep_equal(order, { 3, 4, 5 }), "pruned order: " .. vim.inspect(order))
+  assert_true(vim.deep_equal(meta, expected_meta), "pruned metadata: " .. vim.inspect(meta))
+  assert_ranges(ranges, {
+    { line = 3, start_col = 6, end_col = 11 },
+    { line = 3, start_col = 12, end_col = 17 },
+    { line = 3, start_col = 18, end_col = 23 },
+    { line = 4, start_col = 0, end_col = 5 },
+    { line = 4, start_col = 6, end_col = 11 },
+    { line = 4, start_col = 12, end_col = 17 },
+    { line = 5, start_col = 6, end_col = 11 },
+    { line = 5, start_col = 13, end_col = 18 },
+  }, "pruned ranges")
+  for _, name in ipairs({ "before_id", "exclusive_id", "zero_id", "after_id" }) do
+    assert_true(
+      not calls.ranges[name] and not calls.types[name] and not calls.children[name],
+      name .. " should not be entered"
+    )
+  end
+  for _, name in ipairs({ "before", "exclusive", "zero", "after" }) do
+    assert_true(calls.ranges[name] == 1 and not calls.children[name], name .. " subtree should be pruned")
+  end
+  for _, name in ipairs({
+    "spanning",
+    "intersecting",
+    "missing",
+    "malformed",
+    "nonfunction",
+    "reversed",
+    "negative",
+  }) do
+    assert_true(calls.children[name] == 1, name .. " subtree should be traversed")
+  end
+  for _, name in ipairs({
+    "span_start",
+    "span_end",
+    "intersect_id",
+    "missing_id",
+    "malformed_id",
+    "nonfunction_id",
+    "reversed_id",
+    "negative_id",
+  }) do
+    assert_true(calls.ranges[name] == 2 and calls.children[name] == 1, name .. " should be fully visited")
+  end
+  assert_true(
+    calls.ranges.malformed == 1
+      and calls.ranges.reversed == 1
+      and calls.ranges.negative == 1
+      and not calls.ranges.missing
+      and not calls.ranges.nonfunction,
+    "fake ranges"
+  )
+
+  path, order, meta, ranges = compute({ start_line = 1, end_line = 8 })
+  assert_true(
+    vim.deep_equal(path, { [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [7] = true }),
+    "buffer path: " .. vim.inspect(path)
+  )
+  assert_true(vim.deep_equal(order, { 1, 2, 3, 4, 5, 7 }), "buffer order: " .. vim.inspect(order))
+  assert_true(vim.deep_equal(meta, expected_meta), "buffer metadata: " .. vim.inspect(meta))
+  assert_ranges(ranges, {
+    { line = 1, start_col = 0, end_col = 5 },
+    { line = 2, start_col = 0, end_col = 5 },
+    { line = 3, start_col = 0, end_col = 5 },
+    { line = 3, start_col = 6, end_col = 11 },
+    { line = 3, start_col = 12, end_col = 17 },
+    { line = 3, start_col = 18, end_col = 23 },
+    { line = 4, start_col = 0, end_col = 5 },
+    { line = 4, start_col = 6, end_col = 11 },
+    { line = 4, start_col = 12, end_col = 17 },
+    { line = 5, start_col = 6, end_col = 11 },
+    { line = 5, start_col = 13, end_col = 18 },
+    { line = 7, start_col = 0, end_col = 5 },
+  }, "buffer ranges")
+  for _, name in ipairs({ "before", "exclusive", "zero", "spanning", "intersecting", "after" }) do
+    assert_true(calls.ranges[name] == 1 and calls.children[name] == 1, name .. " should be traversed in buffer scope")
+  end
+
+  vim.treesitter.get_parser = function()
+    error("parser unavailable")
+  end
+  local fail_path, fail_order, fail_meta, fail_ranges = resolver.compute_path(
+    prune_buf,
+    "alpha",
+    { row = 2, col = 6 },
+    {
+      start_line = 3,
+      end_line = 5,
+    },
+    {
+      direction = "forward",
+      keywords = {},
+      mode = "static",
+      sources = source,
+    }
+  )
+  assert_true(vim.deep_equal(fail_path, { [3] = true }), "unavailable parser path")
+  assert_true(vim.deep_equal(fail_order, { 3 }), "unavailable parser order")
+  assert_ranges(fail_ranges, {}, "unavailable parser ranges")
+  assert_true(
+    vim.deep_equal(fail_meta, {
+      failed_sources = { "treesitter" },
+      fallback_source = "treesitter",
+      used_lsp = false,
+      used_custom = false,
+      used_word = false,
+      used_fallback = false,
+      fallback_reason = "unavailable",
+      used_source = nil,
+    }),
+    "unavailable parser metadata: " .. vim.inspect(fail_meta)
+  )
+
+  vim.treesitter.get_parser = orig_get_parser
+  vim.treesitter.get_node_text = orig_get_node_text
 end
 
 print("tunnelvision smoke: OK")
