@@ -2719,6 +2719,147 @@ do
   assert_true(fallback.statement, "node traversal errors should report structural fallback")
 end
 
+-- Structural evaluation reuses duplicate and shared ancestor work within one call.
+do
+  local context = require("tunnelvision.context")
+  local buf = new_buffer({ "function", "if", "alpha", "alpha", "other", "missing" })
+
+  local function evaluate(highlights, selected_ranges, failure_method)
+    local calls = { descendant = 0, parent = 0, range = 0, start = 0, type = 0 }
+    local definitions = {
+      root = { id = 0, type = "chunk", row = 0 },
+      ["function"] = { id = 1, type = "function_definition", row = 0, parent = "root" },
+      ["if"] = { id = 2, type = "if_statement", row = 1, parent = "function" },
+      statement = { id = 3, type = "assignment_statement", row = 2, parent = "if" },
+      first = { id = 4, type = "identifier", row = 2, parent = "statement" },
+      second = { id = 5, type = "identifier", row = 3, parent = "statement" },
+      missing = { id = 6, type = "identifier", row = 5, parent = "if" },
+    }
+    local function node(name)
+      local definition = definitions[name]
+      local current = {}
+      current.id = function()
+        if failure_method == name .. ".id" then
+          error("id failure")
+        end
+        return definition.id
+      end
+      current.type = function()
+        calls.type = calls.type + 1
+        if failure_method == name .. ".type" then
+          error("type failure")
+        end
+        return definition.type
+      end
+      current.parent = function()
+        calls.parent = calls.parent + 1
+        if failure_method == name .. ".parent" then
+          error("parent failure")
+        end
+        return definition.parent and node(definition.parent)
+      end
+      current.range = function()
+        calls.range = calls.range + 1
+        if failure_method == name .. ".range" then
+          error("range failure")
+        end
+        return definition.row, 0, definition.row == 2 and 4 or definition.row, 0
+      end
+      current.start = function()
+        calls.start = calls.start + 1
+        if failure_method == name .. ".start" then
+          error("start failure")
+        end
+        return definition.row, 0
+      end
+      return current
+    end
+
+    local tree_root = node("root")
+    local nodes = { ["2:1"] = "first", ["3:2"] = "second", ["5:0"] = "missing" }
+    tree_root.named_descendant_for_range = function(_, row, col)
+      calls.descendant = calls.descendant + 1
+      return node(nodes[row .. ":" .. col])
+    end
+
+    local path = selected_ranges and { [3] = true, [4] = true } or { [3] = true, [4] = true, [6] = true }
+    local ranges = selected_ranges
+      or {
+        { line = 3, start_col = 1 },
+        { line = 3, start_col = 1 },
+        { line = 4, start_col = 2 },
+        { line = 6, start_col = 0 },
+      }
+    local statements, scope_heads, fallback = context.evaluate(
+      { highlights = highlights },
+      path,
+      ranges,
+      buf,
+      { start_line = 2, end_line = 6 },
+      {
+        get_treesitter = function()
+          return { root = tree_root }
+        end,
+      }
+    )
+    return statements, scope_heads, fallback, calls, path, ranges
+  end
+
+  local statements, scope_heads, fallback, calls, path, ranges = evaluate({ statement = {}, scope_head = {} })
+  assert_true(vim.deep_equal(statements, { [3] = true, [4] = true, [6] = true }), "cached statement set")
+  assert_true(vim.deep_equal(scope_heads, { [2] = true }), "cached and clipped scope-head set")
+  assert_true(vim.deep_equal(fallback, { statement = true, scope_head = false }), "cached fallback metadata")
+  assert_true(vim.deep_equal(path, { [3] = true, [4] = true, [6] = true }), "context should not alter navigation")
+  assert_true(#ranges == 4, "context should not alter navigation ranges")
+  assert_true(calls.descendant == 3, "duplicate positions should share one node lookup")
+  assert_true(
+    calls.parent == 7 and calls.type == 7 and calls.range == 1 and calls.start == 2,
+    "stable node ids should reuse wrapper parent, type, range, and scope-head work: " .. vim.inspect(calls)
+  )
+
+  local shared_ranges = { { line = 3, start_col = 1 }, { line = 4, start_col = 2 } }
+  statements, scope_heads, fallback, calls = evaluate({ statement = {} }, shared_ranges)
+  assert_true(vim.deep_equal(statements, { [3] = true, [4] = true }), "statement-only exact set")
+  assert_true(
+    next(scope_heads) == nil and not fallback.statement and not fallback.scope_head,
+    "statement-only fallback"
+  )
+  assert_true(calls.parent == 3 and calls.type == 3 and calls.range == 1 and calls.start == 0, "statement-only work")
+
+  statements, scope_heads, fallback, calls = evaluate({ scope_head = {} }, shared_ranges)
+  assert_true(next(statements) == nil and vim.deep_equal(scope_heads, { [2] = true }), "scope-head-only exact sets")
+  assert_true(not fallback.statement and not fallback.scope_head, "scope-head-only fallback")
+  assert_true(calls.parent == 6 and calls.type == 6 and calls.range == 0 and calls.start == 2, "scope-head-only work")
+
+  statements, scope_heads, fallback = evaluate({ statement = {}, scope_head = {} }, nil, "first.id")
+  assert_true(statements[3] and scope_heads[2], "failing node ids should fall back to wrapper identity")
+  assert_true(fallback.statement and not fallback.scope_head, "failing node id fallback metadata")
+
+  local parse_calls = 0
+  statements, scope_heads, fallback = context.evaluate(
+    { highlights = {} },
+    { [1] = true },
+    {},
+    buf,
+    { start_line = 1, end_line = 6 },
+    {
+      get_treesitter = function()
+        parse_calls = parse_calls + 1
+      end,
+    }
+  )
+  assert_true(parse_calls == 0, "disabled structural contexts should do no parse work")
+  assert_true(next(statements) == nil and next(scope_heads) == nil, "disabled structural contexts should stay empty")
+  assert_true(not fallback.statement and not fallback.scope_head, "disabled structural fallback metadata")
+
+  for _, failure in ipairs({ "first.type", "first.parent", "statement.range", "if.start" }) do
+    statements, scope_heads, fallback = evaluate({ statement = {}, scope_head = {} }, nil, failure)
+    assert_true(vim.deep_equal(statements, { [3] = true, [4] = true, [6] = true }), failure .. " statement fallback")
+    assert_true(next(scope_heads) == nil, failure .. " should clear scope heads")
+    assert_true(fallback.statement and fallback.scope_head, failure .. " fallback metadata")
+  end
+end
+
 -- Missing structural parsers fall back safely and obey warning policy.
 do
   local messages = {}

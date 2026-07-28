@@ -70,25 +70,6 @@ local scope_head_types = {
   else_statement = true,
 }
 
-local function statement_range(node)
-  while node do
-    local node_type = node:type()
-    local parent = node:parent()
-    local is_statement = statement_types[node_type]
-      or node_type == "function_call" and parent and standalone_call_parents[parent:type()]
-      or parent and parameter_containers[parent:type()]
-    if is_statement then
-      local start_row, _, end_row, end_col = node:range()
-      local end_line = end_row + (end_col > 0 and 1 or 0)
-      if end_line - start_row <= STATEMENT_MAX_LINES then
-        return start_row + 1, end_line
-      end
-      return nil
-    end
-    node = parent
-  end
-end
-
 local function add_range(out, start_line, end_line, scope, line_count)
   start_line = math.max(start_line, scope.start_line)
   end_line = math.min(end_line, scope.end_line, line_count)
@@ -118,10 +99,15 @@ end
 
 local function positions_by_line(path_set, symbol_ranges, bufnr)
   local positions = {}
+  local seen = {}
   for _, range in ipairs(symbol_ranges) do
     if path_set[range.line] then
       positions[range.line] = positions[range.line] or {}
-      positions[range.line][#positions[range.line] + 1] = range.start_col
+      seen[range.line] = seen[range.line] or {}
+      if not seen[range.line][range.start_col] then
+        positions[range.line][#positions[range.line] + 1] = range.start_col
+        seen[range.line][range.start_col] = true
+      end
     end
   end
 
@@ -133,6 +119,59 @@ local function positions_by_line(path_set, symbol_ranges, bufnr)
     end
   end
   return positions
+end
+
+local function analyze_node(start_node, wants_statement, wants_scope_heads, cache, types, node_key)
+  local chain = {}
+  local node = start_node
+  local result
+  while node do
+    local key = node_key(node)
+    result = cache[key]
+    if result then
+      break
+    end
+    local node_type = types[key]
+    if not node_type then
+      node_type = node:type()
+      types[key] = node_type
+    end
+    local parent = node:parent()
+    local is_statement = false
+    if wants_statement then
+      is_statement = statement_types[node_type]
+      if not is_statement and parent then
+        local parent_key = node_key(parent)
+        local parent_type = types[parent_key]
+        if not parent_type then
+          parent_type = parent:type()
+          types[parent_key] = parent_type
+        end
+        is_statement = node_type == "function_call" and standalone_call_parents[parent_type]
+          or parameter_containers[parent_type]
+      end
+    end
+    chain[#chain + 1] = { node = node, key = key, type = node_type, is_statement = is_statement }
+    if is_statement and not wants_scope_heads then
+      break
+    end
+    node = parent
+  end
+
+  result = result or {}
+  for i = #chain, 1, -1 do
+    local current = chain[i]
+    local statement = current.is_statement and current.node or result.statement
+
+    local scope_heads = result.scope_heads
+    if wants_scope_heads and scope_head_types[current.type] then
+      local start_row = current.node:start()
+      scope_heads = { line = start_row + 1, next = scope_heads }
+    end
+    result = { statement = statement, scope_heads = scope_heads }
+    cache[current.key] = result
+  end
+  return result
 end
 
 function M.evaluate(cfg, path_set, symbol_ranges, bufnr, scope, context)
@@ -149,34 +188,63 @@ function M.evaluate(cfg, path_set, symbol_ranges, bufnr, scope, context)
   local ok = root
     and pcall(function()
       local line_count = vim.api.nvim_buf_line_count(bufnr)
+      local cache = {}
+      local ranges = {}
+      local types = {}
+      local statement_ranges = {}
+      local id_keys = {}
+      local function node_key(node)
+        local ok_id, id = pcall(function()
+          return node:id()
+        end)
+        if not ok_id or id == nil then
+          return node
+        end
+        if not id_keys[id] then
+          id_keys[id] = {}
+        end
+        return id_keys[id]
+      end
       for lnum, columns in pairs(positions_by_line(path_set, symbol_ranges, bufnr)) do
         local found_statement = false
         for _, col in ipairs(columns) do
           local node = root:named_descendant_for_range(lnum - 1, col, lnum - 1, col)
-          if wants_statement then
-            local start_line, end_line = statement_range(node)
-            if start_line then
-              add_range(statement_set, start_line, end_line, scope, line_count)
+          local result = analyze_node(node, wants_statement, wants_scope_heads, cache, types, node_key)
+          if wants_statement and result.statement then
+            local range_key = node_key(result.statement)
+            local range = ranges[range_key]
+            if range == nil then
+              local start_row, _, end_row, end_col = result.statement:range()
+              local end_line = end_row + (end_col > 0 and 1 or 0)
+              range = end_line - start_row <= STATEMENT_MAX_LINES and { start_row + 1, end_line } or false
+              ranges[range_key] = range
+            end
+            if range then
+              local start_line, end_line = unpack(range)
+              statement_ranges[start_line] = statement_ranges[start_line] or {}
+              statement_ranges[start_line][end_line] = true
               found_statement = true
             end
           end
 
           if wants_scope_heads then
-            while node do
-              if scope_head_types[node:type()] then
-                local start_row = node:start()
-                local head_line = start_row + 1
-                if head_line >= scope.start_line and head_line <= scope.end_line then
-                  scope_head_set[head_line] = true
-                end
+            local scope_head = result.scope_heads
+            while scope_head do
+              if scope_head.line >= scope.start_line and scope_head.line <= scope.end_line then
+                scope_head_set[scope_head.line] = true
               end
-              node = node:parent()
+              scope_head = scope_head.next
             end
           end
         end
         if wants_statement and not found_statement then
           statement_set[lnum] = true
           fallback.statement = true
+        end
+      end
+      for start_line, end_lines in pairs(statement_ranges) do
+        for end_line in pairs(end_lines) do
+          add_range(statement_set, start_line, end_line, scope, line_count)
         end
       end
     end)
