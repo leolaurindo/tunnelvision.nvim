@@ -121,12 +121,12 @@ local function positions_by_line(path_set, symbol_ranges, bufnr)
   return positions
 end
 
-local function analyze_node(start_node, wants_statement, wants_scope_heads, cache, types, node_key)
+local function analyze_node(start_node, wants_statement, wants_scope_heads, cache, types)
   local chain = {}
   local node = start_node
   local result
   while node do
-    local key = node_key(node)
+    local key = node:id()
     result = cache[key]
     if result then
       break
@@ -141,7 +141,7 @@ local function analyze_node(start_node, wants_statement, wants_scope_heads, cach
     if wants_statement then
       is_statement = statement_types[node_type]
       if not is_statement and parent then
-        local parent_key = node_key(parent)
+        local parent_key = parent:id()
         local parent_type = types[parent_key]
         if not parent_type then
           parent_type = parent:type()
@@ -192,26 +192,13 @@ function M.evaluate(cfg, path_set, symbol_ranges, bufnr, scope, context)
       local ranges = {}
       local types = {}
       local statement_ranges = {}
-      local id_keys = {}
-      local function node_key(node)
-        local ok_id, id = pcall(function()
-          return node:id()
-        end)
-        if not ok_id or id == nil then
-          return node
-        end
-        if not id_keys[id] then
-          id_keys[id] = {}
-        end
-        return id_keys[id]
-      end
       for lnum, columns in pairs(positions_by_line(path_set, symbol_ranges, bufnr)) do
         local found_statement = false
         for _, col in ipairs(columns) do
           local node = root:named_descendant_for_range(lnum - 1, col, lnum - 1, col)
-          local result = analyze_node(node, wants_statement, wants_scope_heads, cache, types, node_key)
+          local result = analyze_node(node, wants_statement, wants_scope_heads, cache, types)
           if wants_statement and result.statement then
-            local range_key = node_key(result.statement)
+            local range_key = result.statement:id()
             local range = ranges[range_key]
             if range == nil then
               local start_row, _, end_row, end_col = result.statement:range()

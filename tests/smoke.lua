@@ -1489,11 +1489,20 @@ do
   local orig_get_parser = vim.treesitter.get_parser
   local orig_get_node_text = vim.treesitter.get_node_text
   local parse_count = 0
+  local next_node_id = 0
 
   local function node(node_type, row, parent, text)
+    next_node_id = next_node_id + 1
+    local node_id = next_node_id
     return {
+      id = function()
+        return node_id
+      end,
       type = function()
         return node_type
+      end,
+      start = function()
+        return row, 0
       end,
       range = function()
         return row, 0, row, 5
@@ -1518,21 +1527,21 @@ do
       assignments[row] = node("assignment_statement", row, function_node)
       identifiers[#identifiers + 1] = node("identifier", row, assignments[row], "alpha")
     end
-    return {
-      named_descendant_for_range = function(_, row)
-        return identifiers[row - start_row + 1] or identifiers[1]
-      end,
-      type = function()
-        return "chunk"
-      end,
-      iter_children = function()
-        local index = 0
-        return function()
-          index = index + 1
-          return identifiers[index]
-        end
-      end,
-    }
+    local tree_root = node("chunk", start_row)
+    tree_root.range = function()
+      return start_row, 0, end_row, 5
+    end
+    tree_root.named_descendant_for_range = function(_, row)
+      return identifiers[row - start_row + 1] or identifiers[1]
+    end
+    tree_root.iter_children = function()
+      local index = 0
+      return function()
+        index = index + 1
+        return identifiers[index]
+      end
+    end
+    return tree_root
   end
 
   local current_root = make_root(0, 2)
@@ -2554,7 +2563,7 @@ do
   end
 end
 
--- Structural walking is conservative and falls back on parser/node failures.
+-- Structural walking uses exact columns and conservative statement boundaries.
 do
   new_buffer({ "alpha(", "  value", ")" })
   local context = require("tunnelvision.context")
@@ -2564,6 +2573,12 @@ do
   local scope = { start_line = 1, end_line = 3 }
   local orig_get_parser = vim.treesitter.get_parser
   local seen_col
+
+  local function id(value)
+    return function()
+      return value
+    end
+  end
 
   local function stub_parser(descendant)
     vim.treesitter.get_parser = function()
@@ -2582,6 +2597,7 @@ do
   end
 
   local statement_node = {
+    id = id(1),
     type = function()
       return "expression_statement"
     end,
@@ -2602,6 +2618,7 @@ do
   assert_true(not fallback.statement, "safe statement resolution should not report fallback")
 
   local chunk_node = {
+    id = id(2),
     type = function()
       return "chunk"
     end,
@@ -2610,6 +2627,7 @@ do
     end,
   }
   local call_node = {
+    id = id(3),
     type = function()
       return "function_call"
     end,
@@ -2628,6 +2646,7 @@ do
   assert_true(not fallback.statement, "standalone Lua calls should not report structural fallback")
 
   local assignment_node = {
+    id = id(4),
     type = function()
       return "assignment_statement"
     end,
@@ -2639,6 +2658,7 @@ do
     end,
   }
   local expression_list = {
+    id = id(5),
     type = function()
       return "expression_list"
     end,
@@ -2657,6 +2677,7 @@ do
   assert_true(not fallback.statement, "nested Lua calls inside assignments should resolve structurally")
 
   local parameters_node = {
+    id = id(6),
     type = function()
       return "parameters"
     end,
@@ -2666,6 +2687,7 @@ do
   }
   for _, node_type in ipairs({ "typed_default_parameter", "parameter_declaration" }) do
     local parameter_node = {
+      id = id(7),
       type = function()
         return node_type
       end,
@@ -2685,6 +2707,7 @@ do
   end
 
   local bare_parameter = {
+    id = id(8),
     type = function()
       return "identifier"
     end,
@@ -2706,6 +2729,7 @@ do
   assert_true(not fallback.statement, "bare parameters should not report structural fallback")
 
   local arguments_node = {
+    id = id(9),
     type = function()
       return "arguments"
     end,
@@ -2724,6 +2748,7 @@ do
   assert_true(fallback.statement, "unresolved call arguments should retain structural fallback")
 
   local broad_node = {
+    id = id(10),
     type = function()
       return "try_statement"
     end,
@@ -2738,13 +2763,7 @@ do
   assert_true(vim.deep_equal(statements, path_set), "unknown statement containers should fall back to matched lines")
   assert_true(fallback.statement, "conservative statement rejection should report fallback")
 
-  stub_parser(function()
-    error("broken node traversal")
-  end)
-  statements, _, fallback = context.evaluate(cfg, path_set, symbol_ranges, 0, scope)
   vim.treesitter.get_parser = orig_get_parser
-  assert_true(vim.deep_equal(statements, path_set), "node traversal errors should fall back to matched lines")
-  assert_true(fallback.statement, "node traversal errors should report structural fallback")
 end
 
 -- Structural evaluation reuses duplicate and shared ancestor work within one call.
@@ -2752,7 +2771,7 @@ do
   local context = require("tunnelvision.context")
   local buf = new_buffer({ "function", "if", "alpha", "alpha", "other", "missing" })
 
-  local function evaluate(highlights, selected_ranges, failure_method)
+  local function evaluate(highlights, selected_ranges)
     local calls = { descendant = 0, parent = 0, range = 0, start = 0, type = 0 }
     local definitions = {
       root = { id = 0, type = "chunk", row = 0 },
@@ -2767,37 +2786,22 @@ do
       local definition = definitions[name]
       local current = {}
       current.id = function()
-        if failure_method == name .. ".id" then
-          error("id failure")
-        end
         return definition.id
       end
       current.type = function()
         calls.type = calls.type + 1
-        if failure_method == name .. ".type" then
-          error("type failure")
-        end
         return definition.type
       end
       current.parent = function()
         calls.parent = calls.parent + 1
-        if failure_method == name .. ".parent" then
-          error("parent failure")
-        end
         return definition.parent and node(definition.parent)
       end
       current.range = function()
         calls.range = calls.range + 1
-        if failure_method == name .. ".range" then
-          error("range failure")
-        end
         return definition.row, 0, definition.row == 2 and 4 or definition.row, 0
       end
       current.start = function()
         calls.start = calls.start + 1
-        if failure_method == name .. ".start" then
-          error("start failure")
-        end
         return definition.row, 0
       end
       return current
@@ -2859,10 +2863,6 @@ do
   assert_true(not fallback.statement and not fallback.scope_head, "scope-head-only fallback")
   assert_true(calls.parent == 6 and calls.type == 6 and calls.range == 0 and calls.start == 2, "scope-head-only work")
 
-  statements, scope_heads, fallback = evaluate({ statement = {}, scope_head = {} }, nil, "first.id")
-  assert_true(statements[3] and scope_heads[2], "failing node ids should fall back to wrapper identity")
-  assert_true(fallback.statement and not fallback.scope_head, "failing node id fallback metadata")
-
   local parse_calls = 0
   statements, scope_heads, fallback = context.evaluate(
     { highlights = {} },
@@ -2879,13 +2879,6 @@ do
   assert_true(parse_calls == 0, "disabled structural contexts should do no parse work")
   assert_true(next(statements) == nil and next(scope_heads) == nil, "disabled structural contexts should stay empty")
   assert_true(not fallback.statement and not fallback.scope_head, "disabled structural fallback metadata")
-
-  for _, failure in ipairs({ "first.type", "first.parent", "statement.range", "if.start" }) do
-    statements, scope_heads, fallback = evaluate({ statement = {}, scope_head = {} }, nil, failure)
-    assert_true(vim.deep_equal(statements, { [3] = true, [4] = true, [6] = true }), failure .. " statement fallback")
-    assert_true(next(scope_heads) == nil, failure .. " should clear scope heads")
-    assert_true(fallback.statement and fallback.scope_head, failure .. " fallback metadata")
-  end
 end
 
 -- Missing structural parsers fall back safely and obey warning policy.
@@ -3671,19 +3664,15 @@ do
       end,
       text = text,
     }
-    if type(range) == "table" and range.values then
-      result.range = function()
-        calls.ranges[name] = (calls.ranges[name] or 0) + 1
-        return unpack(range.values)
-      end
-    else
-      result.range = range
+    result.range = function()
+      calls.ranges[name] = (calls.ranges[name] or 0) + 1
+      return unpack(range)
     end
     return result
   end
 
   local function ranged(name, node_type, start_row, start_col, end_row, end_col, text, children)
-    return node(name, node_type, { values = { start_row, start_col, end_row, end_col } }, text, children)
+    return node(name, node_type, { start_row, start_col, end_row, end_col }, text, children)
   end
 
   local before_id = ranged("before_id", "identifier", 0, 0, 0, 5, "alpha")
@@ -3693,11 +3682,6 @@ do
   local span_end = ranged("span_end", "identifier", 4, 6, 4, 11, "alpha")
   local intersect_id = ranged("intersect_id", "identifier", 4, 13, 4, 18, "alpha")
   local after_id = ranged("after_id", "identifier", 6, 0, 6, 5, "alpha")
-  local missing_id = ranged("missing_id", "identifier", 3, 0, 3, 5, "alpha")
-  local malformed_id = ranged("malformed_id", "identifier", 3, 6, 3, 11, "alpha")
-  local nonfunction_id = ranged("nonfunction_id", "identifier", 3, 12, 3, 17, "alpha")
-  local reversed_id = ranged("reversed_id", "identifier", 2, 12, 2, 17, "alpha")
-  local negative_id = ranged("negative_id", "identifier", 2, 18, 2, 23, "alpha")
   local ts_root = ranged("root", "chunk", 0, 0, 8, 0, nil, {
     ranged("before", "parent", 0, 0, 1, 5, nil, { before_id }),
     ranged("exclusive", "parent", 0, 0, 2, 0, nil, { exclusive_id }),
@@ -3705,11 +3689,6 @@ do
     ranged("spanning", "parent", 1, 0, 6, 0, nil, { span_start, span_end }),
     ranged("intersecting", "parent", 4, 0, 5, 0, nil, { intersect_id }),
     ranged("after", "parent", 5, 0, 7, 0, nil, { after_id }),
-    node("missing", "parent", nil, nil, { missing_id }),
-    node("malformed", "parent", { values = { "bad", 0, nil, 0 } }, nil, { malformed_id }),
-    node("nonfunction", "parent", {}, nil, { nonfunction_id }),
-    node("reversed", "parent", { values = { 5, 0, 1, 0 } }, nil, { reversed_id }),
-    node("negative", "parent", { values = { -1, 0, -1, 5 } }, nil, { negative_id }),
   })
   vim.treesitter.get_parser = function()
     return {
@@ -3748,16 +3727,11 @@ do
   end
 
   local path, order, meta, ranges = compute({ start_line = 3, end_line = 5 })
-  assert_true(vim.deep_equal(path, { [3] = true, [4] = true, [5] = true }), "pruned path: " .. vim.inspect(path))
-  assert_true(vim.deep_equal(order, { 3, 4, 5 }), "pruned order: " .. vim.inspect(order))
+  assert_true(vim.deep_equal(path, { [3] = true, [5] = true }), "pruned path: " .. vim.inspect(path))
+  assert_true(vim.deep_equal(order, { 3, 5 }), "pruned order: " .. vim.inspect(order))
   assert_true(vim.deep_equal(meta, expected_meta), "pruned metadata: " .. vim.inspect(meta))
   assert_ranges(ranges, {
     { line = 3, start_col = 6, end_col = 11 },
-    { line = 3, start_col = 12, end_col = 17 },
-    { line = 3, start_col = 18, end_col = 23 },
-    { line = 4, start_col = 0, end_col = 5 },
-    { line = 4, start_col = 6, end_col = 11 },
-    { line = 4, start_col = 12, end_col = 17 },
     { line = 5, start_col = 6, end_col = 11 },
     { line = 5, start_col = 13, end_col = 18 },
   }, "pruned ranges")
@@ -3770,55 +3744,25 @@ do
   for _, name in ipairs({ "before", "exclusive", "zero", "after" }) do
     assert_true(calls.ranges[name] == 1 and not calls.children[name], name .. " subtree should be pruned")
   end
-  for _, name in ipairs({
-    "spanning",
-    "intersecting",
-    "missing",
-    "malformed",
-    "nonfunction",
-    "reversed",
-    "negative",
-  }) do
+  for _, name in ipairs({ "spanning", "intersecting" }) do
     assert_true(calls.children[name] == 1, name .. " subtree should be traversed")
   end
-  for _, name in ipairs({
-    "span_start",
-    "span_end",
-    "intersect_id",
-    "missing_id",
-    "malformed_id",
-    "nonfunction_id",
-    "reversed_id",
-    "negative_id",
-  }) do
-    assert_true(calls.ranges[name] == 2 and calls.children[name] == 1, name .. " should be fully visited")
+  for _, name in ipairs({ "span_start", "span_end", "intersect_id" }) do
+    assert_true(calls.ranges[name] == 1 and calls.children[name] == 1, name .. " should be fully visited")
   end
-  assert_true(
-    calls.ranges.malformed == 1
-      and calls.ranges.reversed == 1
-      and calls.ranges.negative == 1
-      and not calls.ranges.missing
-      and not calls.ranges.nonfunction,
-    "fake ranges"
-  )
 
   path, order, meta, ranges = compute({ start_line = 1, end_line = 8 })
   assert_true(
-    vim.deep_equal(path, { [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [7] = true }),
+    vim.deep_equal(path, { [1] = true, [2] = true, [3] = true, [5] = true, [7] = true }),
     "buffer path: " .. vim.inspect(path)
   )
-  assert_true(vim.deep_equal(order, { 1, 2, 3, 4, 5, 7 }), "buffer order: " .. vim.inspect(order))
+  assert_true(vim.deep_equal(order, { 1, 2, 3, 5, 7 }), "buffer order: " .. vim.inspect(order))
   assert_true(vim.deep_equal(meta, expected_meta), "buffer metadata: " .. vim.inspect(meta))
   assert_ranges(ranges, {
     { line = 1, start_col = 0, end_col = 5 },
     { line = 2, start_col = 0, end_col = 5 },
     { line = 3, start_col = 0, end_col = 5 },
     { line = 3, start_col = 6, end_col = 11 },
-    { line = 3, start_col = 12, end_col = 17 },
-    { line = 3, start_col = 18, end_col = 23 },
-    { line = 4, start_col = 0, end_col = 5 },
-    { line = 4, start_col = 6, end_col = 11 },
-    { line = 4, start_col = 12, end_col = 17 },
     { line = 5, start_col = 6, end_col = 11 },
     { line = 5, start_col = 13, end_col = 18 },
     { line = 7, start_col = 0, end_col = 5 },

@@ -413,29 +413,14 @@ local function collect_treesitter_lines(bufnr, symbol, scope, context)
   local scope_end = scope.end_line - 1
 
   local function walk(node)
-    if type(node.range) == "function" then
-      local start_row, start_col, end_row, end_col = node:range()
-      if
-        type(start_row) == "number"
-        and type(start_col) == "number"
-        and type(end_row) == "number"
-        and type(end_col) == "number"
-        and start_row >= 0
-        and start_col >= 0
-        and end_row >= 0
-        and end_col >= 0
-        and (start_row < end_row or (start_row == end_row and start_col <= end_col))
-      then
-        local last_row = end_row - (end_col == 0 and 1 or 0)
-        if start_row > scope_end or last_row < scope_start then
-          return
-        end
-      end
+    local start_row, start_col, end_row, end_col = node:range()
+    local last_row = end_row - (end_col == 0 and 1 or 0)
+    if start_row > scope_end or last_row < scope_start then
+      return
     end
     if is_identifier_like(node:type()) then
       local text = vim.treesitter.get_node_text(node, bufnr)
       if text == symbol then
-        local start_row, start_col, _, end_col = node:range()
         if start_row >= scope_start and start_row <= scope_end then
           lines[start_row + 1] = true
           ranges[#ranges + 1] = {
