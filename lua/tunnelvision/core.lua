@@ -69,7 +69,6 @@ function M.get_buf_state(bufnr)
     pending = false,
     request_id = nil,
     request_handles = {},
-    request_token = nil,
     config = nil,
     render_groups = nil,
   }
@@ -269,7 +268,6 @@ local function apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, rang
   bs.pending = false
   bs.request_id = nil
   bs.request_handles = {}
-  bs.request_token = nil
   bs.path_set, bs.path_order, bs.last_compute_meta, bs.symbol_ranges = path_set, path_order, meta, ranges
   local structural_fallback
   bs.statement_set, bs.scope_head_set, structural_fallback =
@@ -280,60 +278,59 @@ local function apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, rang
   require("tunnelvision.ui").render(bufnr)
 end
 
-local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context, token, lsp_result)
-  local path_set, path_order, meta, ranges, pending = resolver.compute_path(bufnr, symbol, anchor, scope, {
-    direction = cfg.flow_settings.direction,
-    analyzers = cfg.flow_settings.analyzers,
-    max_depth = cfg.flow_settings.max_depth,
-    custom_sources = state.custom_sources,
-    keywords = keywords,
-    lsp_result = lsp_result,
-    mode = cfg.mode,
-    pause_for_lsp = true,
-    resolution_context = context,
-    sources = cfg.sources,
-  })
-  if not pending then
-    apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, ranges, context)
-    return
-  end
-
-  bs.request_token = token
-  local available, reason = resolver.get_lsp_status(bufnr)
-  if not available then
-    local result = resolver.make_lsp_result(reason)
-    resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, pending, token, result)
-    return
-  end
-
-  state.request_seq = state.request_seq + 1
-  bs.pending = true
-  bs.request_id = state.request_seq
-  local request_id = bs.request_id
-  local handles = resolver.request_lsp_highlight(bufnr, anchor, scope, cfg.lsp_timeout_ms, function(result)
-    local current = state.bufs[bufnr]
-    if
-      not current
-      or not current.active
-      or current.request_id ~= request_id
-      or current.symbol ~= symbol
-      or current.config ~= cfg
-      or current.request_token ~= token
-    then
-      return
-    end
-    if not resolver.anchors_equal(current.anchor, anchor) or not resolver.scopes_equal(current.scope, scope) then
-      return
-    end
-    if vim.api.nvim_buf_get_changedtick(bufnr) ~= scope.changedtick then
+local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context)
+  local resolution_context = context
+  local function resolve(lsp_result)
+    local path_set, path_order, meta, ranges, pending = resolver.compute_path(bufnr, symbol, anchor, scope, {
+      direction = cfg.flow_settings.direction,
+      analyzers = cfg.flow_settings.analyzers,
+      max_depth = cfg.flow_settings.max_depth,
+      custom_sources = state.custom_sources,
+      keywords = keywords,
+      lsp_result = lsp_result,
+      mode = cfg.mode,
+      pause_for_lsp = true,
+      resolution_context = resolution_context,
+      sources = cfg.sources,
+    })
+    if not pending then
+      apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, ranges, resolution_context)
       return
     end
 
-    resolve_path(bufnr, current, symbol, anchor, scope, opts, cfg, keywords, pending, token, result)
-  end, pending)
-  if bs.request_id == request_id then
-    bs.request_handles = handles
+    resolution_context = pending
+    local available, reason = resolver.get_lsp_status(bufnr)
+    if not available then
+      resolve(resolver.make_lsp_result(reason))
+      return
+    end
+
+    state.request_seq = state.request_seq + 1
+    bs.pending = true
+    bs.request_id = state.request_seq
+    local request_id = bs.request_id
+    local handles = resolver.request_lsp_highlight(bufnr, anchor, scope, cfg.lsp_timeout_ms, function(result)
+      local current = state.bufs[bufnr]
+      if
+        not current
+        or not current.active
+        or current.request_id ~= request_id
+        or current.symbol ~= symbol
+        or not resolver.anchors_equal(current.anchor, anchor)
+        or not resolver.scopes_equal(current.scope, scope)
+        or vim.api.nvim_buf_get_changedtick(bufnr) ~= scope.changedtick
+      then
+        return
+      end
+
+      resolve(result)
+    end, pending)
+    if bs.request_id == request_id then
+      bs.request_handles = handles
+    end
   end
+
+  resolve()
 end
 
 function M.activate(bufnr, opts)
@@ -371,7 +368,6 @@ function M.activate(bufnr, opts)
 
   bs.pending = false
   bs.request_id = nil
-  bs.request_token = nil
   cancel_requests(bs)
   bs.active = true
   bs.symbol = symbol
@@ -389,7 +385,7 @@ function M.activate(bufnr, opts)
     bs.warned_lsp_strict = false
   end
 
-  resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context, {})
+  resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context)
 
   return true
 end
@@ -400,7 +396,6 @@ function M.deactivate(bufnr)
     bs.active = false
     bs.pending = false
     bs.request_id = nil
-    bs.request_token = nil
     cancel_requests(bs)
     require("tunnelvision.ui").clear_render_groups(bs)
     bs.request_handles = {}

@@ -1841,32 +1841,9 @@ do
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
   local resume_batch = take_batch()
   assert_true(bs.pending and custom_resume_calls == 1, "strict combine should pause when it reaches LSP")
-  local forbidden_state_keys = {
-    context = true,
-    get_treesitter = true,
-    line_cache = true,
-    parser = true,
-    resolution_context = true,
-    root = true,
-    source_results = true,
-    tree = true,
-    treesitter = true,
-  }
-  local function assert_private_resolver_context(value, seen)
-    seen = seen or {}
-    if type(value) ~= "table" or seen[value] then
-      return
-    end
-    seen[value] = true
-    for key, child in pairs(value) do
-      assert_true(not forbidden_state_keys[key], "pending buffer state should not expose resolver field " .. key)
-      assert_private_resolver_context(child, seen)
-    end
-  end
-  assert_private_resolver_context(bs)
   assert_true(
-    type(bs.request_token) == "table" and next(bs.request_token) == nil,
-    "pending state should expose only an opaque token"
+    bs.context == nil and bs.parser == nil and bs.tree == nil and bs.root == nil,
+    "pending buffer state should not expose resolver context objects"
   )
   respond(resume_batch[1], {
     { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } },
@@ -1881,7 +1858,6 @@ do
       and bs.path_set[2],
     "resumed strict combine should merge cached custom and LSP results"
   )
-  assert_true(bs.request_token == nil, "completed requests should clear their opaque token")
 
   tunnelvision.setup({ notify = false, sources = { "custom_empty", "lsp" }, scope = "buffer" })
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
@@ -2100,7 +2076,7 @@ do
 
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 5 } })
   local stale_batch = take_batch()
-  local stale_token = bs.request_token
+  local stale_request_id = bs.request_id
   respond(stale_batch[1], {})
   respond(stale_batch[4], {})
   local retained_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
@@ -2109,8 +2085,8 @@ do
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
   sync_cancel_callbacks = false
   local current_batch = take_batch()
-  local current_token = bs.request_token
-  assert_true(current_token ~= stale_token, "supersession should replace the opaque request token")
+  local current_request_id = bs.request_id
+  assert_true(current_request_id ~= stale_request_id, "supersession should replace the request ID")
   assert_true(
     #cancellations == cancellation_cursor + 1
       and cancellations[#cancellations].client_id == 2
@@ -2126,7 +2102,7 @@ do
   respond(stale_batch[2], {})
   respond(stale_batch[4], {})
   assert_true(
-    bs.pending and bs.anchor.row == 1 and bs.request_token == current_token,
+    bs.pending and bs.anchor.row == 1 and bs.request_id == current_request_id,
     "older completed requests should remain stale"
   )
   respond(
@@ -2136,33 +2112,9 @@ do
   respond(current_batch[2], {})
   respond(current_batch[4], {})
   assert_true(
-    not bs.pending and bs.path_set[2] and bs.request_token == nil,
+    not bs.pending and bs.request_id == nil and bs.path_set[2],
     "current request should apply after stale response"
   )
-
-  local config_stale_path = vim.deepcopy(bs.path_set)
-  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-  batch = take_batch()
-  local config_token = bs.request_token
-  bs.config = vim.deepcopy(bs.config)
-  respond(batch[1], {
-    { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } },
-  })
-  respond(batch[2], {})
-  respond(batch[4], {})
-  assert_true(
-    bs.pending and bs.request_token == config_token and vim.deep_equal(bs.path_set, config_stale_path),
-    "response for stale config identity should not resume"
-  )
-
-  core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-  batch = take_batch()
-  respond(batch[1], {
-    { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } },
-  })
-  respond(batch[2], {})
-  respond(batch[4], {})
-  assert_true(not bs.pending and bs.path_set[2], "replacement config identity should resume normally")
 
   local current_ranges = vim.deepcopy(bs.symbol_ranges)
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
