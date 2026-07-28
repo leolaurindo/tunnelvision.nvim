@@ -110,7 +110,8 @@ end
 
 function M.analyze_text(context)
   local analysis = { assignments = {}, occurrences = {} }
-  local lines = vim.api.nvim_buf_get_lines(context.bufnr, context.scope.start_line - 1, context.scope.end_line, false)
+  local lines = context.get_lines and context.get_lines(context.scope.start_line, context.scope.end_line)
+    or vim.api.nvim_buf_get_lines(context.bufnr, context.scope.start_line - 1, context.scope.end_line, false)
 
   for index, raw in ipairs(lines) do
     local line = context.scope.start_line + index - 1

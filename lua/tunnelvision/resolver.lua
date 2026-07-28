@@ -107,14 +107,77 @@ local function add_ranges(dst, src)
   end
 end
 
-local function normalize_ranges(bufnr, ranges)
+local function ensure_line_cache(context)
+  local changedtick = vim.api.nvim_buf_get_changedtick(context.bufnr)
+  if not context.line_cache or context.line_cache.changedtick ~= changedtick then
+    context.line_cache = { changedtick = changedtick, lines = {} }
+  end
+  return context.line_cache
+end
+
+local function get_lines(context, start_line, end_line)
+  local cache = ensure_line_cache(context)
+  local line_count = vim.api.nvim_buf_line_count(context.bufnr)
+  start_line = math.max(1, start_line)
+  end_line = math.min(line_count, end_line)
+
+  local lnum = start_line
+  while lnum <= end_line do
+    if cache.lines[lnum] == nil then
+      local first = lnum
+      repeat
+        lnum = lnum + 1
+      until lnum > end_line or cache.lines[lnum] ~= nil
+      local fetched = vim.api.nvim_buf_get_lines(context.bufnr, first - 1, lnum - 1, false)
+      for index, line in ipairs(fetched) do
+        cache.lines[first + index - 1] = line
+      end
+    else
+      lnum = lnum + 1
+    end
+  end
+
+  local lines = {}
+  for line = start_line, end_line do
+    lines[#lines + 1] = cache.lines[line]
+  end
+  return lines
+end
+
+local function get_line(context, lnum)
+  return get_lines(context, lnum, lnum)[1] or ""
+end
+
+local function cache_line_numbers(context, line_numbers)
+  table.sort(line_numbers)
+  local index = 1
+  while line_numbers[index] do
+    local first = line_numbers[index]
+    local last = first
+    while line_numbers[index + 1] and line_numbers[index + 1] <= last + 1 do
+      index = index + 1
+      last = line_numbers[index]
+    end
+    get_lines(context, first, last)
+    index = index + 1
+  end
+end
+
+local function normalize_ranges(context, ranges)
+  local bufnr = context.bufnr
   local line_count = vim.api.nvim_buf_line_count(bufnr)
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local out, seen = {}, {}
+  local touched = {}
+  for _, range in ipairs(ranges) do
+    if type(range) == "table" and type(range.line) == "number" then
+      touched[#touched + 1] = math.max(1, math.min(line_count, math.floor(range.line)))
+    end
+  end
+  cache_line_numbers(context, touched)
   for _, range in ipairs(ranges) do
     if type(range) == "table" and type(range.line) == "number" then
       local lnum = math.max(1, math.min(line_count, math.floor(range.line)))
-      local line_len = #(lines[lnum] or "")
+      local line_len = #get_line(context, lnum)
       local start_col = math.max(0, math.min(line_len, math.floor(tonumber(range.start_col) or 0)))
       local end_col = math.max(0, math.min(line_len, math.floor(tonumber(range.end_col) or 0)))
       local key = lnum .. ":" .. start_col .. ":" .. end_col
@@ -373,10 +436,9 @@ local function lsp_character(line, byte, encoding)
   return encoding == "utf-16" and utf16 or utf32
 end
 
-local function collect_lsp_result(bufnr, responses, scope)
+local function collect_lsp_result(context, responses, scope)
   local lines = {}
   local ranges = {}
-  local buffer_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for _, resp in pairs(responses or {}) do
     if resp and resp.result then
       local encoding = resp.offset_encoding or "utf-16"
@@ -385,9 +447,12 @@ local function collect_lsp_result(bufnr, responses, scope)
         if r and r.start and r["end"] then
           local from = r.start.line + 1
           local to = r["end"].line + 1
-          for lnum = math.max(from, scope.start_line), math.min(to, scope.end_line) do
+          local first = math.max(from, scope.start_line)
+          local last = math.min(to, scope.end_line)
+          local buffer_lines = get_lines(context, first, last)
+          for lnum = first, last do
             lines[lnum] = true
-            local text = buffer_lines[lnum] or ""
+            local text = buffer_lines[lnum - first + 1] or ""
             local start_col = lnum == from and lsp_byteindex(text, r.start.character, encoding) or 0
             local end_col = lnum == to and lsp_byteindex(text, r["end"].character, encoding) or #text
             ranges[#ranges + 1] = { line = lnum, start_col = start_col, end_col = end_col }
@@ -438,7 +503,8 @@ function M.cancel_lsp_requests(handles)
   end
 end
 
-function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
+function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done, context)
+  context = context or { bufnr = bufnr }
   local clients = {}
   for _, client in pairs(get_attached_clients(bufnr)) do
     if supports_document_highlight(client, bufnr) then
@@ -463,7 +529,7 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
       return
     end
 
-    local lines, ranges = collect_lsp_result(bufnr, responses, scope)
+    local lines, ranges = collect_lsp_result(context, responses, scope)
     on_done(M.make_lsp_result("ok", lines, true, ranges))
   end
 
@@ -482,7 +548,7 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done)
     end
   end
 
-  local line = vim.api.nvim_buf_get_lines(bufnr, anchor.row, anchor.row + 1, false)[1] or ""
+  local line = get_line(context, anchor.row + 1)
   for _, client in ipairs(clients) do
     local request_client = client
     local encoding = request_client.offset_encoding
@@ -524,11 +590,12 @@ local function sorted_lines(path_set)
   return out
 end
 
-function M.collect_word_matches(bufnr, symbol, scope)
+function M.collect_word_matches(bufnr, symbol, scope, context)
   local word_set = {}
   local word_ranges = {}
 
-  local lines = vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
+  local lines = context and get_lines(context, scope.start_line, scope.end_line)
+    or vim.api.nvim_buf_get_lines(bufnr, scope.start_line - 1, scope.end_line, false)
   for idx, raw in ipairs(lines) do
     local lnum = scope.start_line + idx - 1
     local cleaned = strip_strings_and_comments(raw)
@@ -549,7 +616,7 @@ local function collect_source_result(name, context)
 
   local result
   if name == "word" then
-    local lines, ranges = M.collect_word_matches(context.bufnr, context.symbol, context.scope)
+    local lines, ranges = M.collect_word_matches(context.bufnr, context.symbol, context.scope, context)
     local used = next(lines) ~= nil
     result = {
       lines = lines,
@@ -599,7 +666,7 @@ local function collect_source_result(name, context)
     else
       local lines = {}
       local ranges = {}
-      local buffer_lines = vim.api.nvim_buf_get_lines(context.bufnr, 0, -1, false)
+      local touched = {}
       for lnum, included in pairs(raw_result) do
         if
           included
@@ -607,11 +674,15 @@ local function collect_source_result(name, context)
           and lnum % 1 == 0
           and lnum >= context.scope.start_line
           and lnum <= context.scope.end_line
-          and lnum <= #buffer_lines
+          and lnum <= vim.api.nvim_buf_line_count(context.bufnr)
         then
           lines[lnum] = true
-          add_ranges(ranges, collect_word_ranges(buffer_lines[lnum], context.symbol, lnum))
+          touched[#touched + 1] = lnum
         end
+      end
+      cache_line_numbers(context, touched)
+      for lnum in pairs(lines) do
+        add_ranges(ranges, collect_word_ranges(get_line(context, lnum), context.symbol, lnum))
       end
       local used = next(lines) ~= nil
       result = {
@@ -735,6 +806,10 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
       sources = opts.sources or {},
       symbol = symbol,
     }
+  context.get_lines = context.get_lines
+    or function(start_line, end_line)
+      return get_lines(context, start_line, end_line)
+    end
   if opts.resolution_context and opts.lsp_result then
     context.lsp_result = opts.lsp_result
   end
@@ -752,6 +827,7 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
       keywords = context.keywords,
       scope = scope,
       symbol = symbol,
+      get_lines = context.get_lines,
     }, context.analyzers)
     for key, value in pairs(flow_meta) do
       meta[key] = value
@@ -768,7 +844,7 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
     end
   end
 
-  return path_set, sorted_lines(path_set), meta, normalize_ranges(bufnr, ranges)
+  return path_set, sorted_lines(path_set), meta, normalize_ranges(context, ranges)
 end
 
 return M

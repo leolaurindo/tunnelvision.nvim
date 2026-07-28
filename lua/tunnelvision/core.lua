@@ -329,7 +329,7 @@ local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keyword
     end
 
     resolve_path(bufnr, current, symbol, anchor, scope, opts, cfg, keywords, pending, result)
-  end)
+  end, pending)
   if bs.request_id == request_id then
     bs.request_handles = handles
   end

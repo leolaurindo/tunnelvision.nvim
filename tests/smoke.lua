@@ -1350,6 +1350,126 @@ do
   resolver.collect_word_matches = collect_word_matches
 end
 
+-- Resolver stages share scoped and touched lines within one activation.
+do
+  local resolver = require("tunnelvision.resolver")
+  local cache_buf = new_buffer({
+    "outside before",
+    "local alpha = 1",
+    "",
+    "local beta = alpha",
+    "print(beta)",
+    "outside after",
+  })
+  local anchor = { row = 1, col = 6 }
+  local scope = { start_line = 2, end_line = 5 }
+  local original_get_lines = vim.api.nvim_buf_get_lines
+  local reads = {}
+  vim.api.nvim_buf_get_lines = function(bufnr, first, last, strict)
+    if bufnr == cache_buf then
+      reads[#reads + 1] = { first, last }
+    end
+    return original_get_lines(bufnr, first, last, strict)
+  end
+
+  local path, order, meta, ranges = resolver.compute_path(cache_buf, "alpha", anchor, scope, {
+    analyzers = { "text" },
+    direction = "forward",
+    keywords = resolver.build_keywords({}),
+    mode = "flow",
+    sources = { { kind = "single", name = "word" } },
+  })
+  assert_true(vim.deep_equal(reads, { { 1, 5 } }), "word and text flow should share one scoped line read")
+  assert_true(vim.deep_equal(path, { [2] = true, [4] = true, [5] = true }), "cached flow path")
+  assert_true(vim.deep_equal(order, { 2, 4, 5 }), "cached flow order")
+  assert_ranges(ranges, {
+    { line = 2, start_col = 6, end_col = 11 },
+    { line = 4, start_col = 6, end_col = 10 },
+    { line = 4, start_col = 13, end_col = 18 },
+    { line = 5, start_col = 6, end_col = 10 },
+  }, "cached flow ranges")
+  assert_true(
+    vim.deep_equal(meta, {
+      failed_sources = {},
+      fallback_source = nil,
+      used_lsp = false,
+      used_custom = false,
+      used_word = true,
+      used_fallback = false,
+      fallback_reason = nil,
+      used_source = "word",
+      flow_analyzers = { "text" },
+      flow_analyzer = "text",
+      flow_fallback = false,
+      flow_expanded = true,
+      flow_tracked_count = 2,
+      flow_added_lines = 1,
+    }),
+    "cached flow metadata: " .. vim.inspect(meta)
+  )
+
+  reads = {}
+  local custom_source = function()
+    return { [2] = true, [3] = true, [5] = true }
+  end
+  path, order, meta, ranges = resolver.compute_path(cache_buf, "alpha", anchor, scope, {
+    custom_sources = { custom_cache = custom_source },
+    direction = "forward",
+    keywords = {},
+    mode = "static",
+    sources = { { kind = "single", name = "custom_cache" } },
+  })
+  assert_true(vim.deep_equal(reads, { { 1, 3 }, { 4, 5 } }), "custom lines should read contiguous touched ranges")
+  assert_true(vim.deep_equal(path, { [2] = true, [3] = true, [5] = true }), "cached custom path")
+  assert_true(vim.deep_equal(order, { 2, 3, 5 }), "cached custom order")
+  assert_ranges(ranges, {
+    { line = 2, start_col = 6, end_col = 11 },
+  }, "cached custom ranges should preserve empty lines")
+  assert_true(
+    meta.used_source == "custom_cache" and meta.used_custom and not meta.used_word and not meta.used_lsp,
+    "cached custom metadata"
+  )
+
+  reads = {}
+  local _, _, _, _, pending = resolver.compute_path(cache_buf, "alpha", anchor, scope, {
+    custom_sources = { custom_cache = custom_source },
+    direction = "forward",
+    keywords = {},
+    mode = "static",
+    pause_for_lsp = true,
+    sources = { { kind = "combine", names = { "custom_cache", "lsp" } } },
+  })
+  assert_true(pending ~= nil, "cache invalidation test should suspend for LSP")
+  assert_true(vim.deep_equal(reads, { { 1, 3 }, { 4, 5 } }), "suspended custom source read ranges")
+  assert_true(vim.deep_equal(pending.get_lines(2, 3), { "local alpha = 1", "" }), "cache should retain empty lines")
+  assert_true(#reads == 2, "cached suspended lines should not be fetched again")
+  vim.api.nvim_buf_set_lines(cache_buf, 2, 3, false, { "alpha" })
+  assert_true(
+    vim.deep_equal(pending.get_lines(2, 3), { "local alpha = 1", "alpha" }),
+    "changedtick should invalidate cached contents"
+  )
+  assert_true(vim.deep_equal(reads[3], { 1, 3 }), "changedtick invalidation should refetch the requested range")
+
+  path, order, meta, ranges = resolver.compute_path(cache_buf, "alpha", anchor, scope, {
+    lsp_result = resolver.make_lsp_result("ok", { [3] = true }, true, {
+      { line = 3, start_col = 0, end_col = 99 },
+    }),
+    resolution_context = pending,
+  })
+  assert_true(vim.deep_equal(path, { [2] = true, [3] = true, [5] = true }), "resumed cached path")
+  assert_true(vim.deep_equal(order, { 2, 3, 5 }), "resumed cached order")
+  assert_ranges(ranges, {
+    { line = 2, start_col = 6, end_col = 11 },
+    { line = 3, start_col = 0, end_col = 5 },
+  }, "resumed changedtick ranges")
+  assert_true(
+    meta.used_source == "combine(custom_cache,lsp)" and meta.used_custom and meta.used_lsp,
+    "resumed cached metadata"
+  )
+  assert_true(#reads == 3, "resumed final normalization should reuse changedtick-valid lines")
+  vim.api.nvim_buf_get_lines = original_get_lines
+end
+
 local dynamic_buf = new_buffer({
   "local alpha = 1",
   "local beta = alpha + 1",
@@ -1481,6 +1601,40 @@ do
   end
 
   local lsp_buf = new_buffer({ "😀 alpha alpha", "plain alpha", "alpha", "beta" })
+  local direct_reads = {}
+  local direct_result
+  local original_get_lines = vim.api.nvim_buf_get_lines
+  vim.api.nvim_buf_get_lines = function(bufnr, first, last, strict)
+    if bufnr == lsp_buf then
+      direct_reads[#direct_reads + 1] = { first, last }
+    end
+    return original_get_lines(bufnr, first, last, strict)
+  end
+  require("tunnelvision.resolver").request_lsp_highlight(
+    lsp_buf,
+    { row = 1, col = 6 },
+    { start_line = 1, end_line = 4 },
+    1000,
+    function(result)
+      direct_result = result
+    end
+  )
+  local direct_batch = take_batch()
+  respond(direct_batch[1], {
+    { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } },
+  })
+  respond(direct_batch[2], {})
+  respond(direct_batch[4], {})
+  vim.api.nvim_buf_get_lines = original_get_lines
+  assert_true(direct_result and direct_result.used, "five-argument LSP request callback should remain compatible")
+  assert_ranges(direct_result.ranges, {
+    { line = 3, start_col = 0, end_col = 5 },
+  }, "direct LSP request ranges")
+  assert_true(
+    vim.deep_equal(direct_reads, { { 1, 2 }, { 2, 3 } }),
+    "direct LSP normalization should read only anchor and result lines: " .. vim.inspect(direct_reads)
+  )
+
   local request_count = #requests
   tunnelvision.setup({ notify = false, sources = { "word", "lsp" }, scope = "buffer" })
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
@@ -1608,13 +1762,13 @@ do
   })
   respond(batch[2], {
     { range = { start = { line = 0, character = 3 }, ["end"] = { line = 0, character = 8 } } },
-    { range = { start = { line = 0, character = 9 }, ["end"] = { line = 0, character = 14 } } },
+    { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } },
   })
   fake_clients[1].offset_encoding = "utf-8"
   assert_true(not bs.pending and next(bs.request_handles) == nil, "terminal responses should clear pending handles")
   assert_ranges(bs.symbol_ranges, {
     { line = 1, start_col = 5, end_col = 10 },
-    { line = 1, start_col = 11, end_col = 16 },
+    { line = 2, start_col = 6, end_col = 11 },
   }, "mixed response encodings should normalize and deduplicate byte ranges")
 
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
