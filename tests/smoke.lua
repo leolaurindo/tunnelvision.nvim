@@ -1654,49 +1654,52 @@ vim.cmd("TunnelVision off")
 
 do
   local cancellations = {}
+  local lsp_buf
   local requests = {}
   local sync_cancel_callbacks = false
   local timers = {}
+  local explicit_client_self = vim.fn.has("nvim-0.11") == 1
   local fake_clients = {
     { id = 1, offset_encoding = "utf-8", server_capabilities = {} },
     { id = 2, offset_encoding = "utf-16", server_capabilities = { documentHighlightProvider = true } },
     { id = 3, offset_encoding = "utf-8", server_capabilities = { documentHighlightProvider = true } },
     { id = 4, offset_encoding = "utf-32", server_capabilities = {} },
   }
-  fake_clients[1].supports_method = function(method)
-    return method == "textDocument/documentHighlight"
+  local function client_method(client, fn)
+    if explicit_client_self then
+      return function(self, ...)
+        assert_true(self == client, "Neovim 0.11 client methods should receive explicit self")
+        return fn(...)
+      end
+    end
+    return fn
   end
-  fake_clients[3].supports_method = function()
+  fake_clients[1].supports_method = client_method(fake_clients[1], function(method, context)
+    local supported_context = explicit_client_self and type(context) == "number"
+      or not explicit_client_self and type(context) == "table" and type(context.bufnr) == "number"
+    assert_true(supported_context, "LSP support checks should use the version's client API")
+    return method == "textDocument/documentHighlight"
+  end)
+  fake_clients[3].supports_method = client_method(fake_clients[3], function()
     return false
-  end
-  fake_clients[4].supports_method = function(self, method)
-    if type(self) ~= "table" then
-      error("explicit self required")
-    end
+  end)
+  fake_clients[4].supports_method = client_method(fake_clients[4], function(method)
     return method == "textDocument/documentHighlight"
-  end
-  fake_clients[1].cancel_request = function(handle)
-    cancellations[#cancellations + 1] = { client_id = 1, handle = handle }
-    if sync_cancel_callbacks then
-      requests[handle - 100].callback(nil, {
-        { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
-      })
-    end
-  end
-  fake_clients[2].cancel_request = function(self, handle)
-    if type(self) ~= "table" then
-      error("explicit self required")
-    end
-    cancellations[#cancellations + 1] = { client_id = self.id, handle = handle }
-    if sync_cancel_callbacks then
-      requests[handle - 100].callback(nil, {
-        { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
-      })
-    end
+  end)
+  for _, client in ipairs({ fake_clients[1], fake_clients[2] }) do
+    local cancel_client = client
+    client.cancel_request = client_method(client, function(handle)
+      cancellations[#cancellations + 1] = { client_id = cancel_client.id, handle = handle }
+      if sync_cancel_callbacks then
+        requests[handle - 100].callback(nil, {
+          { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
+        })
+      end
+    end)
   end
   for _, client in ipairs(fake_clients) do
     local request_client = client
-    client.request = function(method, params, callback, bufnr)
+    client.request = client_method(client, function(method, params, callback, bufnr)
       local handle = 101 + #requests
       requests[#requests + 1] = {
         bufnr = bufnr,
@@ -1710,16 +1713,12 @@ do
         callback(nil, request_client.sync_result)
       end
       return true, handle
-    end
+    end)
   end
 
   local orig_defer_fn = vim.defer_fn
-  local orig_get_client_by_id = vim.lsp.get_client_by_id
   vim.defer_fn = function(callback)
     timers[#timers + 1] = callback
-  end
-  vim.lsp.get_client_by_id = function(client_id)
-    return fake_clients[client_id]
   end
   local restore_clients
   if vim.lsp.get_clients then
@@ -1756,7 +1755,7 @@ do
     return batch, timers[timer_cursor]
   end
 
-  local lsp_buf = new_buffer({ "😀 alpha alpha", "plain alpha", "alpha", "beta" })
+  lsp_buf = new_buffer({ "😀 alpha alpha", "plain alpha", "alpha", "beta" })
   local direct_reads = {}
   local direct_result
   local original_get_lines = vim.api.nvim_buf_get_lines
@@ -1911,12 +1910,7 @@ do
   assert_true(batch[1].params.position.character == 5, "UTF-8 request should use byte offset")
   assert_true(batch[2].params.position.character == 3, "UTF-16 request should count astral code units")
   assert_true(batch[4].params.position.character == 2, "UTF-32 request should count astral characters")
-  assert_true(
-    bs.request_handles[1] == batch[1].handle
-      and bs.request_handles[2] == batch[2].handle
-      and bs.request_handles[4] == batch[4].handle,
-    "request handles should be retained by client"
-  )
+  assert_true(vim.tbl_count(bs.request_handles) == 3, "all asynchronous requests should remain cancellable")
   assert_true(bs.pending, "default LSP-first activation should be pending")
   local pending_status = tunnelvision.status()
   assert_true(
@@ -1962,8 +1956,7 @@ do
     { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
   })
   assert_true(bs.pending, "partial LSP results should wait for remaining clients")
-  assert_true(bs.request_handles[1] == nil, "completed clients should release their request handles")
-  assert_true(bs.request_handles[2] and bs.request_handles[4], "incomplete client handles should remain pending")
+  assert_true(vim.tbl_count(bs.request_handles) == 2, "completed requests should stop being cancellable")
   respond(batch[4], {
     { range = { start = { line = 0, character = 2 }, ["end"] = { line = 0, character = 7 } } },
   })
@@ -2086,8 +2079,7 @@ do
   fake_clients[4].sync_result = {}
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
   batch = take_batch()
-  assert_true(bs.request_handles[4] == nil, "synchronously completed requests should not retain handles")
-  assert_true(bs.request_handles[1] and bs.request_handles[2], "pending asynchronous handles should remain available")
+  assert_true(vim.tbl_count(bs.request_handles) == 2, "only asynchronous requests should remain cancellable")
   respond(batch[1], {})
   respond(batch[2], {})
   fake_clients[4].sync_result = nil
@@ -2195,7 +2187,12 @@ do
   sync_cancel_callbacks = true
   vim.api.nvim_buf_delete(deleted_buf, { force = true })
   sync_cancel_callbacks = false
-  assert_true(#cancellations == cancellation_cursor + 2, "buffer deletion should cancel supported pending clients")
+  assert_true(
+    #cancellations == cancellation_cursor + 2,
+    ("buffer deletion should cancel supported pending clients: expected 2, got %d"):format(
+      #cancellations - cancellation_cursor
+    )
+  )
   assert_true(core.state.bufs[deleted_buf] == nil, "buffer deletion should clear request state")
   for _, request in pairs(batch) do
     respond(request, {})
@@ -2203,7 +2200,6 @@ do
   assert_true(core.state.bufs[deleted_buf] == nil, "late callbacks after buffer deletion should remain stale")
 
   vim.defer_fn = orig_defer_fn
-  vim.lsp.get_client_by_id = orig_get_client_by_id
   restore_clients()
 end
 

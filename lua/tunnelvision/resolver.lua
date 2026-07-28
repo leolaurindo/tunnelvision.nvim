@@ -15,6 +15,14 @@
 local flow = require("tunnelvision.flow")
 
 local M = {}
+local client_methods_need_self = vim.fn.has("nvim-0.11") == 1
+
+local function call_client(client, method, ...)
+  if client_methods_need_self then
+    return client[method](client, ...)
+  end
+  return client[method](...)
+end
 
 -- Ignore language keywords when collecting identifiers so word/flow
 -- matching focuses on user symbols instead of syntax tokens.
@@ -364,17 +372,14 @@ end
 
 local function supports_document_highlight(client, bufnr)
   if client.supports_method then
-    local ok, supported = pcall(client.supports_method, "textDocument/documentHighlight", { bufnr = bufnr })
-    if not ok then
-      ok, supported = pcall(client.supports_method, client, "textDocument/documentHighlight", { bufnr = bufnr })
-    end
+    local context = client_methods_need_self and bufnr or { bufnr = bufnr }
+    local ok, supported = pcall(call_client, client, "supports_method", "textDocument/documentHighlight", context)
     if ok and type(supported) == "boolean" then
       return supported
     end
   end
 
-  local caps = client.server_capabilities or client.resolved_capabilities
-  return caps and (caps.documentHighlightProvider or caps.document_highlight)
+  return client.server_capabilities and client.server_capabilities.documentHighlightProvider
 end
 
 local function has_document_highlight_provider(bufnr)
@@ -536,20 +541,15 @@ function M.get_lsp_status(bufnr)
 end
 
 function M.cancel_lsp_requests(handles)
-  for client_id, request_id in pairs(handles or {}) do
-    local client
-    if vim.lsp.get_client_by_id then
-      local ok
-      ok, client = pcall(vim.lsp.get_client_by_id, client_id)
-      client = ok and client or nil
-    end
-    if client and client.cancel_request then
-      local ok = pcall(client.cancel_request, request_id)
-      if not ok then
-        pcall(client.cancel_request, client, request_id)
-      end
-    end
+  local pending = vim.tbl_values(handles or {})
+  for client_id in pairs(handles or {}) do
     handles[client_id] = nil
+  end
+  for _, handle in ipairs(pending) do
+    local client = handle.client
+    if client and client.cancel_request then
+      pcall(call_client, client, "cancel_request", handle.request_id)
+    end
   end
 end
 
@@ -612,13 +612,10 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done, cont
     local callback = function(err, result)
       complete(request_client, encoding, err, result)
     end
-    local ok, sent, handle = pcall(request_client.request, "textDocument/documentHighlight", params, callback, bufnr)
-    if not ok then
-      ok, sent, handle =
-        pcall(request_client.request, request_client, "textDocument/documentHighlight", params, callback, bufnr)
-    end
+    local ok, sent, handle =
+      pcall(call_client, request_client, "request", "textDocument/documentHighlight", params, callback, bufnr)
     if ok and sent and not terminal[request_client.id] then
-      handles[request_client.id] = handle
+      handles[request_client.id] = { client = request_client, request_id = handle }
     else
       complete(request_client, encoding, true)
     end
