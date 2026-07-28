@@ -8,6 +8,18 @@ local function assert_true(cond, msg)
   end
 end
 
+local function parser_or_skip(bufnr, language, coverage)
+  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, language)
+  if ok and parser then
+    return parser
+  end
+  if ({ cpp = true, go = true, rust = true })[language] then
+    print(("tunnelvision smoke: SKIP %s: optional %s parser unavailable (%s)"):format(coverage, language, parser))
+    return
+  end
+  fail(("required %s parser unavailable for %s: %s"):format(language, coverage, parser))
+end
+
 local this_file = debug.getinfo(1, "S").source:sub(2)
 local root = vim.fn.fnamemodify(this_file, ":p:h:h")
 vim.opt.runtimepath:prepend(root)
@@ -207,13 +219,13 @@ do
     "end",
     "print(outside)",
   }, "lua")
-  if pcall(vim.treesitter.get_parser, lua_buf, "lua") then
+  if parser_or_skip(lua_buf, "lua", "real Lua function scope") then
     local scope = resolver.resolve_scope(lua_buf, { row = 2, col = 9 }, nil, "function")
     assert_true(scope.start_line == 2 and scope.end_line == 4, "Lua calls should defer to the enclosing function")
   end
 
   local cpp_buf = new_buffer({ "int outside;", "void foo(int config) {", "  print(config);", "}", "int after;" }, "cpp")
-  if pcall(vim.treesitter.get_parser, cpp_buf, "cpp") then
+  if parser_or_skip(cpp_buf, "cpp", "real C++ function scope") then
     local scope = resolver.resolve_scope(cpp_buf, { row = 1, col = 13 }, nil, "function")
     assert_true(scope.start_line == 2 and scope.end_line == 4, "C++ declarators should defer to function definitions")
   end
@@ -1786,8 +1798,7 @@ do
   assert_true(#requests == request_count and not bs.pending, "successful word before LSP should avoid requests")
   assert_true(bs.last_compute_meta.used_source == "word", "word-first resolution should select word")
 
-  local ok_parser, parser = pcall(vim.treesitter.get_parser, lsp_buf, "lua")
-  if ok_parser and parser then
+  if parser_or_skip(lsp_buf, "lua", "Tree-sitter-first LSP demand") then
     tunnelvision.setup({ notify = false, sources = { "treesitter", "lsp" }, scope = "buffer" })
     core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
     assert_true(#requests == request_count and not bs.pending, "successful treesitter before LSP should avoid requests")
@@ -2294,8 +2305,7 @@ do
     "print(alpha)",
   })
 
-  local ok_parser, parser = pcall(vim.treesitter.get_parser, 0, "lua")
-  if ok_parser and parser then
+  if parser_or_skip(0, "lua", "real Lua Tree-sitter source and flow") then
     -- sources = { "treesitter" } returns identifier lines
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
     tunnelvision.on({ sources = { "treesitter" } })
@@ -2435,8 +2445,7 @@ do
     "callback := func() { nested := alpha }",
     "println(beta)",
   }, "go")
-  local ok_parser, go_parser = pcall(vim.treesitter.get_parser, go_buf, "go")
-  if ok_parser and go_parser then
+  if parser_or_skip(go_buf, "go", "real Go Tree-sitter flow") then
     local go_analysis = require("tunnelvision.flow").analyze_treesitter({
       anchor = { row = 0, col = 0 },
       bufnr = go_buf,
@@ -2454,8 +2463,7 @@ end
 
 do
   local rust_buf = new_buffer({ "let alpha = 1;", "let beta = alpha;", 'println!("{}", beta);' }, "rust")
-  local ok_parser, rust_parser = pcall(vim.treesitter.get_parser, rust_buf, "rust")
-  if ok_parser and rust_parser then
+  if parser_or_skip(rust_buf, "rust", "real Rust Tree-sitter flow") then
     local rust_analysis = require("tunnelvision.flow").analyze_treesitter({
       anchor = { row = 0, col = 4 },
       bufnr = rust_buf,
@@ -2489,8 +2497,8 @@ do
     "end",
   })
 
-  local ok_parser, parser = pcall(vim.treesitter.get_parser, 0, "lua")
-  if ok_parser and parser then
+  local parser = parser_or_skip(0, "lua", "real Lua structural contexts")
+  if parser then
     vim.api.nvim_win_set_cursor(0, { 2, 10 })
     tunnelvision.on({ highlights = { statement = true, scope_head = true } })
     local bs = core.get_buf_state(structural_buf)
@@ -3160,6 +3168,7 @@ do
   local setup_configs = {}
   local set_hl_calls = {}
   local style_deepcopy_calls = 0
+  local deepcopy_depth = 0
   local function reset_highlight_calls()
     deepcopy_calls = 0
     normal_bg_calls = 0
@@ -3172,23 +3181,30 @@ do
     return orig_ensure_highlights(cfg)
   end
   vim.deepcopy = function(value, ...)
-    deepcopy_calls = deepcopy_calls + 1
-    if
-      type(value) == "table"
-      and (
-        value.fg ~= nil
-        or value.bg ~= nil
-        or value.bold ~= nil
-        or value.italic ~= nil
-        or value.underline ~= nil
-        or value.undercurl ~= nil
-        or value.strikethrough ~= nil
-        or value.bg_opacity ~= nil
-      )
-    then
-      style_deepcopy_calls = style_deepcopy_calls + 1
+    -- Neovim 0.9 recurses through vim.deepcopy; count only calls made by the plugin.
+    local top_level = deepcopy_depth == 0
+    deepcopy_depth = deepcopy_depth + 1
+    if top_level then
+      deepcopy_calls = deepcopy_calls + 1
+      if
+        type(value) == "table"
+        and (
+          value.fg ~= nil
+          or value.bg ~= nil
+          or value.bold ~= nil
+          or value.italic ~= nil
+          or value.underline ~= nil
+          or value.undercurl ~= nil
+          or value.strikethrough ~= nil
+          or value.bg_opacity ~= nil
+        )
+      then
+        style_deepcopy_calls = style_deepcopy_calls + 1
+      end
     end
-    return orig_deepcopy(value, ...)
+    local copy = orig_deepcopy(value, ...)
+    deepcopy_depth = deepcopy_depth - 1
+    return copy
   end
   vim.api.nvim_get_hl = function(namespace, opts)
     if opts.name == "Normal" then
@@ -3215,6 +3231,11 @@ do
     return vim.api.nvim_buf_get_extmarks(bufnr, core.state.ns, 0, -1, { details = true })
   end
 
+  local function mark_priority(details)
+    -- Neovim 0.9 omits priority from line-highlight extmark details.
+    return details.priority or (details.line_hl_group and 1000)
+  end
+
   local function mark_snapshot(bufnr)
     local out = {}
     for _, mark in ipairs(marks(bufnr)) do
@@ -3225,7 +3246,7 @@ do
         details.end_col,
         details.hl_group,
         details.line_hl_group,
-        details.priority,
+        mark_priority(details),
       }
     end
     return out
@@ -3278,7 +3299,7 @@ do
       { 0, 17, 20, "TunnelVisionDim", nil, 1000 },
       { 1, 0, nil, nil, "TunnelVisionDim", 1000 },
     }),
-    "empty styles should preserve exact visible geometry"
+    "empty styles should preserve exact visible geometry: " .. vim.inspect(mark_snapshot(render_buf))
   )
 
   bs = core.get_buf_state(render_buf)
@@ -3342,12 +3363,12 @@ do
     "symbol attributes should override conflicts and inherit other attributes"
   )
   assert_true(composed_marks[4][4].hl_group == symbol_group, "equal effective symbol styles should reuse a group")
-  assert_true(composed_marks[1][4].priority == 1100, "positive styles should use positive priority")
+  assert_true(mark_priority(composed_marks[1][4]) == 1100, "positive styles should use positive priority")
   assert_true(
     line_group:match("^TunnelVisionHighlight" .. render_buf .. "_"),
     "positive groups should be buffer-specific"
   )
-  assert_true(composed_marks[6][4].priority == 1000, "dim priority should remain below positive styles")
+  assert_true(mark_priority(composed_marks[6][4]) == 1000, "dim priority should remain below positive styles")
   local composed_snapshot = mark_snapshot(render_buf)
   assert_true(
     vim.deep_equal(composed_snapshot, {

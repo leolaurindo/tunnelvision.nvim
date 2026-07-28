@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - "lua/**"
@@ -18,6 +19,9 @@ on:
       - ".luacheckrc"
       - "stylua.toml"
 
+permissions:
+  contents: read
+
 jobs:
   checks:
     name: Neovim ${{ matrix.nvim }}
@@ -25,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        nvim: [stable, nightly]
+        nvim: [v0.9.5, v0.10.4, stable, nightly]
 
     steps:
       - name: Checkout
@@ -62,7 +66,7 @@ jobs:
         run: luacheck lua tests
 
       - name: Headless smoke test
-        run: nvim --headless -u NONE -c "luafile tests/smoke.lua" -c "qa!"
+        run: nvim --headless -u NONE -l tests/smoke.lua
 
       - name: Help tags
-        run: nvim --headless -u NONE -c "helptags doc" -c "qa!"
+        run: nvim --headless -u NONE -l tests/helptags.lua
