@@ -1,4 +1,4 @@
-*tunnelvision.txt*  Focus one symbol path at a time.      Last change: 2026 Jul 26
+*tunnelvision.txt*  Focus one symbol path at a time.      Last change: 2026 Jul 29
 
 ===============================================================================
 CONTENTS                                                    *tunnelvision*
@@ -23,7 +23,7 @@ TunnelVision dims unrelated lines and keeps attention on the targeted symbol.
 Modes >
   static   Track the symbol selected on activation.
   dynamic  Retarget as the cursor moves.
-  flow     Experimental mode (requires word-enabled chain).
+  flow     Expand a successful source path through assignment relationships.
 <
 
 Scope controls where matching is searched >
@@ -47,7 +47,7 @@ lazy.nvim >lua
   }
 <
 
-vim.pack >lua
+vim.pack (Neovim 0.12+) >lua
   vim.pack.add({ "https://github.com/leolaurindo/tunnelvision.nvim" })
   require("tunnelvision").setup()
 <
@@ -83,7 +83,8 @@ Call `require("tunnelvision").setup()` first so `:TunnelVision` is available.
   :TunnelVision off
 
 Use |:TunnelVision| with subcommands. `mode`, `direction`, `scope`, and `source`
-show the current value when called without an argument.
+show their persistent defaults when called without an argument. Use
+`:TunnelVision status` to inspect the active buffer configuration.
 
 ===============================================================================
 4. Commands                                               *tunnelvision-commands*
@@ -111,20 +112,20 @@ show the current value when called without an argument.
       Recompute the current path.
 
   :TunnelVision status
-      Show current state, mode, direction, scope, source chain, and symbol.
+      Show active-buffer state, mode, direction, scope, source chain, and symbol.
 
   :TunnelVision mode [static|flow|dynamic]
-      Query or set the current mode.
+      Query or set the persistent mode default.
 
-  :TunnelVision direction [forward|both]
-      Query or set the current flow direction.
+  :TunnelVision direction [forward|backward|both]
+      Query or set the persistent flow-direction default.
       Direction is used only in flow mode.
 
   :TunnelVision scope [function|buffer]
-      Query or set the current search scope.
+      Query or set the persistent search-scope default.
 
   :TunnelVision source [value]
-      Query or set the current source chain.
+      Query or set the persistent source-chain default.
 
       Supported command values include:
         word
@@ -170,8 +171,8 @@ Options >
   flow_settings.direction       forward | backward | both
   flow_settings.extra_keywords  extra identifiers ignored in flow analysis
   flow_settings.analyzers       ordered treesitter | text fallback chain
-  flow_settings.max_depth       optional positive hop limit; nil uses 32
-  fallback_warn                 legacy LSP-to-word and structural: once | always | never
+  flow_settings.max_depth       positive hop limit capped at 32; nil uses 32
+  fallback_warn                 LSP fallback and structural: once | always | never
   lsp_timeout_ms                timeout for async LSP documentHighlight requests
   highlights                    visual contexts and positive styles
   dim                           nil, "none", highlight group, #RRGGBB, or table
@@ -183,6 +184,10 @@ By default, `dim = nil` derives TunnelVision's dim style from your colorscheme's
 `Comment` highlight. Use `dim = "Comment"` only when you want to explicitly copy
 that highlight group. `dim = "none"` disables dimming but retains positive
 highlight styles.
+
+`fallback_warn` controls legacy LSP-to-word and structural warnings. Strict LSP
+mode warns once per buffer when unavailable regardless of this setting. All
+notifications, including command queries and status output, respect `notify`.
 
 Flow analyzers are separate from sources. Sources choose the initial matching
 path; flow analyzers expand assignments from the active symbol. The default
@@ -252,7 +257,7 @@ Fallback chain >lua
 Source engines >
   lsp         Semantic and async when documentHighlight is supported.
   treesitter  Syntax-aware, parser-based, and not semantic.
-  word        Textual, broad, language-agnostic fallback.
+  word        Textual, broad, language-agnostic fallback with lightweight masking.
 <
 
 `combine(...)` creates one strict combined source step. It behaves like "all":
@@ -317,6 +322,10 @@ Tree-sitter limitations >
   - Does not resolve imports, aliases, type inference, or external identity.
   - Depends on installed parser quality and grammar node names.
 <
+
+Word matching masks common single-line quoted strings and `//`, `#`, and `--`
+comment suffixes. It is intentionally lightweight and does not parse every
+language's string or comment syntax.
 
 ===============================================================================
 8. Visual focus                              *tunnelvision-visual-focus*
@@ -388,10 +397,10 @@ Examples >lua
 
 Symbol geometry belongs to the source that wins the chain. LSP uses returned
 document-highlight ranges, Tree-sitter uses exact matching identifier nodes,
-and `word` uses exact whole-word occurrences outside masked strings/comments.
-Custom source lines derive active-symbol ranges where present. In flow mode with
-a word-enabled chain, ranges for all tracked, flow-relevant identifiers are
-added on flow path lines.
+and `word` uses exact whole-word occurrences after lightweight masking. Custom
+source lines derive active-symbol ranges where present. In flow mode, any
+successful source can seed expansion, and ranges for all tracked, flow-relevant
+identifiers are added on flow path lines.
 
 `statement` and `scope_head` use Tree-sitter independently of `sources`. They do
 not require the `treesitter` source, and LSP does not resolve them. Lookup starts
@@ -403,8 +412,6 @@ to path lines and `scope_head` is skipped. Warnings obey
 
 Structural lines never become navigation targets. `next` and `prev` continue
 through source/flow path lines only.
-
-===============================================================================
 
 ===============================================================================
 9. Migration                                            *tunnelvision-migration*
