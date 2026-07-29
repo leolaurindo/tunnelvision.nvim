@@ -1323,15 +1323,32 @@ do
     "LSP reached after an earlier failure should retain fallback metadata"
   )
 
-  tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+  tunnelvision.setup({
+    notify = false,
+    source = "word",
+    scope = "buffer",
+    dim = "none",
+    highlights = { line = { fg = 0x112233 } },
+  })
   vim.api.nvim_win_set_cursor(0, { 2, 6 })
   vim.cmd("TunnelVision on")
   bs = core.get_buf_state(lsp_buf)
   local old_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
-  assert_true(#old_marks > 0, "word render should create dim extmarks")
+  local function mark_geometry(marks)
+    return vim.tbl_map(function(mark)
+      return { mark[2], mark[3], mark[4] }
+    end, marks)
+  end
+  assert_true(#old_marks > 0, "word render should create styled extmarks")
   bs.last_compute_meta = { flow_analyzer = "text", flow_expanded = true, flow_tracked_count = 2 }
 
-  tunnelvision.setup({ notify = false, scope = "buffer", lsp_timeout_ms = 1000 })
+  tunnelvision.setup({
+    notify = false,
+    scope = "buffer",
+    dim = "none",
+    highlights = { line = { fg = 0xAABBCC } },
+    lsp_timeout_ms = 1000,
+  })
   core.activate(lsp_buf, { silent = true, symbol = "alpha", cursor = { 1, 5 } })
   local batch = take_batch()
   local timeout
@@ -1354,24 +1371,49 @@ do
     "pending LSP request should retain the previous render"
   )
   local ui = require("tunnelvision.ui")
+  local resolver = require("tunnelvision.resolver")
   local orig_ensure_highlights = ui.ensure_highlights
-  local pending_config, pending_groups = bs.config, vim.deepcopy(bs.render_groups)
+  local orig_compute_path = resolver.compute_path
+  local pending_config, rendered_config, request_id = bs.config, bs.rendered_config, bs.request_id
   local pending_config_setups = 0
+  local compute_calls = 0
   ui.ensure_highlights = function(cfg)
     if cfg == pending_config then
       pending_config_setups = pending_config_setups + 1
     end
     return orig_ensure_highlights(cfg)
   end
+  resolver.compute_path = function(...)
+    compute_calls = compute_calls + 1
+    return orig_compute_path(...)
+  end
+  local old_group = old_marks[1][4].hl_group
+  vim.api.nvim_set_hl(0, old_group, {})
+  assert_true(
+    next(vim.api.nvim_get_hl(0, { name = old_group, link = false })) == nil,
+    "colorscheme should clear old groups"
+  )
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   ui.ensure_highlights = orig_ensure_highlights
+  resolver.compute_path = orig_compute_path
+  local recreated_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
   assert_true(
-    vim.deep_equal(vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true }), old_marks),
+    vim.deep_equal(mark_geometry(recreated_marks), mark_geometry(old_marks)),
     "ColorScheme should preserve retained extmarks while LSP is pending"
   )
+  local recreated_group = recreated_marks[1][4].hl_group
   assert_true(
-    pending_config_setups == 0 and bs.config == pending_config and vim.deep_equal(bs.render_groups, pending_groups),
-    "pending ColorScheme should not setup or replace pending render state"
+    vim.api.nvim_get_hl(0, { name = recreated_group, link = false }).fg == 0x112233,
+    "pending ColorScheme should recreate the last rendered style"
+  )
+  assert_true(
+    pending_config_setups == 0
+      and compute_calls == 0
+      and bs.pending
+      and bs.request_id == request_id
+      and bs.config == pending_config
+      and bs.rendered_config == rendered_config,
+    "pending ColorScheme should preserve pending config, request, and cached render state"
   )
 
   fake_clients[1].offset_encoding = "utf-16"
@@ -1388,6 +1430,13 @@ do
   })
   fake_clients[1].offset_encoding = "utf-8"
   assert_true(not bs.pending, "terminal responses should clear pending state")
+  local completed_group =
+    vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })[1][4].hl_group
+  assert_true(
+    bs.rendered_config == pending_config
+      and vim.api.nvim_get_hl(0, { name = completed_group, link = false }).fg == 0xAABBCC,
+    "completed request should apply the pending style"
+  )
   assert_ranges(bs.symbol_ranges, {
     { line = 1, start_col = 5, end_col = 10 },
     { line = 2, start_col = 6, end_col = 11 },

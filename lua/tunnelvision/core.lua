@@ -70,6 +70,7 @@ function M.get_buf_state(bufnr)
     request_id = nil,
     request_handles = {},
     config = nil,
+    rendered_config = nil,
     render_groups = nil,
   }
   state.bufs[bufnr] = s
@@ -80,6 +81,9 @@ function M.clear_buf_state(bufnr)
   local bs = state.bufs[bufnr]
   state.bufs[bufnr] = nil
   cancel_requests(bs)
+  if bs then
+    bs.rendered_config = nil
+  end
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
   require("tunnelvision.ui").clear_render_groups(bs)
 end
@@ -354,7 +358,7 @@ function M.activate(bufnr, opts)
   local bs = M.get_buf_state(bufnr)
   local reuse_scope = not opts.force and opts.reuse_scope ~= false
   local scope = resolver.resolve_scope(bufnr, anchor, reuse_scope and bs.scope or nil, cfg.scope, context)
-  local keep_render = bs.active and not bs.pending and next(bs.path_set) ~= nil
+  local keep_render = bs.active and bs.rendered_config and next(bs.path_set) ~= nil
   if
     bs.active
     and bs.symbol == symbol
@@ -376,6 +380,7 @@ function M.activate(bufnr, opts)
   bs.request_handles = {}
   bs.config = cfg
   if not keep_render then
+    bs.rendered_config = nil
     bs.path_set = {}
     bs.path_order = {}
     bs.symbol_ranges = {}
@@ -410,6 +415,7 @@ function M.deactivate(bufnr)
     bs.last_compute_meta = nil
     bs.warned_large_buffer = false
     bs.config = nil
+    bs.rendered_config = nil
   end
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
 end
