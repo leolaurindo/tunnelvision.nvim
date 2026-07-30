@@ -32,9 +32,9 @@ Scope controls where matching is searched >
 <
 
 Source chains describe how matching lines are found. The default is LSP first,
-then word fallback:
+then Tree-sitter, then word fallback:
 >
-  sources = { "lsp", "word" }
+  sources = { "lsp", "treesitter", "word" }
 <
 
 ===============================================================================
@@ -149,7 +149,7 @@ Default shape >lua
   require("tunnelvision").setup({
     mode = "static",
     scope = "function",
-    sources = { "lsp", "word" },
+    sources = { "lsp", "treesitter", "word" },
     flow_settings = {
       direction = "forward",
       extra_keywords = {},

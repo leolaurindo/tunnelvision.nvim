@@ -51,7 +51,7 @@ local function new_buffer(lines, filetype)
 end
 
 local function assert_default_visual_config(msg)
-  assert_true(config.format_sources(core.state.config.sources) == "lsp,word", msg .. " sources")
+  assert_true(config.format_sources(core.state.config.sources) == "lsp,treesitter,word", msg .. " sources")
   assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), msg .. " highlights")
   assert_true(core.state.config.dim == nil, msg .. " dim")
 end
@@ -235,8 +235,8 @@ tunnelvision.setup()
 assert_default_visual_config("bare setup")
 
 tunnelvision.setup({ notify = false })
-assert_sources({ "lsp", "word" }, "default sources")
-assert_true(config.format_sources(core.state.config.sources) == "lsp,word", "format_sources default")
+assert_sources({ "lsp", "treesitter", "word" }, "default sources")
+assert_true(config.format_sources(core.state.config.sources) == "lsp,treesitter,word", "format_sources default")
 
 local forced_scope_buf = new_buffer({ "one", "two", "three" }, "plaintext")
 tunnelvision.on({ source = "word", scope = "buffer", symbol = "two", cursor = { 2, 0 } })
@@ -429,7 +429,7 @@ assert_sources({ "lsp", "word" }, "comma-separated fallback chain lsp,word")
 tunnelvision.setup({ notify = false })
 local sources_copy = tunnelvision.get_sources()
 sources_copy[1] = "word"
-assert_sources({ "lsp", "word" }, "get_sources should return an isolated copy")
+assert_sources({ "lsp", "treesitter", "word" }, "get_sources should return an isolated copy")
 for _, value in ipairs({ "treesitter", "lsp,treesitter,word" }) do
   vim.cmd("TunnelVision source " .. value)
   assert_sources(vim.split(value, ",", { plain = true }), "Tree-sitter command source " .. value)
@@ -573,7 +573,7 @@ do
   assert_sources({ "word" }, "late one-shot source should not mutate global sources")
 
   tunnelvision.setup({ notify = false, sources = { "custom_unavailable" } })
-  assert_sources({ "lsp", "word" }, "unavailable custom source should normalize to the default fallback")
+  assert_sources({ "lsp", "treesitter", "word" }, "unavailable custom source should normalize to the default fallback")
 end
 
 tunnelvision.setup({ notify = false, source = "lsp", scope = "buffer" })
@@ -1470,7 +1470,7 @@ do
     respond(request, nil, { code = -1, message = "boom" })
   end
   local fallback_meta = bs.last_compute_meta
-  assert_true(not bs.pending and fallback_meta.used_source == "word", "total errors should use fallback chain")
+  assert_true(not bs.pending and fallback_meta.used_source == "treesitter", "total errors should use fallback chain")
   assert_true(
     fallback_meta.failed_sources[1] == "lsp"
       and fallback_meta.fallback_source == "lsp"
@@ -1485,7 +1485,7 @@ do
   timeout()
   sync_cancel_callbacks = false
   assert_true(
-    was_canceled(batch[1]) and was_canceled(batch[2]) and bs.last_compute_meta.used_source == "word",
+    was_canceled(batch[1]) and was_canceled(batch[2]) and bs.last_compute_meta.used_source == "treesitter",
     "reentrant total timeout should cancel its owned requests and fall back"
   )
 

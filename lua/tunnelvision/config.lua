@@ -25,7 +25,7 @@ local defaults = {
     analyzers = { "treesitter", "text" },
   },
   source = "lsp_else_word",
-  sources = { "lsp", "word" },
+  sources = { "lsp", "treesitter", "word" },
   fallback_warn = "once",
   highlights = { line = true },
   dim = nil,

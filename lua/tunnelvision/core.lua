@@ -103,7 +103,7 @@ M.combine = config.combine
 function M.configure(opts)
   opts = opts or {}
   state.config = vim.tbl_deep_extend("force", vim.deepcopy(config.defaults), opts)
-  if opts.sources == nil then
+  if opts.source ~= nil and opts.sources == nil then
     state.config.sources = nil
   end
   if opts.highlights ~= nil then

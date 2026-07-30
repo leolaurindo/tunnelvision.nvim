@@ -42,7 +42,9 @@ function M.check()
 
   local clients = get_clients()
   if vim.tbl_isempty(clients) then
-    vim.health.warn('No active LSP clients detected; use sources = { "lsp", "word" } for automatic word fallback')
+    vim.health.warn(
+      'No active LSP clients detected; sources = { "lsp", "treesitter", "word" } will use local fallbacks'
+    )
   elseif has_doc_highlight(clients) then
     vim.health.ok("At least one active LSP client supports documentHighlight")
   else
