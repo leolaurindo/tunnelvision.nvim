@@ -431,7 +431,7 @@ local function ensure_commands(api)
     end, sub.values)
   end
 
-  vim.api.nvim_create_user_command("TunnelVision", function(opts)
+  local function command(opts)
     local args = vim.split(vim.trim(opts.args or ""), "%s+", { trimempty = true })
     local sub = subcommands[args[1]]
     if not sub then
@@ -468,11 +468,15 @@ local function ensure_commands(api)
     end
 
     sub.run()
-  end, {
-    complete = complete,
-    desc = "Control tunnel vision",
-    nargs = "*",
-  })
+  end
+
+  for _, name in ipairs({ "TunnelVision", "Tunnelvision" }) do
+    vim.api.nvim_create_user_command(name, command, {
+      complete = complete,
+      desc = "Control tunnel vision",
+      nargs = "*",
+    })
+  end
 end
 
 local function ensure_autocmds()

@@ -372,6 +372,7 @@ tunnelvision.setup({ notify = false, source = "word" })
 assert_sources({ "word" }, "legacy source should normalize to sources")
 
 assert_true(vim.fn.exists(":TunnelVision") == 2, "missing command: TunnelVision")
+assert_true(vim.fn.exists(":Tunnelvision") == 2, "missing command alias: Tunnelvision")
 
 local first_buf = new_buffer({
   "local value = 1",
@@ -381,7 +382,7 @@ local first_buf = new_buffer({
 })
 vim.api.nvim_win_set_cursor(0, { 1, 7 }) -- value
 
-vim.cmd("TunnelVision on")
+vim.cmd("Tunnelvision on")
 assert_true(tunnelvision.is_active(0), "activation failed")
 
 vim.api.nvim_win_set_cursor(0, { 2, 7 }) -- copy
