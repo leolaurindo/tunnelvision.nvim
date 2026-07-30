@@ -32,6 +32,7 @@ styles. The default remains unchanged line focus with Comment-derived dimming.
   analyzer/expansion metadata through `status()`.
 
 ### Changed
+- The default source chain is now LSP, Tree-sitter, then word fallback.
 - Statement and scope-head highlighting now uses Tree-sitter independently of
   symbol source selection. LSP, Tree-sitter, word, and custom source paths can all
   gain structural context. Unsafe statements fall back to matched lines, missing
