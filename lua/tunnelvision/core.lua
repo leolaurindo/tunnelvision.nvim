@@ -78,6 +78,7 @@ function M.get_buf_state(bufnr)
 end
 
 function M.clear_buf_state(bufnr)
+  require("tunnelvision.ui").cancel_edit_refresh(bufnr)
   local bs = state.bufs[bufnr]
   state.bufs[bufnr] = nil
   cancel_requests(bs)
@@ -398,6 +399,7 @@ function M.activate(bufnr, opts)
 end
 
 function M.deactivate(bufnr)
+  require("tunnelvision.ui").cancel_edit_refresh(bufnr)
   local bs = state.bufs[bufnr]
   if bs then
     bs.active = false
