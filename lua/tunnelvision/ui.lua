@@ -3,15 +3,42 @@ local core = require("tunnelvision.core")
 local M = {}
 
 local DYNAMIC_DEBOUNCE_MS = 35
+local EDIT_DEBOUNCE_MS = 75
 
 local state = {
   commands_set = false,
   augroup = nil,
   dynamic_seq = {},
+  edit_timers = {},
 }
 
 local function cancel_dynamic_activate(bufnr)
   state.dynamic_seq[bufnr] = (state.dynamic_seq[bufnr] or 0) + 1
+end
+
+local function cancel_edit_refresh(bufnr)
+  local timer = state.edit_timers[bufnr]
+  if timer then
+    timer:stop()
+    timer:close()
+    state.edit_timers[bufnr] = nil
+  end
+end
+
+local function schedule_edit_refresh(bufnr)
+  cancel_edit_refresh(bufnr)
+  local timer
+  timer = vim.defer_fn(function()
+    if state.edit_timers[bufnr] ~= timer or not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+
+    state.edit_timers[bufnr] = nil
+    if core.is_active(bufnr) then
+      core.refresh(bufnr)
+    end
+  end, EDIT_DEBOUNCE_MS)
+  state.edit_timers[bufnr] = timer
 end
 
 local function schedule_dynamic_activate(bufnr, symbol, cursor)
@@ -43,6 +70,8 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
     })
   end, DYNAMIC_DEBOUNCE_MS)
 end
+
+M.cancel_edit_refresh = cancel_edit_refresh
 
 function M.ensure_highlights(config)
   config = config or core.state.config
@@ -526,7 +555,7 @@ local function ensure_autocmds()
     callback = function(args)
       cancel_dynamic_activate(args.buf)
       if core.is_active(args.buf) then
-        core.refresh(args.buf)
+        schedule_edit_refresh(args.buf)
       end
     end,
   })

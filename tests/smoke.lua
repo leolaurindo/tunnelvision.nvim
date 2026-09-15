@@ -1123,6 +1123,91 @@ assert_true(no_op == false, "identical activate should no-op")
 
 vim.cmd("TunnelVision off")
 
+-- Edit bursts coalesce into one refresh, which explicit actions cancel.
+do
+  local edit_buf = new_buffer({
+    "local alpha = 1",
+    "local beta = alpha + 1",
+  })
+  vim.api.nvim_win_set_cursor(0, { 1, 8 })
+  core.configure({ notify = false, source = "word", mode = "static", scope = "function" })
+  core.activate(edit_buf, { silent = true, symbol = "alpha", cursor = { 1, 8 } })
+
+  local deferred = {}
+  local orig_defer_fn = vim.defer_fn
+  vim.defer_fn = function(callback, timeout)
+    local timer = { callback = callback, timeout = timeout }
+    function timer:stop()
+      self.stopped = true
+    end
+    function timer:close()
+      self.closed = true
+    end
+    deferred[#deferred + 1] = timer
+    return timer
+  end
+
+  local refreshes = 0
+  local orig_refresh = core.refresh
+  core.refresh = function(bufnr)
+    refreshes = refreshes + 1
+    return orig_refresh(bufnr)
+  end
+
+  local function edit(line)
+    vim.api.nvim_buf_set_lines(edit_buf, 0, 1, false, { line })
+    vim.api.nvim_exec_autocmds("TextChanged", { buffer = edit_buf })
+  end
+
+  edit("local alpha = 2")
+  edit("local beta = 3")
+  edit("local gamma = 4")
+  assert_true(
+    deferred[1].stopped and deferred[1].closed and deferred[2].stopped and deferred[2].closed,
+    "newer edits should replace the pending timer"
+  )
+  assert_true(not deferred[3].stopped and deferred[3].timeout == 75, "the latest edit should retain one 75 ms timer")
+
+  deferred[3].callback()
+  local edit_state = core.get_buf_state(edit_buf)
+  assert_true(refreshes == 1, "edit burst should refresh once")
+  assert_true(
+    edit_state.path_set[1]
+      and edit_state.path_set[2]
+      and #edit_state.symbol_ranges == 1
+      and edit_state.symbol_ranges[1].line == 2
+      and edit_state.scope.changedtick == vim.api.nvim_buf_get_changedtick(edit_buf),
+    "debounced refresh should use the latest tick and contents"
+  )
+
+  deferred = {}
+  edit("local alpha = 5")
+  local explicit_timer = deferred[1]
+  local before_explicit = refreshes
+  core.refresh(edit_buf)
+  assert_true(explicit_timer.stopped and explicit_timer.closed, "explicit refresh should cancel the queued timer")
+  assert_true(refreshes == before_explicit + 1, "explicit refresh should run immediately")
+
+  deferred = {}
+  edit("local alpha = 6")
+  local inactive_timer = deferred[1]
+  core.deactivate(edit_buf)
+  assert_true(inactive_timer.stopped and inactive_timer.closed, "deactivation should cancel the queued timer")
+
+  core.activate(edit_buf, { silent = true, symbol = "alpha", cursor = { 1, 8 } })
+  deferred = {}
+  edit("local alpha = 7")
+  local deleted_timer = deferred[1]
+  vim.api.nvim_buf_delete(edit_buf, { force = true })
+  assert_true(
+    deleted_timer.stopped and deleted_timer.closed and core.state.bufs[edit_buf] == nil,
+    "buffer deletion should cancel the queued timer and clear state"
+  )
+
+  core.refresh = orig_refresh
+  vim.defer_fn = orig_defer_fn
+end
+
 do
   local cancellations = {}
   local lsp_buf
@@ -1586,15 +1671,25 @@ do
     "current request should apply after stale response"
   )
 
-  local current_ranges = vim.deepcopy(bs.symbol_ranges)
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-  batch = take_batch()
+  local pre_edit_batch = take_batch()
   vim.api.nvim_buf_set_lines(lsp_buf, 1, 2, false, { "edited alpha" })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = lsp_buf })
+  local edit_refresh = timers[#timers]
+  assert_true(
+    not was_canceled(pre_edit_batch[1]) and not was_canceled(pre_edit_batch[2]),
+    "edit debounce should retain pending LSP requests during the delay"
+  )
+  edit_refresh()
+  timer_cursor = timer_cursor + 1
+  batch = take_batch()
+  assert_true(
+    was_canceled(pre_edit_batch[1]) and was_canceled(pre_edit_batch[2]) and bs.pending,
+    "debounced refresh should cancel the pre-edit LSP requests before replacing them"
+  )
   respond(batch[1], {})
   respond(batch[2], {})
   respond(batch[4], {})
-  assert_true(bs.pending, "pre-edit responses should remain stale")
-  assert_ranges(bs.symbol_ranges, current_ranges, "pre-edit response should not render")
 
   core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
   batch = take_batch()
