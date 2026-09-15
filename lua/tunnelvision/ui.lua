@@ -3,15 +3,38 @@ local core = require("tunnelvision.core")
 local M = {}
 
 local DYNAMIC_DEBOUNCE_MS = 35
+local EDIT_DEBOUNCE_MS = 75
 
 local state = {
   commands_set = false,
   augroup = nil,
   dynamic_seq = {},
+  edit_seq = {},
 }
 
 local function cancel_dynamic_activate(bufnr)
   state.dynamic_seq[bufnr] = (state.dynamic_seq[bufnr] or 0) + 1
+end
+
+local function cancel_edit_refresh(bufnr)
+  state.edit_seq[bufnr] = (state.edit_seq[bufnr] or 0) + 1
+end
+
+local function schedule_edit_refresh(bufnr)
+  cancel_edit_refresh(bufnr)
+  local seq = state.edit_seq[bufnr]
+
+  vim.defer_fn(function()
+    if state.edit_seq[bufnr] ~= seq or not vim.api.nvim_buf_is_valid(bufnr) then
+      return
+    end
+
+    if not core.is_active(bufnr) then
+      return
+    end
+
+    core.refresh(bufnr)
+  end, EDIT_DEBOUNCE_MS)
 end
 
 local function schedule_dynamic_activate(bufnr, symbol, cursor)
@@ -43,6 +66,8 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
     })
   end, DYNAMIC_DEBOUNCE_MS)
 end
+
+M.cancel_edit_refresh = cancel_edit_refresh
 
 function M.ensure_highlights(config)
   config = config or core.state.config
@@ -490,6 +515,7 @@ local function ensure_autocmds()
     group = state.augroup,
     callback = function(args)
       state.dynamic_seq[args.buf] = nil
+      state.edit_seq[args.buf] = nil
       core.clear_buf_state(args.buf)
     end,
   })
@@ -526,7 +552,7 @@ local function ensure_autocmds()
     callback = function(args)
       cancel_dynamic_activate(args.buf)
       if core.is_active(args.buf) then
-        core.refresh(args.buf)
+        schedule_edit_refresh(args.buf)
       end
     end,
   })

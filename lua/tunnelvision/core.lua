@@ -339,6 +339,8 @@ end
 
 function M.activate(bufnr, opts)
   opts = opts or {}
+  -- Direct activation supersedes a queued edit debounce, which would only repeat it.
+  require("tunnelvision.ui").cancel_edit_refresh(bufnr)
   local symbol = opts.symbol
   if symbol == nil then
     symbol = vim.fn.expand("<cword>")

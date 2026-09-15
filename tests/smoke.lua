@@ -1123,6 +1123,68 @@ assert_true(no_op == false, "identical activate should no-op")
 
 vim.cmd("TunnelVision off")
 
+-- Edit bursts coalesce into one refresh, which explicit actions cancel.
+do
+  local edit_buf = new_buffer({
+    "local alpha = 1",
+    "local beta = alpha + 1",
+  })
+  vim.api.nvim_win_set_cursor(0, { 1, 8 })
+  core.configure({ notify = false, source = "word", mode = "static", scope = "function" })
+  core.activate(edit_buf, { silent = true, symbol = "alpha", cursor = { 1, 8 } })
+
+  local deferred = {}
+  local orig_defer_fn = vim.defer_fn
+  vim.defer_fn = function(callback)
+    deferred[#deferred + 1] = callback
+  end
+
+  local refreshes = 0
+  local orig_refresh = core.refresh
+  core.refresh = function(bufnr)
+    refreshes = refreshes + 1
+    return orig_refresh(bufnr)
+  end
+
+  local function edit(line)
+    vim.api.nvim_buf_set_lines(edit_buf, 0, 1, false, { line })
+    vim.api.nvim_exec_autocmds("TextChanged", { buffer = edit_buf })
+  end
+
+  edit("local alpha = 2")
+  edit("local alpha = 3")
+  edit("local alpha = 4")
+  assert_true(#deferred == 3, "each edit should queue a debounce")
+
+  for _, callback in ipairs(deferred) do
+    callback()
+  end
+  assert_true(refreshes == 1, "edit burst should refresh once")
+  assert_true(core.get_buf_state(edit_buf).path_set[1], "debounced refresh should use the latest contents")
+
+  deferred = {}
+  edit("local alpha = 5")
+  local before_explicit = refreshes
+  core.refresh(edit_buf)
+  for _, callback in ipairs(deferred) do
+    callback()
+  end
+  assert_true(refreshes == before_explicit + 1, "explicit refresh should cancel the queued debounce")
+
+  deferred = {}
+  edit("local alpha = 6")
+  core.deactivate(edit_buf)
+  local before_inactive = refreshes
+  for _, callback in ipairs(deferred) do
+    callback()
+  end
+  assert_true(refreshes == before_inactive, "inactive buffers should not receive delayed work")
+
+  core.refresh = orig_refresh
+  vim.defer_fn = orig_defer_fn
+  core.clear_buf_state(edit_buf)
+end
+
 do
   local cancellations = {}
   local lsp_buf
