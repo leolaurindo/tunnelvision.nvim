@@ -1034,8 +1034,6 @@ return function(helpers)
     vim.treesitter.get_node_text = orig_get_node_text
   end
 
-  print("tunnelvision smoke: OK")
-
   -- Documented baseline for later domains.
   tunnelvision.setup({ notify = false })
 end
