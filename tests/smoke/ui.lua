@@ -2,6 +2,7 @@
 return function(helpers)
   local assert_true = helpers.assert_true
   local new_buffer = helpers.new_buffer
+  local marks = helpers.marks
 
   local tunnelvision = require("tunnelvision")
   local core = require("tunnelvision.core")
@@ -287,10 +288,6 @@ return function(helpers)
       ui.ensure_highlights = orig_ensure_highlights
       return setups
     end
-    local function marks(bufnr)
-      return vim.api.nvim_buf_get_extmarks(bufnr, core.state.ns, 0, -1, { details = true })
-    end
-
     local function mark_priority(details)
       -- Neovim 0.9 omits priority from line-highlight extmark details.
       return details.priority or (details.line_hl_group and 1000)

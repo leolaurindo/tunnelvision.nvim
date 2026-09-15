@@ -4,6 +4,7 @@ return function(helpers)
   local assert_ranges = helpers.assert_ranges
   local assert_sources = helpers.assert_sources
   local new_buffer = helpers.new_buffer
+  local marks = helpers.marks
   local parser_or_skip = helpers.parser_or_skip
 
   local tunnelvision = require("tunnelvision")
@@ -409,11 +410,11 @@ return function(helpers)
     vim.api.nvim_win_set_cursor(0, { 2, 6 })
     vim.cmd("TunnelVision on")
     bs = core.get_buf_state(lsp_buf)
-    local old_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
-    local function mark_geometry(marks)
+    local old_marks = marks(lsp_buf)
+    local function mark_geometry(list)
       return vim.tbl_map(function(mark)
         return { mark[2], mark[3], mark[4] }
-      end, marks)
+      end, list)
     end
     assert_true(#old_marks > 0, "word render should create styled extmarks")
     bs.last_compute_meta = { flow_analyzer = "text", flow_expanded = true, flow_tracked_count = 2 }
@@ -444,10 +445,7 @@ return function(helpers)
         and pending_status.flow_tracked_count == 0,
       "pending status should not expose stale flow metadata"
     )
-    assert_true(
-      vim.deep_equal(vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true }), old_marks),
-      "pending LSP request should retain the previous render"
-    )
+    assert_true(vim.deep_equal(marks(lsp_buf), old_marks), "pending LSP request should retain the previous render")
     local ui = require("tunnelvision.ui")
     local resolver = require("tunnelvision.resolver")
     local orig_ensure_highlights = ui.ensure_highlights
@@ -474,7 +472,7 @@ return function(helpers)
     vim.api.nvim_exec_autocmds("ColorScheme", {})
     ui.ensure_highlights = orig_ensure_highlights
     resolver.compute_path = orig_compute_path
-    local recreated_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
+    local recreated_marks = marks(lsp_buf)
     assert_true(
       vim.deep_equal(mark_geometry(recreated_marks), mark_geometry(old_marks)),
       "ColorScheme should preserve retained extmarks while LSP is pending"
@@ -508,8 +506,7 @@ return function(helpers)
     })
     fake_clients[1].offset_encoding = "utf-8"
     assert_true(not bs.pending, "terminal responses should clear pending state")
-    local completed_group =
-      vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })[1][4].hl_group
+    local completed_group = marks(lsp_buf)[1][4].hl_group
     assert_true(
       bs.rendered_config == pending_config
         and vim.api.nvim_get_hl(0, { name = completed_group, link = false }).fg == 0xAABBCC,
@@ -629,7 +626,7 @@ return function(helpers)
     local stale_request_id = bs.request_id
     respond(stale_batch[1], {})
     respond(stale_batch[4], {})
-    local retained_marks = vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true })
+    local retained_marks = marks(lsp_buf)
     sync_cancel_callbacks = true
     core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
     sync_cancel_callbacks = false
@@ -645,7 +642,7 @@ return function(helpers)
       "synchronous cancellation callbacks should leave replacement pending"
     )
     assert_true(
-      vim.deep_equal(vim.api.nvim_buf_get_extmarks(lsp_buf, core.state.ns, 0, -1, { details = true }), retained_marks),
+      vim.deep_equal(marks(lsp_buf), retained_marks),
       "synchronous cancellation callbacks should preserve the pending render"
     )
     respond(stale_batch[1], {})
