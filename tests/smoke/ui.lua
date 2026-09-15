@@ -7,6 +7,8 @@ return function(helpers)
   local tunnelvision = require("tunnelvision")
   local core = require("tunnelvision.core")
 
+  tunnelvision.setup({ notify = false })
+
   -- Edit bursts coalesce into one refresh, which explicit actions cancel.
   do
     local edit_buf = new_buffer({

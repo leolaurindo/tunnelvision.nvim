@@ -5,8 +5,8 @@ local function domain(name)
   dofile(("%s/tests/smoke/%s.lua"):format(helpers.root, name))(helpers)
 end
 
-domain("config")
 domain("scope")
+domain("config")
 domain("sources")
 domain("flow")
 domain("context")
