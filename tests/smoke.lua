@@ -1,60 +1,13 @@
-local function fail(msg)
-  error("[tunnelvision smoke] " .. msg)
-end
-
-local function assert_true(cond, msg)
-  if not cond then
-    fail(msg)
-  end
-end
-
-local function parser_or_skip(bufnr, language, coverage)
-  local ok, parser = pcall(vim.treesitter.get_parser, bufnr, language)
-  if ok and parser then
-    return parser
-  end
-  if ({ cpp = true, go = true, rust = true })[language] then
-    print(("tunnelvision smoke: SKIP %s: optional %s parser unavailable (%s)"):format(coverage, language, parser))
-    return
-  end
-  fail(("required %s parser unavailable for %s: %s"):format(language, coverage, parser))
-end
-
-local this_file = debug.getinfo(1, "S").source:sub(2)
-local root = vim.fn.fnamemodify(this_file, ":p:h:h")
-vim.opt.runtimepath:prepend(root)
+local helpers = dofile(vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h") .. "/helpers.lua")
 
 local tunnelvision = require("tunnelvision")
 local core = require("tunnelvision.core")
 local config = require("tunnelvision.config")
 
-local function assert_ranges(actual, expected, msg)
-  assert_true(vim.deep_equal(actual, expected), msg .. ": " .. vim.inspect(actual))
-end
-
-local function assert_sources(expected, msg)
-  local got = tunnelvision.get_sources()
-  assert_true(vim.deep_equal(got, expected), msg .. ": " .. vim.inspect(got))
-end
-
-local function assert_combine(step, expected, msg)
-  assert_true(vim.deep_equal(step, { kind = "combine", names = expected }), msg .. ": " .. vim.inspect(step))
-end
-
-local function new_buffer(lines, filetype)
-  vim.cmd("enew")
-  vim.bo.filetype = filetype or "lua"
-  if lines then
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
-  end
-  return vim.api.nvim_get_current_buf()
-end
-
-local function assert_default_visual_config(msg)
-  assert_true(config.format_sources(core.state.config.sources) == "lsp,treesitter,word", msg .. " sources")
-  assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), msg .. " highlights")
-  assert_true(core.state.config.dim == nil, msg .. " dim")
-end
+local assert_true = helpers.assert_true
+local assert_ranges, assert_sources = helpers.assert_ranges, helpers.assert_sources
+local assert_combine, assert_default_visual_config = helpers.assert_combine, helpers.assert_default_visual_config
+local new_buffer, parser_or_skip = helpers.new_buffer, helpers.parser_or_skip
 
 -- Function scope skips known call/header nodes and keeps broad grammar support.
 do
