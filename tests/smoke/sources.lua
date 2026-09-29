@@ -445,12 +445,17 @@ return function(helpers)
         and pending_status.flow_tracked_count == 0,
       "pending status should not expose stale flow metadata"
     )
-    assert_true(vim.deep_equal(marks(lsp_buf), old_marks), "pending LSP request should retain the previous render")
+    -- Extmark ids are a per-render counter and differ across versions, so compare
+    -- the rendered geometry instead (0.9 does not reuse ids after a clear).
+    assert_true(
+      vim.deep_equal(mark_geometry(marks(lsp_buf)), mark_geometry(old_marks)),
+      "pending LSP request should retain the previous render"
+    )
     local ui = require("tunnelvision.ui")
     local resolver = require("tunnelvision.resolver")
     local orig_ensure_highlights = ui.ensure_highlights
     local orig_compute_path = resolver.compute_path
-    local pending_config, rendered_config, request_id = bs.config, bs.rendered_config, bs.request_id
+    local pending_config, request_id = bs.config, bs.request_id
     local pending_config_setups = 0
     local compute_calls = 0
     ui.ensure_highlights = function(cfg)
@@ -487,8 +492,7 @@ return function(helpers)
         and compute_calls == 0
         and bs.pending
         and bs.request_id == request_id
-        and bs.config == pending_config
-        and bs.rendered_config == rendered_config,
+        and bs.config == pending_config,
       "pending ColorScheme should preserve pending config, request, and cached render state"
     )
 
@@ -508,8 +512,7 @@ return function(helpers)
     assert_true(not bs.pending, "terminal responses should clear pending state")
     local completed_group = marks(lsp_buf)[1][4].hl_group
     assert_true(
-      bs.rendered_config == pending_config
-        and vim.api.nvim_get_hl(0, { name = completed_group, link = false }).fg == 0xAABBCC,
+      bs.config == pending_config and vim.api.nvim_get_hl(0, { name = completed_group, link = false }).fg == 0xAABBCC,
       "completed request should apply the pending style"
     )
     assert_ranges(bs.symbol_ranges, {
@@ -642,7 +645,7 @@ return function(helpers)
       "synchronous cancellation callbacks should leave replacement pending"
     )
     assert_true(
-      vim.deep_equal(marks(lsp_buf), retained_marks),
+      vim.deep_equal(mark_geometry(marks(lsp_buf)), mark_geometry(retained_marks)),
       "synchronous cancellation callbacks should preserve the pending render"
     )
     respond(stale_batch[1], {})
@@ -879,7 +882,7 @@ return function(helpers)
         "-- alpha in a comment",
         "local copy = alpha",
       })
-      vim.api.nvim_win_set_cursor(0, { 3, 10 })
+      vim.api.nvim_win_set_cursor(0, { 3, 13 })
       tunnelvision.on({ sources = { "treesitter" } })
       -- alpha on line 3 is an identifier reference
       assert_true(core.get_buf_state(str_buf).path_set[3], "treesitter should match identifier alpha on line 3")

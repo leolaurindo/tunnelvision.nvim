@@ -46,6 +46,7 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
   local seq = state.dynamic_seq[bufnr]
   local queued_symbol = symbol
   local queued_cursor = { cursor[1], cursor[2] }
+  local queued_track = core.get_moving_track(bufnr)
 
   vim.defer_fn(function()
     if state.dynamic_seq[bufnr] ~= seq or not vim.api.nvim_buf_is_valid(bufnr) then
@@ -53,7 +54,8 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
     end
 
     local bs = core.state.bufs[bufnr]
-    if not bs or not bs.active or core.get_active_mode(bufnr) ~= "dynamic" then
+    local track = core.get_moving_track(bufnr)
+    if not bs or not bs.active or track ~= queued_track then
       return
     end
 
@@ -63,7 +65,8 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
 
     core.activate(bufnr, {
       silent = true,
-      config = bs.config,
+      config = track.config,
+      track = track,
       symbol = queued_symbol,
       cursor = queued_cursor,
       reuse_scope = true,
@@ -72,6 +75,7 @@ local function schedule_dynamic_activate(bufnr, symbol, cursor)
 end
 
 M.cancel_edit_refresh = cancel_edit_refresh
+M.cancel_dynamic_activate = cancel_dynamic_activate
 
 function M.ensure_highlights(config)
   config = config or core.state.config
@@ -223,25 +227,38 @@ local function range_mark(bufnr, row, start_col, end_col, group, priority)
   })
 end
 
-function M.render(bufnr, config)
+function M.render(bufnr)
   local bs = core.state.bufs[bufnr]
-  if not bs or not bs.active or (bs.pending and not config) or not vim.api.nvim_buf_is_valid(bufnr) then
+  if not bs or not bs.active or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
 
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, core.state.ns, 0, -1)
 
-  config = config or bs.config or core.state.config
-  bs.rendered_config = config
-  M.ensure_highlights(config)
+  local global = core.state.config
+  local dim = bs.dim_override ~= nil and bs.dim_override or global.dim
+  local dim_config = bs.dim_override ~= nil and { dim = dim, dim_hl = ("TunnelVisionDimBuffer%d"):format(bufnr) }
+    or global
+  local function rules_for(track)
+    return track.pending and track.rendered_highlights or track.config.highlights
+  end
+  local request_dim = bs.force_dim
+  for _, track in ipairs(bs.tracks) do
+    local requested = track.config.request_dim
+    if track.pending and track.rendered_request_dim ~= nil then
+      requested = track.rendered_request_dim
+    end
+    request_dim = request_dim or requested ~= false
+  end
+  if dim ~= "none" and request_dim then
+    M.ensure_highlights(dim_config)
+  end
   local total = vim.api.nvim_buf_line_count(bufnr)
-  local do_dim = config.dim ~= "none" and total <= config.max_dim_lines
-  if config.dim ~= "none" and not do_dim then
-    -- Dimming is an O(total lines) extmark pass, so skip very large buffers
-    -- instead of doing expensive redraw work on every refresh.
+  local do_dim = dim ~= "none" and request_dim and total <= global.max_dim_lines
+  if dim ~= "none" and request_dim and not do_dim then
     if not bs.warned_large_buffer then
       core.notify(
-        ("TunnelVision: file too large to dim (%d lines > %d)"):format(total, config.max_dim_lines),
+        ("TunnelVision: file too large to dim (%d lines > %d)"):format(total, global.max_dim_lines),
         vim.log.levels.WARN
       )
       bs.warned_large_buffer = true
@@ -250,82 +267,111 @@ function M.render(bufnr, config)
     bs.warned_large_buffer = false
   end
 
-  local rules = config.highlights
-  local render_cache = { coverage = {}, styles = {} }
+  local render_cache = { styles = {} }
+  local positive_lines = {}
   local symbols = {}
-  if rules.symbol then
-    for _, range in ipairs(bs.symbol_ranges) do
-      local line_ranges = symbols[range.line] or {}
-      local previous = line_ranges[#line_ranges]
-      if previous and range.start_col <= previous.end_col then
-        previous.end_col = math.max(previous.end_col, range.end_col)
-      else
-        line_ranges[#line_ranges + 1] = vim.deepcopy(range)
+  for _, track in ipairs(bs.tracks) do
+    local rules = rules_for(track)
+    for _, context in ipairs({ "scope_head", "statement", "line" }) do
+      local covered =
+        track[({ scope_head = "scope_head_set", statement = "statement_set", line = "path_set" })[context]]
+      if has_style(rules[context]) then
+        for lnum in pairs(covered) do
+          positive_lines[lnum] = true
+        end
       end
-      symbols[range.line] = line_ranges
+    end
+    if rules.symbol then
+      for _, range in ipairs(track.symbol_ranges) do
+        local row = symbols[range.line] or {}
+        row[#row + 1] = { track = track, start_col = range.start_col, end_col = range.end_col }
+        symbols[range.line] = row
+        if has_style(rules.symbol) then
+          positive_lines[range.line] = true
+        end
+      end
     end
   end
 
   local function render_line(idx, line)
-    local coverage = (rules.scope_head and bs.scope_head_set[idx] and 1 or 0)
-      + (rules.statement and bs.statement_set[idx] and 2 or 0)
-      + (rules.line and bs.path_set[idx] and 4 or 0)
-    local styles = render_cache.coverage[coverage]
-    if not styles then
-      styles = { whole = coverage ~= 0, line = {} }
-      for bit, context in ipairs({ "scope_head", "statement", "line" }) do
-        if coverage % 2 ^ bit >= 2 ^ (bit - 1) then
-          merge_style(styles.line, rules[context])
-        end
-      end
-      render_cache.coverage[coverage] = styles
+    local length = #line
+    local cuts = { 0, length }
+    for _, range in ipairs(symbols[idx] or {}) do
+      cuts[#cuts + 1] = math.max(0, math.min(length, range.start_col))
+      cuts[#cuts + 1] = math.max(0, math.min(length, range.end_col))
     end
-
-    local ranges = symbols[idx]
-    if styles.whole then
-      if ranges and not styles.symbol then
-        styles.symbol = {}
-        merge_style(styles.symbol, styles.line)
-        merge_style(styles.symbol, rules.symbol)
-      end
-      local col = 0
-      for _, range in ipairs(ranges or {}) do
-        range_mark(bufnr, idx - 1, col, range.start_col, style_group(bufnr, bs, styles.line, render_cache), 1100)
-        range_mark(
-          bufnr,
-          idx - 1,
-          range.start_col,
-          range.end_col,
-          style_group(bufnr, bs, styles.symbol, render_cache),
-          1100
-        )
-        col = range.end_col
-      end
-      range_mark(bufnr, idx - 1, col, #line, style_group(bufnr, bs, styles.line, render_cache), 1100)
-    elseif ranges then
-      local col = 0
-      for _, range in ipairs(ranges) do
-        if do_dim then
-          range_mark(bufnr, idx - 1, col, range.start_col, config.dim_hl, 1000)
+    table.sort(cuts)
+    local spans = {}
+    for i = 1, #cuts - 1 do
+      local first, last = cuts[i], cuts[i + 1]
+      if first < last then
+        local focused, style = false, {}
+        for _, track in ipairs(bs.tracks) do
+          local rules = rules_for(track)
+          local line_style = {}
+          local whole = false
+          for _, entry in ipairs({
+            { "scope_head", "scope_head_set" },
+            { "statement", "statement_set" },
+            { "line", "path_set" },
+          }) do
+            if rules[entry[1]] and track[entry[2]][idx] then
+              whole = true
+              merge_style(line_style, rules[entry[1]])
+            end
+          end
+          local symbol = false
+          if rules.symbol then
+            for _, range in ipairs(symbols[idx] or {}) do
+              if range.track == track and range.start_col <= first and last <= range.end_col then
+                symbol = true
+                break
+              end
+            end
+          end
+          if whole or symbol then
+            focused = true
+            if symbol then
+              merge_style(line_style, rules.symbol)
+            end
+            merge_style(style, line_style)
+          end
         end
-        range_mark(
-          bufnr,
-          idx - 1,
-          range.start_col,
-          range.end_col,
-          style_group(bufnr, bs, rules.symbol, render_cache),
-          1100
-        )
-        col = range.end_col
+        local group
+        if focused then
+          group = style_group(bufnr, bs, style, render_cache)
+        elseif do_dim then
+          group = dim_config.dim_hl
+        end
+        local previous = spans[#spans]
+        if previous and previous.group == group then
+          previous.last = last
+        else
+          spans[#spans + 1] = { first = first, last = last, group = group, focused = focused }
+        end
       end
-      if do_dim then
-        range_mark(bufnr, idx - 1, col, #line, config.dim_hl, 1000)
+    end
+    if do_dim and #spans == 0 then
+      for _, track in ipairs(bs.tracks) do
+        local rules = rules_for(track)
+        if
+          rules.scope_head and track.scope_head_set[idx]
+          or rules.statement and track.statement_set[idx]
+          or rules.line and track.path_set[idx]
+        then
+          return
+        end
       end
-    elseif do_dim then
+    end
+    if do_dim and (#spans == 0 or #spans == 1 and not spans[1].focused) then
       pcall(vim.api.nvim_buf_set_extmark, bufnr, core.state.ns, idx - 1, 0, {
-        line_hl_group = config.dim_hl,
+        line_hl_group = dim_config.dim_hl,
         priority = 1000,
       })
+      return
+    end
+    for _, span in ipairs(spans) do
+      range_mark(bufnr, idx - 1, span.first, span.last, span.group, span.focused and 1100 or 1000)
     end
   end
 
@@ -333,29 +379,11 @@ function M.render(bufnr, config)
     for idx, line in ipairs(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)) do
       render_line(idx, line)
     end
-    return
-  end
-
-  local positive_lines = {}
-  for context, covered in pairs({
-    scope_head = bs.scope_head_set,
-    statement = bs.statement_set,
-    line = bs.path_set,
-  }) do
-    if has_style(rules[context]) then
-      for lnum in pairs(covered) do
-        positive_lines[lnum] = true
-      end
+  else
+    for lnum in pairs(positive_lines) do
+      local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ""
+      render_line(lnum, line)
     end
-  end
-  if has_style(rules.symbol) then
-    for lnum in pairs(symbols) do
-      positive_lines[lnum] = true
-    end
-  end
-  for lnum in pairs(positive_lines) do
-    local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ""
-    render_line(lnum, line)
   end
 end
 
@@ -369,8 +397,17 @@ local function ensure_commands(api)
     on = {
       run = api.on,
     },
+    add = {
+      run = api.add,
+    },
+    pin = {
+      run = api.pin,
+    },
+    remove = {
+      run = api.remove,
+    },
     retarget = {
-      run = api.on,
+      run = api.retarget,
     },
     off = {
       run = api.off,
@@ -388,13 +425,26 @@ local function ensure_commands(api)
         api.prev(vim.v.count1)
       end,
     },
+    ["next-track"] = {
+      run = function()
+        api.next_track(vim.v.count1)
+      end,
+    },
+    ["prev-track"] = {
+      run = function()
+        api.prev_track(vim.v.count1)
+      end,
+    },
     refresh = {
       run = api.refresh,
+    },
+    dim = {
+      values = { "reset", "none", "Comment" },
     },
     mode = {
       get = api.get_mode,
       set = api.set_mode,
-      values = { "static", "flow", "dynamic" },
+      values = { "static", "flow", "dynamic", "dynamic_flow" },
     },
     direction = {
       get = api.get_direction,
@@ -424,7 +474,14 @@ local function ensure_commands(api)
       run = function()
         local status = api.status()
         local state_label = status.pending and "pending" or (status.active and "on" or "off")
-        local symbol = status.symbol and (" symbol=" .. status.symbol) or ""
+        local symbol = #status.tracks > 0
+            and (" tracks=" .. table.concat(
+              vim.tbl_map(function(track)
+                return track.symbol .. (track.moving and "*" or "")
+              end, status.tracks),
+              ","
+            ))
+          or ""
         core.notify(
           ("TunnelVision: %s mode=%s direction=%s scope=%s source=%s%s"):format(
             state_label,
@@ -465,15 +522,31 @@ local function ensure_commands(api)
     local sub = subcommands[args[1]]
     if not sub then
       core.notify(
-        "TunnelVision: use one of on, retarget, off, toggle, next, prev, refresh, "
-          .. "mode, direction, scope, source, status",
+        "TunnelVision: use one of on, add, pin, remove, retarget, off, toggle, next, prev, next-track, "
+          .. "prev-track, refresh, dim, mode, direction, scope, source, status",
         vim.log.levels.ERROR
       )
       return
     end
 
+    if args[1] == "dim" then
+      if args[3] then
+        core.notify("TunnelVision: 'dim' takes a single value", vim.log.levels.ERROR)
+      elseif not args[2] then
+        local bs = core.state.bufs[vim.api.nvim_get_current_buf()]
+        core.notify("TunnelVision dim: " .. vim.inspect(bs and bs.dim_override or core.state.config.dim))
+      elseif args[2] == "reset" then
+        api.set_buffer_dim(nil)
+      elseif args[2]:sub(1, 1) == "#" and not args[2]:match("^#%x%x%x%x%x%x$") then
+        core.notify("TunnelVision: dim hex color must be #RRGGBB", vim.log.levels.ERROR)
+      else
+        api.set_buffer_dim(args[2])
+      end
+      return
+    end
+
     if sub.values then
-      if args[1] == "direction" and api.get_mode() ~= "flow" then
+      if args[1] == "direction" and api.get_mode() ~= "flow" and api.get_mode() ~= "dynamic_flow" then
         core.notify("TunnelVision: direction is used only in flow mode", vim.log.levels.WARN)
       end
 
@@ -528,9 +601,9 @@ local function ensure_autocmds()
     callback = function()
       M.ensure_highlights()
       for bufnr, bs in pairs(core.state.bufs) do
-        if bs.active and bs.config and (not bs.pending or bs.rendered_config) then
+        if bs.active and bs.config then
           M.clear_render_groups(bs)
-          M.render(bufnr, bs.pending and bs.rendered_config or nil)
+          M.render(bufnr)
         end
       end
     end,
@@ -540,11 +613,13 @@ local function ensure_autocmds()
     group = state.augroup,
     callback = function(args)
       local bs = core.state.bufs[args.buf]
-      if core.get_active_mode(args.buf) == "dynamic" and bs and bs.active then
-        local symbol = vim.fn.expand("<cword>")
+      if core.get_moving_track(args.buf) and bs and bs.active then
         local cursor = vim.api.nvim_win_get_cursor(0)
+        local symbol = core.symbol_at(args.buf, cursor)
         if core.should_dynamic_retarget(args.buf, symbol, cursor) then
           schedule_dynamic_activate(args.buf, symbol, cursor)
+        else
+          cancel_dynamic_activate(args.buf)
         end
       end
     end,

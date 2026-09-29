@@ -62,8 +62,9 @@ use({
 
 ## Basics
 
-Put the cursor on a symbol, run `:TunnelVision on`, navigate with
-`:TunnelVision next` and `:TunnelVision prev`, then finish with
+Put the cursor on a symbol and run `:TunnelVision on` to focus it. Use
+`:TunnelVision add` to keep that track while focusing another symbol, navigate
+with `:TunnelVision next` and `:TunnelVision prev`, then finish with
 `:TunnelVision off`.
 
 See [suggested keymaps](#suggested-keymaps)
@@ -74,9 +75,10 @@ See [suggested keymaps](#suggested-keymaps)
 
 | Mode | Behavior |
 | --- | --- |
-| `static` (default) | Tracks the symbol selected on activation. |
-| `dynamic` | Retargets as the cursor moves. |
-| `flow` | Experimentally expands the selected path through assignment relationships. |
+| `static` (default) | Pins the selected symbol. |
+| `dynamic` | Retargets one moving track as the cursor moves. |
+| `flow` | Pins a symbol and expands its path through assignments. |
+| `dynamic_flow` | Retargets the moving track and recomputes its flow path. |
 
 ### Sources
 
@@ -133,8 +135,10 @@ original syntax colors; a style table applies `fg`, `bg`, `bold`, `italic`,
 clamped to `0..1` and pre-blended against `Normal`, not alpha-blended; without
 usable backgrounds, the configured `bg` is used unchanged.
 
-Overlaps compose from `scope_head` to `statement` to `line` to `symbol`: more
-specific contexts override only the attributes they define.
+Within each track, overlaps compose from `scope_head` to `statement` to `line`
+to `symbol`: more specific contexts override only the attributes they define.
+Across tracks, newer tracks override only conflicting attributes. All tracks'
+focused ranges form one union; its complement is dimmed at most once.
 
 ```lua
 require("tunnelvision").setup({
@@ -153,7 +157,7 @@ replaces that default; it is not merged. Useful variations include:
 
 ```lua
 { highlights = { symbol = true } } -- token-only focus, original colors
-{ dim = "none", highlights = { symbol = { bold = true } } } -- no dimming
+{ dim = "none", highlights = { symbol = { bold = true } } } -- this track does not request dimming
 ```
 
 Symbol ranges come from the winning source: LSP ranges, exact Tree-sitter
@@ -169,12 +173,16 @@ still navigate the source/flow path; warnings follow `fallback_warn` and `notify
 
 ## Configuration
 
-`setup()` defines persistent defaults; `on(opts)` accepts one-shot overrides for
-`mode`, `scope`, `sources`, `flow_settings`, `highlights`, and `dim`.
+`setup()` defines defaults for new tracks; existing tracks keep their options.
+`on(opts)` replaces the buffer's tracks; `add(opts)` keeps them; `pin(opts)` adds
+a fixed track even with a dynamic mode. All three accept one-shot overrides for
+`mode`, `scope`, `sources`, `flow_settings`, and `highlights`. Setting
+`dim = "none"` opts that track out of dimming; omitted `dim` requests dimming.
+One-shot dim colors, `dim_hl`, and `max_dim_lines` are not accepted.
 
 | Option | Default | Notes |
 | --- | --- | --- |
-| `mode` | `static` | `static`, `dynamic`, or experimental `flow`. |
+| `mode` | `static` | `static`, `dynamic`, `flow`, or `dynamic_flow`. |
 | `scope` | `function` | Nearest function-like Tree-sitter scope, falling back to the full buffer; also accepts `buffer`. |
 | `sources` | `{ "lsp", "treesitter", "word" }` | Ordered source fallback chain. |
 | `flow_settings.direction` | `forward` | `forward`, `backward`, or `both`. |
@@ -205,23 +213,63 @@ require("tunnelvision").on({
 })
 ```
 
-In `on(opts)`, omitted `highlights` inherits setup; an empty table selects line
-focus; a non-empty table replaces the setup rules for that activation.
+For `on(opts)`, `add(opts)`, and `pin(opts)`, omitted `highlights` inherits
+setup; an empty table selects line focus; a non-empty table replaces the setup
+rules for that activation.
+
+The dim style is shared per buffer: a buffer override takes precedence over
+`setup({ dim = ... })`. The complement of all focused ranges dims only while at
+least one active track requests dimming, or the buffer is forced to dim. No
+active tracks means no dimming. A style override alone does not enable dimming;
+`"none"` as the effective style disables it even when forced.
+
+```lua
+local tv = require("tunnelvision")
+tv.set_buffer_dim("#565f89")  -- current buffer; nil resets override and force
+tv.force_buffer_dim(true)   -- false turns force off
+```
+
+Both functions accept an optional second `bufnr` argument and return whether
+the setting was accepted. Buffer settings survive `off()` and are cleared when
+the buffer is deleted. `setup()` changes the global dim style for active buffers
+without changing their saved track options. From Ex:
+
+```vim
+:TunnelVision dim #565f89
+:TunnelVision dim Comment
+:TunnelVision dim none
+:TunnelVision dim reset
+```
+
+These set a hex foreground, use a highlight group, disable dimming, and restore
+the setup style (clearing force-dim), respectively. `:TunnelVision dim` shows
+the current override.
 
 Run `:help tunnelvision-config` for the full option reference.
 
 ## Commands
 
 ```text
-:TunnelVision on|retarget|off|toggle|next|prev|refresh|status
-:TunnelVision mode [static|dynamic|flow]
+:TunnelVision on|add|pin|remove|retarget|off|toggle|next|prev|next-track|prev-track|refresh|status
+:TunnelVision mode [static|dynamic|flow|dynamic_flow]
 :TunnelVision scope [function|buffer]
 :TunnelVision source [lsp|treesitter|word|lsp,word|treesitter,word|lsp,treesitter,word|lsp_else_word|lsp_and_word]
 :TunnelVision direction [forward|backward|both]
 ```
 
-`retarget` is an alias for `on`. Commands with optional arguments show or change
-their persistent default; `status` describes the active buffer. Run
+`on` replaces all tracks with one new target, preserving the pre-existing API.
+`add` adds a track without removing other pins. `pin` adds a fixed track even
+while dynamic tracking continues and accepts the same one-shot highlight rules.
+`retarget` remains an alias for `on` for compatibility. `remove` removes the
+track under the cursor or, if none is there, the latest track; `off` clears the
+current buffer. Multiple static tracks, including flow tracks, can coexist;
+at most one moving track can coexist with pins. `next`/`prev` visit the union
+of occurrences (and unmatched custom/flow path lines). `next-track` and
+`prev-track` navigate only the track under the cursor (latest-added if tracks
+overlap); away from a tracked occurrence or path line, they use the latest track.
+Commands with optional arguments change defaults only for future tracks;
+`refresh` recomputes active tracks with their original options.
+`status` describes the active buffer. Run
 `:help tunnelvision` for the complete command and Lua API reference.
 
 
@@ -229,9 +277,13 @@ their persistent default; `status` describes the active buffer. Run
 ```lua
 local tv = require("tunnelvision")
 
-vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
-vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "TunnelVision next" })
-vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "TunnelVision prev" })
+vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "Focus only this symbol" })
+vim.keymap.set("n", "<leader>va", "<cmd>TunnelVision add<CR>", { desc = "Add a tracked symbol" })
+vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "Next across all tracks" })
+vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "Previous across all tracks" })
+vim.keymap.set("n", "]V", "<cmd>TunnelVision next-track<CR>", { desc = "Next in selected track" })
+vim.keymap.set("n", "[V", "<cmd>TunnelVision prev-track<CR>", { desc = "Previous in selected track" })
+vim.keymap.set("n", "<leader>vu", "<cmd>TunnelVision remove<CR>", { desc = "TunnelVision remove" })
 vim.keymap.set("n", "<Esc>", function()
   if tv.is_active() then
     tv.off()
@@ -245,7 +297,12 @@ vim.keymap.set("n", "<leader>V", function()
 end, { desc = "TunnelVision word in buffer" })
 ```
 
-Use `toggle` instead of `on` in the first mapping if preferred.
+Use `toggle` instead of `on` in the first mapping if preferred. For scripted
+additive batch activation, `on_many({ { row, col }, ... }, opts)` accepts
+(1,0)-indexed positions in the current buffer. With a dynamic default, all but
+the last position are pinned and the last becomes the moving track. Native
+multicursor activation and cursor creation are deferred until Neovim 0.13 APIs
+can be verified; pass positions explicitly for now.
 
 ## Custom Sources
 
@@ -301,8 +358,13 @@ configuration should use the composable forms:
 | `extra_keywords = { ... }` | `flow_settings = { extra_keywords = { ... } }` |
 | `dim_hl = "..."` | `dim = ...` |
 
-Version 0.4 requires no migration: without `highlights`, old and new setups keep
-line focus with Comment-derived dimming.
+`on()` keeps its original replace-one-target behavior. Use `add()` to retain
+other tracks, `pin()` for a fixed track, or `on_many()` for additive batches.
+The existing `:TunnelVision retarget` alias still acts like `on`.
+Existing setup defaults still produce line focus with Comment-derived dimming.
+One-shot `on({ dim = color })` must move to `set_buffer_dim(color)` or
+`setup({ dim = color })`; only `on({ dim = "none" })` remains valid. Move one-shot
+`dim_hl` and `max_dim_lines` settings to `setup()`. This is a breaking API change.
 
 Run `:checkhealth tunnelvision` to check Neovim, Tree-sitter, LSP highlighting,
 and the dim highlight. Contributions are welcome; include the rationale and
