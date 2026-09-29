@@ -49,6 +49,10 @@ function M.force_buffer_dim(enabled, bufnr)
   return core.force_buffer_dim(enabled, bufnr)
 end
 
+function M.set_quickfix(bufnr)
+  return core.set_quickfix(bufnr)
+end
+
 function M.off()
   core.deactivate(vim.api.nvim_get_current_buf())
 end

@@ -11,6 +11,7 @@ domain("sources")
 domain("flow")
 domain("context")
 domain("ui")
+domain("navigation")
 domain("multiple")
 
 print("tunnelvision smoke: OK")
