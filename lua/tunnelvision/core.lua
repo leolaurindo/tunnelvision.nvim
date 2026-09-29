@@ -29,8 +29,6 @@ local state = {
 
 M.state = state
 
-local refresh_active_buffers = function() end
-
 local function cancel_requests(bs)
   if bs then
     resolver.cancel_lsp_requests(bs.request_handles)
@@ -52,6 +50,8 @@ function M.get_buf_state(bufnr)
 
   s = {
     active = false,
+    tracks = {},
+    refreshing = false,
     symbol = nil,
     anchor = nil,
     scope = nil,
@@ -70,7 +70,8 @@ function M.get_buf_state(bufnr)
     request_id = nil,
     request_handles = {},
     config = nil,
-    rendered_config = nil,
+    dim_override = nil,
+    force_dim = false,
     render_groups = nil,
   }
   state.bufs[bufnr] = s
@@ -79,14 +80,20 @@ end
 
 function M.clear_buf_state(bufnr)
   require("tunnelvision.ui").cancel_edit_refresh(bufnr)
+  require("tunnelvision.ui").cancel_dynamic_activate(bufnr)
   local bs = state.bufs[bufnr]
   state.bufs[bufnr] = nil
-  cancel_requests(bs)
   if bs then
-    bs.rendered_config = nil
+    for _, track in ipairs(bs.tracks) do
+      track.request_id = nil
+      cancel_requests(track)
+    end
   end
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
   require("tunnelvision.ui").clear_render_groups(bs)
+  if bs and bs.dim_override ~= nil then
+    pcall(vim.api.nvim_set_hl, 0, ("TunnelVisionDimBuffer%d"):format(bufnr), {})
+  end
 end
 
 local function get_line_target_col(line, symbol)
@@ -122,8 +129,12 @@ function M.configure(opts)
   config.normalize(state.config, state.custom_sources)
 end
 
-local function activation_config(bufnr, opts)
-  local cfg = config.normalize_activation(opts.config or state.config, opts, bufnr, state.custom_sources)
+local function activation_config(opts)
+  local cfg = config.normalize_activation(
+    opts.config or opts.track and opts.track.config or state.config,
+    opts,
+    state.custom_sources
+  )
   return cfg, resolver.build_keywords(cfg.flow_settings.extra_keywords)
 end
 
@@ -136,10 +147,8 @@ local function configs_equal(a, b)
     and vim.deep_equal(a.sources, b.sources)
     and a.fallback_warn == b.fallback_warn
     and a.lsp_timeout_ms == b.lsp_timeout_ms
-    and a.max_dim_lines == b.max_dim_lines
-    and a.dim_hl == b.dim_hl
     and vim.deep_equal(a.highlights, b.highlights)
-    and vim.deep_equal(a.dim, b.dim)
+    and a.request_dim == b.request_dim
     and vim.deep_equal(a.flow_settings.extra_keywords, b.flow_settings.extra_keywords)
     and vim.deep_equal(a.flow_settings.analyzers, b.flow_settings.analyzers)
     and a.flow_settings.max_depth == b.flow_settings.max_depth
@@ -172,33 +181,73 @@ function M.add_keywords(words)
     return false
   end
 
-  if state.config.mode == "flow" then
-    refresh_active_buffers()
-  end
   return true
 end
 
-local function refresh_buffer(bufnr, bs, cfg)
-  if not bs.active or not bs.symbol or not bs.anchor or not bs.scope then
-    return
+local function sync_buffer(bufnr, bs, defer_render, completed)
+  if bs.refreshing then
+    for _, track in ipairs(bs.tracks) do
+      if track.pending then
+        bs.pending = true
+        bs.request_id = bs.tracks[#bs.tracks].request_id
+        return
+      end
+    end
+    bs.refreshing = false
   end
+  local selected = bs.tracks[#bs.tracks]
+  bs.active = selected ~= nil
+  for _, key in ipairs({ "symbol", "anchor", "scope", "config", "last_compute_meta", "request_id" }) do
+    bs[key] = selected and selected[key] or nil
+  end
+  bs.pending = false
+  bs.path_set, bs.path_order, bs.symbol_ranges = {}, {}, {}
+  bs.statement_set, bs.scope_head_set = {}, {}
+  local seen = {}
+  for _, track in ipairs(bs.tracks) do
+    bs.pending = bs.pending or track.pending
+    for _, key in ipairs({ "path_set", "statement_set", "scope_head_set" }) do
+      for line in pairs(track[key]) do
+        bs[key][line] = true
+      end
+    end
+    for _, range in ipairs(track.symbol_ranges) do
+      bs.symbol_ranges[#bs.symbol_ranges + 1] = range
+    end
+  end
+  table.sort(bs.symbol_ranges, function(a, b)
+    return a.line == b.line and a.start_col < b.start_col or a.line < b.line
+  end)
+  for _, range in ipairs(bs.symbol_ranges) do
+    if not seen[range.line] then
+      bs.path_order[#bs.path_order + 1] = range.line
+      seen[range.line] = true
+    end
+  end
+  -- Paths without ranges (custom sources and flow-added lines) still navigate.
+  for line in pairs(bs.path_set) do
+    if not seen[line] then
+      bs.path_order[#bs.path_order + 1] = line
+    end
+  end
+  table.sort(bs.path_order)
+  if bs.active and not defer_render and (completed or not bs.pending) then
+    require("tunnelvision.ui").render(bufnr)
+  end
+end
 
+local function refresh_track(bufnr, track)
+  local row = math.min(track.anchor.row + 1, vim.api.nvim_buf_line_count(bufnr))
+  local line = vim.api.nvim_buf_get_lines(bufnr, row - 1, row, false)[1] or ""
   M.activate(bufnr, {
-    config = cfg or bs.config,
-    cursor = { bs.anchor.row + 1, bs.anchor.col },
+    config = track.config,
+    cursor = { row, math.min(track.anchor.col, #line) },
     force = true,
     reuse_scope = true,
     silent = true,
-    symbol = bs.symbol,
+    symbol = track.symbol,
+    track = track,
   })
-end
-
-refresh_active_buffers = function(cfg)
-  for bufnr, bs in pairs(state.bufs) do
-    if bs.active and vim.api.nvim_buf_is_valid(bufnr) then
-      refresh_buffer(bufnr, bs, cfg)
-    end
-  end
 end
 
 local function lsp_warn_msg(kind, reason)
@@ -269,21 +318,24 @@ local function maybe_warn_structural_fallback(bs, silent, cfg, fallback)
   end
 end
 
-local function apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, ranges, context)
-  bs.pending = false
-  bs.request_id = nil
-  bs.request_handles = {}
-  bs.path_set, bs.path_order, bs.last_compute_meta, bs.symbol_ranges = path_set, path_order, meta, ranges
+local function apply_path(bufnr, bs, track, opts, cfg, path_set, path_order, meta, ranges, context)
+  track.pending = false
+  track.request_id = nil
+  track.request_handles = {}
+  track.path_set, track.path_order, track.last_compute_meta, track.symbol_ranges = path_set, path_order, meta, ranges
   local structural_fallback
-  bs.statement_set, bs.scope_head_set, structural_fallback =
-    require("tunnelvision.context").evaluate(cfg, bs.path_set, bs.symbol_ranges, bufnr, bs.scope, context)
-  maybe_warn_fallback(bs, opts.silent, cfg)
-  maybe_warn_strict_lsp(bs, opts.silent, cfg)
-  maybe_warn_structural_fallback(bs, opts.silent, cfg, structural_fallback)
-  require("tunnelvision.ui").render(bufnr)
+  track.statement_set, track.scope_head_set, structural_fallback =
+    require("tunnelvision.context").evaluate(cfg, track.path_set, track.symbol_ranges, bufnr, track.scope, context)
+  -- Retain the rendered policy while a later asynchronous retarget is pending.
+  track.rendered_highlights = cfg.highlights
+  track.rendered_request_dim = cfg.request_dim
+  maybe_warn_fallback(track, opts.silent, cfg)
+  maybe_warn_strict_lsp(track, opts.silent, cfg)
+  maybe_warn_structural_fallback(track, opts.silent, cfg, structural_fallback)
+  sync_buffer(bufnr, bs, opts.defer_render, true)
 end
 
-local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context)
+local function resolve_path(bufnr, bs, track, symbol, anchor, scope, opts, cfg, keywords, context)
   local resolution_context = context
   local function resolve(lsp_result)
     local path_set, path_order, meta, ranges, pending = resolver.compute_path(bufnr, symbol, anchor, scope, {
@@ -299,7 +351,7 @@ local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keyword
       sources = cfg.sources,
     })
     if not pending then
-      apply_path(bufnr, bs, opts, cfg, path_set, path_order, meta, ranges, resolution_context)
+      apply_path(bufnr, bs, track, opts, cfg, path_set, path_order, meta, ranges, resolution_context)
       return
     end
 
@@ -311,18 +363,20 @@ local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keyword
     end
 
     state.request_seq = state.request_seq + 1
-    bs.pending = true
-    bs.request_id = state.request_seq
-    local request_id = bs.request_id
+    track.pending = true
+    track.request_id = state.request_seq
+    sync_buffer(bufnr, bs, opts.defer_render)
+    local request_id = track.request_id
     local handles = resolver.request_lsp_highlight(bufnr, anchor, scope, cfg.lsp_timeout_ms, function(result)
       local current = state.bufs[bufnr]
       if
         not current
         or not current.active
-        or current.request_id ~= request_id
-        or current.symbol ~= symbol
-        or not resolver.anchors_equal(current.anchor, anchor)
-        or not resolver.scopes_equal(current.scope, scope)
+        or track.request_id ~= request_id
+        or track.symbol ~= symbol
+        or not vim.tbl_contains(current.tracks, track)
+        or not resolver.anchors_equal(track.anchor, anchor)
+        or not resolver.scopes_equal(track.scope, scope)
         or vim.api.nvim_buf_get_changedtick(bufnr) ~= scope.changedtick
       then
         return
@@ -330,20 +384,81 @@ local function resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keyword
 
       resolve(result)
     end, pending)
-    if bs.request_id == request_id then
-      bs.request_handles = handles
+    if track.request_id == request_id then
+      track.request_handles = handles
     end
   end
 
   resolve()
 end
 
+local function symbol_at(bufnr, cursor)
+  local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1] or ""
+  local col = cursor[2] + 1
+  local start_col, end_col
+  for first, _, last in line:gmatch("()([%w_]+)()") do
+    if first <= col and col < last then
+      start_col, end_col = first, last
+      break
+    end
+  end
+  if start_col then
+    return line:sub(start_col, end_col - 1)
+  end
+  return nil
+end
+
+M.symbol_at = symbol_at
+
+function M.valid_target(bufnr, opts)
+  if type(opts) ~= "table" or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  if opts.symbol ~= nil and (type(opts.symbol) ~= "string" or opts.symbol == "") then
+    return false
+  end
+  local cursor = opts.cursor
+  if cursor == nil then
+    return true
+  end
+  if
+    type(cursor) ~= "table"
+    or type(cursor[1]) ~= "number"
+    or type(cursor[2]) ~= "number"
+    or cursor[1] % 1 ~= 0
+    or cursor[2] % 1 ~= 0
+    or cursor[1] < 1
+    or cursor[1] > vim.api.nvim_buf_line_count(bufnr)
+    or cursor[2] < 0
+  then
+    return false
+  end
+  local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1] or ""
+  return cursor[2] <= #line
+end
+
 function M.activate(bufnr, opts)
   opts = opts or {}
-  -- Direct activation supersedes a queued edit debounce, which would only repeat it.
-  require("tunnelvision.ui").cancel_edit_refresh(bufnr)
-  local symbol = opts.symbol
-  if symbol == nil then
+  if opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil then
+    M.notify(
+      "TunnelVision: dim styles, dim_hl and max_dim_lines belong in setup() or buffer dim settings",
+      vim.log.levels.WARN
+    )
+    return false
+  end
+  if not M.valid_target(bufnr, opts) then
+    M.notify("TunnelVision: invalid symbol or cursor", vim.log.levels.WARN)
+    return false
+  end
+  local cursor = opts.cursor or vim.api.nvim_win_get_cursor(0)
+  local under_cursor = symbol_at(bufnr, cursor)
+  local symbol = opts.symbol or under_cursor
+  if
+    not opts.symbol
+    and under_cursor
+    and bufnr == vim.api.nvim_get_current_buf()
+    and vim.deep_equal(cursor, vim.api.nvim_win_get_cursor(0))
+  then
     symbol = vim.fn.expand("<cword>")
   end
   if not symbol or symbol == "" then
@@ -353,75 +468,206 @@ function M.activate(bufnr, opts)
     return false
   end
 
-  local cursor = opts.cursor or vim.api.nvim_win_get_cursor(0)
+  require("tunnelvision.ui").cancel_edit_refresh(bufnr)
+  require("tunnelvision.ui").cancel_dynamic_activate(bufnr)
   local anchor = { row = cursor[1] - 1, col = cursor[2] }
-  local cfg, keywords = activation_config(bufnr, opts)
+  local cfg, keywords = activation_config(opts)
   local context = { bufnr = bufnr }
-
   local bs = M.get_buf_state(bufnr)
-  local reuse_scope = not opts.force and opts.reuse_scope ~= false
-  local scope = resolver.resolve_scope(bufnr, anchor, reuse_scope and bs.scope or nil, cfg.scope, context)
-  local keep_render = bs.active and bs.rendered_config and next(bs.path_set) ~= nil
-  if
-    bs.active
-    and bs.symbol == symbol
-    and resolver.anchors_equal(bs.anchor, anchor)
-    and resolver.scopes_equal(bs.scope, scope)
-    and configs_equal(bs.config, cfg)
-    and not opts.force
-  then
+  if not opts.track and not bs.refreshing then
+    for _, existing in ipairs(bs.tracks) do
+      if existing.scope.changedtick ~= vim.api.nvim_buf_get_changedtick(bufnr) then
+        M.refresh(bufnr)
+        break
+      end
+    end
+  end
+  local moving = cfg.mode == "dynamic" or cfg.mode == "dynamic_flow"
+  if opts.pin then
+    moving = false
+    cfg.mode = (cfg.mode == "dynamic_flow" or cfg.mode == "flow") and "flow" or "static"
+  end
+  local track = opts.track
+  local scope = resolver.resolve_scope(
+    bufnr,
+    anchor,
+    track and opts.reuse_scope ~= false and track.scope or nil,
+    cfg.scope,
+    context
+  )
+  if not track then
+    for _, candidate in ipairs(bs.tracks) do
+      local same_occurrence = candidate.anchor.row == anchor.row and candidate.anchor.col == anchor.col
+      for _, range in ipairs(candidate.symbol_ranges) do
+        if range.line == cursor[1] and range.start_col <= cursor[2] and cursor[2] < range.end_col then
+          same_occurrence = true
+          break
+        end
+      end
+      if
+        candidate.symbol == symbol
+        and candidate.moving == moving
+        and resolver.scopes_equal(candidate.scope, scope)
+        and (same_occurrence or opts.force)
+      then
+        if not opts.force and configs_equal(candidate.config, cfg) then
+          return false
+        end
+        track = candidate
+        break
+      end
+    end
+  end
+  if not track then
+    if moving then
+      for i = #bs.tracks, 1, -1 do
+        if bs.tracks[i].moving then
+          bs.tracks[i].request_id = nil
+          cancel_requests(bs.tracks[i])
+          table.remove(bs.tracks, i)
+        end
+      end
+    end
+    track = {
+      path_set = {},
+      path_order = {},
+      symbol_ranges = {},
+      statement_set = {},
+      scope_head_set = {},
+      request_handles = {},
+      moving = moving,
+    }
+    bs.tracks[#bs.tracks + 1] = track
+  end
+  track.pending, track.request_id = true, nil
+  cancel_requests(track)
+  track.symbol, track.anchor, track.scope, track.config = symbol, anchor, scope, cfg
+  track.moving = moving
+  sync_buffer(bufnr, bs, true)
+  resolve_path(bufnr, bs, track, symbol, anchor, scope, opts, cfg, keywords, context)
+  return true
+end
+
+function M.activate_many(bufnr, positions, opts)
+  if type(positions) ~= "table" or type(opts or {}) ~= "table" then
     return false
   end
-
-  bs.pending = false
-  bs.request_id = nil
-  cancel_requests(bs)
-  bs.active = true
-  bs.symbol = symbol
-  bs.anchor = anchor
-  bs.scope = scope
-  bs.request_handles = {}
-  bs.config = cfg
-  if not keep_render then
-    bs.rendered_config = nil
-    bs.path_set = {}
-    bs.path_order = {}
-    bs.symbol_ranges = {}
-    bs.statement_set = {}
-    bs.scope_head_set = {}
-    bs.last_compute_meta = nil
-    bs.warned_lsp_strict = false
+  if opts and (opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil) then
+    return false
   end
+  for _, cursor in ipairs(positions) do
+    if not M.valid_target(bufnr, vim.tbl_extend("force", opts or {}, { cursor = cursor })) then
+      return false
+    end
+  end
+  local changed, calls = false, {}
+  for index, cursor in ipairs(positions) do
+    local call = vim.tbl_extend("force", opts or {}, { cursor = cursor, defer_render = true })
+    if #positions > 1 and index < #positions and call.pin == nil then
+      call.pin = true
+    end
+    calls[#calls + 1] = call
+    changed = M.activate(bufnr, call) or changed
+  end
+  for _, call in ipairs(calls) do
+    call.defer_render = false
+  end
+  if changed then
+    local bs = state.bufs[bufnr]
+    if bs and bs.active and (not bs.pending or next(bs.path_set)) then
+      require("tunnelvision.ui").render(bufnr)
+    end
+  end
+  return changed
+end
 
-  resolve_path(bufnr, bs, symbol, anchor, scope, opts, cfg, keywords, context)
-
+function M.remove(bufnr, cursor)
+  require("tunnelvision.ui").cancel_dynamic_activate(bufnr)
+  local bs = state.bufs[bufnr]
+  if not bs or #bs.tracks == 0 then
+    return false
+  end
+  cursor = cursor or vim.api.nvim_win_get_cursor(0)
+  local index
+  local symbol = symbol_at(bufnr, cursor)
+  for i = #bs.tracks, 1, -1 do
+    local track = bs.tracks[i]
+    if track.anchor.row == cursor[1] - 1 and track.symbol == symbol then
+      index = i
+    end
+    for _, range in ipairs(track.symbol_ranges) do
+      if range.line == cursor[1] and range.start_col <= cursor[2] and cursor[2] < range.end_col then
+        index = i
+        break
+      end
+    end
+    if index then
+      break
+    end
+  end
+  index = index or #bs.tracks
+  bs.tracks[index].request_id = nil
+  cancel_requests(bs.tracks[index])
+  table.remove(bs.tracks, index)
+  bs.refreshing = false
+  if #bs.tracks == 0 then
+    M.deactivate(bufnr)
+  else
+    sync_buffer(bufnr, bs, false, true)
+  end
   return true
 end
 
 function M.deactivate(bufnr)
   require("tunnelvision.ui").cancel_edit_refresh(bufnr)
+  require("tunnelvision.ui").cancel_dynamic_activate(bufnr)
   local bs = state.bufs[bufnr]
   if bs then
-    bs.active = false
-    bs.pending = false
-    bs.request_id = nil
-    cancel_requests(bs)
-    require("tunnelvision.ui").clear_render_groups(bs)
-    bs.request_handles = {}
-    bs.symbol = nil
-    bs.anchor = nil
-    bs.scope = nil
-    bs.path_set = {}
-    bs.path_order = {}
-    bs.symbol_ranges = {}
-    bs.statement_set = {}
-    bs.scope_head_set = {}
-    bs.last_compute_meta = nil
+    for _, track in ipairs(bs.tracks) do
+      track.request_id = nil
+    end
+    for _, track in ipairs(bs.tracks) do
+      cancel_requests(track)
+    end
+    bs.tracks = {}
+    bs.refreshing = false
     bs.warned_large_buffer = false
-    bs.config = nil
-    bs.rendered_config = nil
+    sync_buffer(bufnr, bs)
+    require("tunnelvision.ui").clear_render_groups(bs)
   end
   pcall(vim.api.nvim_buf_clear_namespace, bufnr, state.ns, 0, -1)
+end
+
+function M.set_buffer_dim(dim, bufnr)
+  local b = bufnr or vim.api.nvim_get_current_buf()
+  if not vim.api.nvim_buf_is_valid(b) or dim ~= nil and type(dim) ~= "string" and type(dim) ~= "table" then
+    return false
+  end
+  local bs = M.get_buf_state(b)
+  if dim == nil and bs.dim_override ~= nil then
+    pcall(vim.api.nvim_set_hl, 0, ("TunnelVisionDimBuffer%d"):format(b), {})
+  end
+  bs.dim_override = dim and config.normalize_dim(vim.deepcopy(dim)) or nil
+  if dim == nil then
+    bs.force_dim = false
+  end
+  if bs.active then
+    require("tunnelvision.ui").render(b)
+  end
+  return true
+end
+
+function M.force_buffer_dim(enabled, bufnr)
+  local b = bufnr or vim.api.nvim_get_current_buf()
+  if not vim.api.nvim_buf_is_valid(b) or type(enabled) ~= "boolean" then
+    return false
+  end
+  local bs = M.get_buf_state(b)
+  bs.force_dim = enabled
+  if bs.active then
+    require("tunnelvision.ui").render(b)
+  end
+  return true
 end
 
 function M.is_active(bufnr)
@@ -433,72 +679,208 @@ function M.is_active(bufnr)
   return bs and bs.active or false
 end
 
+local function occurrences(bs, bufnr)
+  local targets, seen, lines = {}, {}, {}
+  for _, track in ipairs(bs.tracks) do
+    for _, range in ipairs(track.symbol_ranges) do
+      local key = range.line .. ":" .. range.start_col
+      lines[range.line] = true
+      if not seen[key] then
+        seen[key] = true
+        targets[#targets + 1] = { range.line, range.start_col }
+      end
+    end
+  end
+  -- Custom sources may provide lines without any occurrence ranges.
+  for _, track in ipairs(bs.tracks) do
+    for _, line in ipairs(track.path_order) do
+      if not lines[line] then
+        lines[line] = true
+        local text = vim.api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1] or ""
+        local col = get_line_target_col(text, track.symbol)
+        local key = line .. ":" .. col
+        if not seen[key] then
+          seen[key] = true
+          targets[#targets + 1] = { line, col }
+        end
+      end
+    end
+  end
+  table.sort(targets, function(a, b)
+    return a[1] == b[1] and a[2] < b[2] or a[1] < b[1]
+  end)
+  return targets
+end
+
+local function jump_to_targets(direction, count, targets)
+  if #targets == 0 then
+    return false
+  end
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local index
+  for _ = 1, math.max(1, count or 1) do
+    index = nil
+    if direction > 0 then
+      for i, target in ipairs(targets) do
+        if target[1] > cursor[1] or target[1] == cursor[1] and target[2] > cursor[2] then
+          index = i
+          break
+        end
+      end
+      index = index or 1
+    else
+      for i = #targets, 1, -1 do
+        local target = targets[i]
+        if target[1] < cursor[1] or target[1] == cursor[1] and target[2] < cursor[2] then
+          index = i
+          break
+        end
+      end
+      index = index or #targets
+    end
+    cursor = targets[index]
+  end
+  return pcall(vim.api.nvim_win_set_cursor, 0, cursor)
+end
+
 function M.jump_in_path(direction, count)
   local bufnr = vim.api.nvim_get_current_buf()
   local bs = M.get_buf_state(bufnr)
-  if not bs.active or bs.pending or #bs.path_order == 0 then
+  if not bs.active then
     return false
   end
+  return jump_to_targets(direction, count, occurrences(bs, bufnr))
+end
 
-  local line = vim.api.nvim_win_get_cursor(0)[1]
-  for _ = 1, math.max(1, count or 1) do
-    local target
-    if direction > 0 then
-      for _, lnum in ipairs(bs.path_order) do
-        if lnum > line then
-          target = lnum
-          break
-        end
-      end
-      line = target or bs.path_order[1]
-    else
-      for i = #bs.path_order, 1, -1 do
-        if bs.path_order[i] < line then
-          target = bs.path_order[i]
-          break
-        end
-      end
-      line = target or bs.path_order[#bs.path_order]
+local function track_occurrences(track, bufnr)
+  local targets, seen, lines = {}, {}, {}
+  for _, range in ipairs(track.symbol_ranges) do
+    local key = range.line .. ":" .. range.start_col
+    lines[range.line] = true
+    if not seen[key] then
+      seen[key] = true
+      targets[#targets + 1] = { range.line, range.start_col }
     end
   end
+  for _, line in ipairs(track.path_order) do
+    if not lines[line] then
+      local text = vim.api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1] or ""
+      local col = get_line_target_col(text, track.symbol)
+      local key = line .. ":" .. col
+      if not seen[key] then
+        seen[key] = true
+        targets[#targets + 1] = { line, col }
+      end
+    end
+  end
+  table.sort(targets, function(a, b)
+    return a[1] == b[1] and a[2] < b[2] or a[1] < b[1]
+  end)
+  return targets
+end
 
-  local total = vim.api.nvim_buf_line_count(bufnr)
-  if total < 1 then
+function M.jump_in_track(direction, count)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local bs = M.get_buf_state(bufnr)
+  if not bs.active or #bs.tracks == 0 then
     return false
   end
 
-  line = math.max(1, math.min(line, total))
-  local target_line = vim.api.nvim_buf_get_lines(bufnr, line - 1, line, false)[1] or ""
-  local ok = pcall(vim.api.nvim_win_set_cursor, 0, { line, get_line_target_col(target_line, bs.symbol) })
-  return ok
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local symbol = symbol_at(bufnr, cursor)
+  local selected
+  for i = #bs.tracks, 1, -1 do
+    local track = bs.tracks[i]
+    if track.anchor.row == cursor[1] - 1 and track.symbol == symbol then
+      selected = track
+      break
+    end
+    for _, range in ipairs(track.symbol_ranges) do
+      if range.line == cursor[1] and range.start_col <= cursor[2] and cursor[2] < range.end_col then
+        selected = track
+        break
+      end
+    end
+    if selected then
+      break
+    end
+  end
+  if not selected then
+    for i = #bs.tracks, 1, -1 do
+      if vim.tbl_contains(bs.tracks[i].path_order, cursor[1]) then
+        selected = bs.tracks[i]
+        break
+      end
+    end
+  end
+  selected = selected or bs.tracks[#bs.tracks]
+  return jump_to_targets(direction, count, track_occurrences(selected, bufnr))
+end
+
+function M.occurrences(bufnr)
+  local bs = state.bufs[bufnr]
+  if not bs or not bs.active then
+    return {}
+  end
+  local result = {}
+  local seen = {}
+  for _, track in ipairs(bs.tracks) do
+    for _, range in ipairs(track.symbol_ranges) do
+      local key = range.line .. ":" .. range.start_col
+      if not seen[key] then
+        seen[key] = true
+        result[#result + 1] = { range.line, range.start_col }
+      end
+    end
+  end
+  table.sort(result, function(a, b)
+    return a[1] == b[1] and a[2] < b[2] or a[1] < b[1]
+  end)
+  return result
 end
 
 function M.refresh(bufnr)
   local b = bufnr or vim.api.nvim_get_current_buf()
   local bs = state.bufs[b]
-  if bs and bs.active and bs.anchor and vim.api.nvim_buf_is_valid(b) then
-    refresh_buffer(b, bs)
+  if bs and bs.active and vim.api.nvim_buf_is_valid(b) then
+    bs.refreshing = true
+    bs.pending = true
+    for _, track in ipairs(bs.tracks) do
+      track.request_id = nil
+      track.pending = true
+      cancel_requests(track)
+    end
+    for _, track in ipairs(bs.tracks) do
+      refresh_track(b, track)
+    end
   end
 end
 
 function M.should_dynamic_retarget(bufnr, symbol, cursor)
-  local bs = state.bufs[bufnr]
-  if not bs or not bs.active or not symbol or symbol == "" then
+  local track = M.get_moving_track(bufnr)
+  if not track or not symbol or symbol == "" then
     return false
   end
-
-  if symbol ~= bs.symbol then
+  if symbol ~= track.symbol then
     return true
   end
-
   local anchor = { row = cursor[1] - 1, col = cursor[2] }
-  local scope = resolver.resolve_scope(bufnr, anchor, bs.scope, bs.config.scope)
-  return not resolver.scopes_equal(bs.scope, scope)
+  local scope = resolver.resolve_scope(bufnr, anchor, track.scope, track.config.scope)
+  return not resolver.scopes_equal(track.scope, scope)
+end
+
+function M.get_moving_track(bufnr)
+  local bs = state.bufs[bufnr]
+  for _, track in ipairs(bs and bs.tracks or {}) do
+    if track.moving then
+      return track
+    end
+  end
 end
 
 function M.get_active_mode(bufnr)
-  local bs = state.bufs[bufnr]
-  return bs and bs.config and bs.config.mode or state.config.mode
+  local track = M.get_moving_track(bufnr)
+  return track and track.config.mode or state.config.mode
 end
 
 function M.get_mode()
@@ -507,11 +889,10 @@ end
 
 function M.set_mode(mode)
   if not config.valid_modes[mode] then
-    M.notify("TunnelVision: mode must be static, flow, or dynamic", vim.log.levels.ERROR)
+    M.notify("TunnelVision: mode must be static, flow, dynamic, or dynamic_flow", vim.log.levels.ERROR)
     return
   end
   state.config.mode = mode
-  refresh_active_buffers(state.config)
 end
 
 -- Compatibility alias for the historical top-level flow API.
@@ -528,9 +909,6 @@ function M.set_direction(direction)
     return
   end
   state.config.flow_settings.direction = direction
-  if state.config.mode == "flow" then
-    refresh_active_buffers(state.config)
-  end
 end
 
 function M.get_scope()
@@ -543,7 +921,6 @@ function M.set_scope(scope)
     return
   end
   state.config.scope = scope
-  refresh_active_buffers(state.config)
 end
 
 function M.get_sources()
@@ -554,7 +931,6 @@ function M.set_sources(sources)
   local normalized = config.normalize_sources(sources, state.custom_sources)
   state.config.sources = normalized
   state.config.source = config.legacy_source_from_sources(normalized) or config.defaults.source
-  refresh_active_buffers(state.config)
 end
 
 function M.register_source(name, handler)
@@ -621,7 +997,7 @@ function M.set_source_command(value)
 end
 
 -- Compatibility API (deprecated). Maps legacy source values to normalized
--- sources and refreshes active buffers. No runtime deprecation warnings.
+-- sources. No runtime deprecation warnings.
 function M.set_source(source)
   if not config.valid_sources[source] then
     M.notify("TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, or word", vim.log.levels.ERROR)
@@ -629,7 +1005,6 @@ function M.set_source(source)
   end
   state.config.sources = config.normalize_sources(config.sources_from_legacy_source(source), state.custom_sources)
   state.config.source = source
-  refresh_active_buffers(state.config)
 end
 
 function M.get_status(bufnr)
@@ -643,6 +1018,9 @@ function M.get_status(bufnr)
   local meta = bs and not bs.pending and bs.last_compute_meta or {}
   return {
     active = bs and bs.active or false,
+    tracks = vim.tbl_map(function(track)
+      return { symbol = track.symbol, mode = track.config.mode, moving = track.moving, pending = track.pending }
+    end, bs and bs.tracks or {}),
     pending = bs and bs.pending or false,
     symbol = bs and bs.symbol or nil,
     mode = cfg.mode,

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased (breaking API change; next major release)
+
+### Added
+- Tracks now apply their own positive highlight styles; on overlaps, newer tracks
+  override conflicting attributes.
+- `set_buffer_dim(style, bufnr?)` overrides the setup dim style for a buffer;
+  pass `nil` to reset style and force-dim. `force_buffer_dim(enabled, bufnr?)`
+  controls dimming independently of track requests. Settings survive `off()`.
+- `:TunnelVision dim <#RRGGBB|group|none|reset>` sets or resets buffer dimming.
+
+### Changed
+- Dimming is a shared buffer layer, enabled by any requesting track or a
+  buffer's force setting. `on({ dim = "none" })` opts out only that track.
+- One-shot dim colors, `dim_hl`, and `max_dim_lines` are no longer accepted;
+  configure styles and limits through `setup()` or the buffer dim API.
+
 ## [0.4.0] - 2026-07-30
 
 Version 0.4 adds a `highlights` table for configuring visible contexts and their

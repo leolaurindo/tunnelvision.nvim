@@ -143,17 +143,10 @@ return function(helpers)
       "activation should use the nearest function scope"
     )
     core.set_scope("buffer")
-    assert_true(
-      nested_state.scope.start_line == 1 and nested_state.scope.end_line == 5,
-      "buffer scope setter should refresh active geometry"
-    )
+    assert_true(nested_state.scope.start_line == 2, "default changes should not alter existing tracks")
     core.set_scope("function")
-    assert_true(
-      nested_state.scope.start_line == 2 and nested_state.scope.end_line == 4,
-      "function scope setter should refresh active geometry"
-    )
 
-    nested_state.scope = outer_scope
+    nested_state.tracks[1].scope = outer_scope
     assert_true(
       core.should_dynamic_retarget(scope_buf, "value", { 3, 0 }),
       "dynamic movement should retarget into nested functions"

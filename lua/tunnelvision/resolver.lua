@@ -845,7 +845,7 @@ function M.compute_path(bufnr, symbol, anchor, scope, opts)
   end
   path_set[anchor.row + 1] = true
 
-  if context.mode == "flow" and meta.used_source then
+  if (context.mode == "flow" or context.mode == "dynamic_flow") and meta.used_source then
     local analysis, flow_meta = flow.analyze({
       anchor = anchor,
       bufnr = bufnr,

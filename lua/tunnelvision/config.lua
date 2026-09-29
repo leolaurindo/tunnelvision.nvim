@@ -38,7 +38,7 @@ M.defaults = defaults
 
 -- Validation tables
 
-local valid_modes = { static = true, flow = true, dynamic = true }
+local valid_modes = { static = true, flow = true, dynamic = true, dynamic_flow = true }
 local valid_directions = { forward = true, backward = true, both = true }
 local valid_scopes = { ["function"] = true, buffer = true }
 local valid_sources = { lsp_else_word = true, lsp = true, lsp_and_word = true, word = true }
@@ -73,9 +73,6 @@ M.activation_keys = {
   "sources",
   "fallback_warn",
   "lsp_timeout_ms",
-  "max_dim_lines",
-  "dim",
-  "dim_hl",
   "highlights",
 }
 
@@ -249,6 +246,16 @@ function M.normalize_analyzers(analyzers)
   return normalized
 end
 
+function M.normalize_dim(dim)
+  if type(dim) == "string" and dim:match("^#%x%x%x%x%x%x$") then
+    return { fg = dim }
+  end
+  if dim == nil or type(dim) == "string" or type(dim) == "table" then
+    return dim
+  end
+  return nil
+end
+
 function M.normalize(cfg, custom_sources)
   if not valid_modes[cfg.mode] then
     cfg.mode = defaults.mode
@@ -274,18 +281,7 @@ function M.normalize(cfg, custom_sources)
   if not valid_fallback_warn[cfg.fallback_warn] then
     cfg.fallback_warn = defaults.fallback_warn
   end
-  -- Normalize dim: nil (derive from Comment), string group name (copy attrs),
-  -- hex string (convert to { fg = ... }), highlight table (use as-is).
-  if cfg.dim ~= nil then
-    if type(cfg.dim) == "string" then
-      if cfg.dim:match("^#%x%x%x%x%x%x$") then
-        cfg.dim = { fg = cfg.dim }
-      end
-      -- else: keep as string (group name like "Comment")
-    elseif type(cfg.dim) ~= "table" then
-      cfg.dim = nil
-    end
-  end
+  cfg.dim = M.normalize_dim(cfg.dim)
   -- Compatibility: deprecated dim_hl support. If both dim and dim_hl are
   -- provided, dim is applied to the configured dim_hl group.
   cfg.extra_keywords = resolver.sanitize_keywords(cfg.extra_keywords)
@@ -316,7 +312,7 @@ function M.normalize(cfg, custom_sources)
   cfg.lsp_timeout_ms = math.max(1, tonumber(cfg.lsp_timeout_ms) or defaults.lsp_timeout_ms)
 end
 
-function M.normalize_activation(base_config, opts, bufnr, custom_sources)
+function M.normalize_activation(base_config, opts, custom_sources)
   local cfg = vim.deepcopy(base_config)
   for _, key in ipairs(M.activation_keys) do
     if opts[key] ~= nil then
@@ -346,9 +342,13 @@ function M.normalize_activation(base_config, opts, bufnr, custom_sources)
   if opts.source ~= nil and opts.sources == nil then
     cfg.sources = nil
   end
-  if opts.dim ~= nil and opts.dim_hl == nil and opts.config == nil then
-    cfg.dim_hl = ("TunnelVisionDim%d"):format(bufnr)
+  if opts.dim == "none" then
+    cfg.request_dim = false
+  elseif cfg.request_dim == nil then
+    cfg.request_dim = true
   end
+  cfg.dim = nil
+  cfg.dim_hl = nil
   M.normalize(cfg, custom_sources)
   return cfg
 end
