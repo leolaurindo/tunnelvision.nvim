@@ -426,7 +426,6 @@ return function(helpers)
       highlights = { line = { fg = 0xAABBCC } },
       lsp_timeout_ms = 1000,
     })
-    local pre_request_marks = marks(lsp_buf)
     core.activate(lsp_buf, { silent = true, symbol = "alpha", cursor = { 1, 5 } })
     local batch = take_batch()
     local timeout
@@ -446,8 +445,10 @@ return function(helpers)
         and pending_status.flow_tracked_count == 0,
       "pending status should not expose stale flow metadata"
     )
+    -- Extmark ids are a per-render counter and differ across versions, so compare
+    -- the rendered geometry instead (0.9 does not reuse ids after a clear).
     assert_true(
-      vim.deep_equal(marks(lsp_buf), pre_request_marks),
+      vim.deep_equal(mark_geometry(marks(lsp_buf)), mark_geometry(old_marks)),
       "pending LSP request should retain the previous render"
     )
     local ui = require("tunnelvision.ui")
@@ -644,7 +645,7 @@ return function(helpers)
       "synchronous cancellation callbacks should leave replacement pending"
     )
     assert_true(
-      vim.deep_equal(marks(lsp_buf), retained_marks),
+      vim.deep_equal(mark_geometry(marks(lsp_buf)), mark_geometry(retained_marks)),
       "synchronous cancellation callbacks should preserve the pending render"
     )
     respond(stale_batch[1], {})
