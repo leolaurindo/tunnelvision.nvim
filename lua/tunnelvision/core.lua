@@ -712,6 +712,17 @@ local function occurrences(bs, bufnr)
   return targets
 end
 
+-- Vim records jumps internally and exposes no way to push an entry
+-- (`setjumplist()` does not exist), so jump with a line-wise `{line}G`, which Vim
+-- counts as a jump, then place the exact column. Moves within one line are not
+-- jumps to Vim, so they stay out of the jumplist, as with `n`.
+local function move_cursor(cursor)
+  if not pcall(vim.cmd, ("normal! %dG"):format(cursor[1])) then
+    return false
+  end
+  return pcall(vim.api.nvim_win_set_cursor, 0, cursor)
+end
+
 local function jump_to_targets(direction, count, targets)
   if #targets == 0 then
     return false
@@ -740,7 +751,7 @@ local function jump_to_targets(direction, count, targets)
     end
     cursor = targets[index]
   end
-  return pcall(vim.api.nvim_win_set_cursor, 0, cursor)
+  return move_cursor(cursor)
 end
 
 function M.jump_in_path(direction, count)
@@ -837,6 +848,33 @@ function M.occurrences(bufnr)
     return a[1] == b[1] and a[2] < b[2] or a[1] < b[1]
   end)
   return result
+end
+
+function M.set_quickfix(bufnr)
+  local b = bufnr or vim.api.nvim_get_current_buf()
+  local bs = state.bufs[b]
+  if not bs or not bs.active or not vim.api.nvim_buf_is_valid(b) then
+    return 0
+  end
+
+  local items = {}
+  -- Same union and dedupe as `next`/`prev`: overlapping tracks share an entry.
+  for _, target in ipairs(occurrences(bs, b)) do
+    items[#items + 1] = {
+      bufnr = b,
+      lnum = target[1],
+      col = target[2] + 1,
+      text = vim.api.nvim_buf_get_lines(b, target[1] - 1, target[1], false)[1] or "",
+    }
+  end
+  if #items == 0 then
+    return 0
+  end
+
+  local name = vim.api.nvim_buf_get_name(b)
+  local title = name ~= "" and vim.fn.fnamemodify(name, ":~:.") or "[No Name]"
+  vim.fn.setqflist({}, " ", { title = "TunnelVision: " .. title, items = items })
+  return #items
 end
 
 function M.refresh(bufnr)

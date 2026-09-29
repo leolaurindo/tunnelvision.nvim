@@ -438,6 +438,16 @@ local function ensure_commands(api)
     refresh = {
       run = api.refresh,
     },
+    quickfix = {
+      run = function()
+        local count = api.set_quickfix()
+        if count == 0 then
+          core.notify("TunnelVision: no active tracks", vim.log.levels.WARN)
+        else
+          core.notify(("TunnelVision: %d positions in the quickfix list"):format(count))
+        end
+      end,
+    },
     dim = {
       values = { "reset", "none", "Comment" },
     },
@@ -523,7 +533,7 @@ local function ensure_commands(api)
     if not sub then
       core.notify(
         "TunnelVision: use one of on, add, pin, remove, retarget, off, toggle, next, prev, next-track, "
-          .. "prev-track, refresh, dim, mode, direction, scope, source, status",
+          .. "prev-track, refresh, quickfix, dim, mode, direction, scope, source, status",
         vim.log.levels.ERROR
       )
       return
