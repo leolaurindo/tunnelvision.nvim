@@ -4,7 +4,6 @@ return function(helpers)
   local new_buffer = helpers.new_buffer
 
   local tunnelvision = require("tunnelvision")
-  local core = require("tunnelvision.core")
 
   -- next/prev are jumps: <C-o> returns, and the temporary jump mark is restored.
   do
@@ -23,23 +22,30 @@ return function(helpers)
     tunnelvision.off()
   end
 
-  -- set_quickfix exports one buffer's deduplicated navigation targets.
+  -- set_quickfix exports the union of all tracked symbols.
   do
-    local bufnr = new_buffer({ "alpha", "alpha beta", "other", "alpha" }, "plaintext")
+    local bufnr = new_buffer({ "alpha", "alpha beta", "beta", "alpha" }, "plaintext")
     tunnelvision.setup({ notify = false, sources = { "word" }, scope = "buffer", dim = "none" })
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
     tunnelvision.on({ symbol = "alpha", cursor = { 1, 0 } })
+    tunnelvision.add({ symbol = "beta", cursor = { 2, 6 } })
 
-    -- This track's only line is already covered, so it must add no entry.
-    tunnelvision.register_source("nav_fixed_line", function()
-      return { [4] = true }
-    end)
-    tunnelvision.add({ symbol = "beta", cursor = { 2, 6 }, sources = { "nav_fixed_line" }, scope = "buffer" })
-
-    local expected = core.occurrences(bufnr)
+    vim.fn.setqflist({}, " ", { title = "previous results", items = { { bufnr = bufnr, lnum = 3, text = "beta" } } })
+    local previous_list = vim.fn.getqflist({ id = 0, title = 1, items = 1 })
     local count = tunnelvision.set_quickfix(bufnr)
     local list = vim.fn.getqflist()
-    assert_true(count == 3 and count == #expected and #list == count, "export should dedupe to three targets")
+    assert_true(vim.fn.getqflist({ id = 0 }).id ~= previous_list.id, "export should create a new quickfix list")
+    vim.cmd("colder")
+    local restored = vim.fn.getqflist({ id = 0, title = 1, items = 1 })
+    assert_true(vim.deep_equal(restored, previous_list), "previous quickfix results should remain accessible")
+    vim.cmd("cnewer")
+    local positions = vim.tbl_map(function(item)
+      return { item.lnum, item.col }
+    end, list)
+    assert_true(
+      count == 5 and vim.deep_equal(positions, { { 1, 1 }, { 2, 1 }, { 2, 7 }, { 3, 1 }, { 4, 1 } }),
+      "export should include positions from both tracked symbols"
+    )
     for index, item in ipairs(list) do
       assert_true(item.valid == 1 and item.bufnr == bufnr, "entries should target the active buffer")
       if index > 1 then
