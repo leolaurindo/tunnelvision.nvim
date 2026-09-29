@@ -397,6 +397,9 @@ local function ensure_commands(api)
     on = {
       run = api.on,
     },
+    add = {
+      run = api.add,
+    },
     pin = {
       run = api.pin,
     },
@@ -519,7 +522,7 @@ local function ensure_commands(api)
     local sub = subcommands[args[1]]
     if not sub then
       core.notify(
-        "TunnelVision: use one of on, pin, remove, retarget, off, toggle, next, prev, next-track, "
+        "TunnelVision: use one of on, add, pin, remove, retarget, off, toggle, next, prev, next-track, "
           .. "prev-track, refresh, dim, mode, direction, scope, source, status",
         vim.log.levels.ERROR
       )

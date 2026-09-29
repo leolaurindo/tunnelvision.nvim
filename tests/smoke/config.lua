@@ -136,6 +136,16 @@ return function(helpers)
   vim.api.nvim_win_set_cursor(0, { 2, 7 }) -- copy
   vim.cmd("TunnelVision retarget")
   assert_true(core.get_buf_state(first_buf).symbol == "copy", "retarget alias should re-run on current symbol")
+  assert_true(tunnelvision.retarget == tunnelvision.on, "Lua retarget should alias on")
+  vim.api.nvim_win_set_cursor(0, { 1, 7 }) -- value
+  vim.cmd("TunnelVision add")
+  assert_true(#core.get_buf_state(first_buf).tracks == 2, "add should retain the existing track")
+  vim.api.nvim_win_set_cursor(0, { 2, 7 }) -- copy
+  vim.cmd("TunnelVision on")
+  assert_true(
+    #core.get_buf_state(first_buf).tracks == 1 and core.get_buf_state(first_buf).tracks[1].symbol == "copy",
+    "on should replace all tracks"
+  )
 
   local before = vim.api.nvim_win_get_cursor(0)[1]
   vim.cmd("TunnelVision next")

@@ -25,7 +25,7 @@ return function(helpers)
     end
     return positive, dimmed
   end
-  tv.on({
+  tv.add({
     symbol = "alpha",
     cursor = { 1, 0 },
     dim = "none",
@@ -49,7 +49,7 @@ return function(helpers)
   )
   tv.force_buffer_dim(false)
   assert_true(not select(2, groups(4, 0)), "disabling force should restore opted-out behavior")
-  tv.on({ symbol = "beta", cursor = { 2, 0 }, highlights = { line = { fg = 0x0000BB, italic = true } } })
+  tv.add({ symbol = "beta", cursor = { 2, 0 }, highlights = { line = { fg = 0x0000BB, italic = true } } })
   local older, newer = groups(1, 0), groups(2, 0)
   local overlap = groups(3, 0)
   assert_true(older.fg == 0x00AA00 and older.bold and newer.fg == 0x0000BB, "track context styles should compose")
@@ -69,7 +69,7 @@ return function(helpers)
     "off should retain force but clear marks"
   )
   tv.setup({ notify = false, sources = { "word" }, scope = "buffer", dim = "none" })
-  tv.on({ symbol = "alpha", cursor = { 1, 0 }, dim = "none" })
+  tv.add({ symbol = "alpha", cursor = { 1, 0 }, dim = "none" })
   tv.force_buffer_dim(true)
   assert_true(select(2, groups(4, 0)), "buffer override should work with global none")
   tv.set_buffer_dim(nil)
@@ -88,11 +88,11 @@ return function(helpers)
   vim.api.nvim_win_set_cursor(0, { 3, 6 }) -- beta
   tv.remove()
   assert_true(#bs.tracks == 1 and bs.tracks[1].symbol == "alpha", "remove at an occurrence should remove its track")
-  tv.on({ symbol = "beta", cursor = { 2, 7 } })
+  tv.add({ symbol = "beta", cursor = { 2, 7 } })
   vim.api.nvim_win_set_cursor(0, { 1, 0 }) -- no tracked occurrence
   tv.remove()
   assert_true(#bs.tracks == 1 and bs.tracks[1].symbol == "alpha", "remove away from tracks should pop latest")
-  tv.on({ mode = "dynamic_flow", symbol = "beta", cursor = { 2, 7 } })
+  tv.add({ mode = "dynamic_flow", symbol = "beta", cursor = { 2, 7 } })
   assert_true(
     #bs.tracks == 2 and core.get_moving_track(buf).config.mode == "dynamic_flow",
     "moving flow and pin should coexist"
@@ -123,7 +123,7 @@ return function(helpers)
 
   local movement = new_buffer({ "local alpha = 1", "local beta = alpha", "local gamma = beta", "" })
   tv.pin({ symbol = "alpha", cursor = { 1, 7 } })
-  tv.on({ mode = "dynamic_flow", source = "word", scope = "buffer", cursor = { 2, 7 }, symbol = "beta" })
+  tv.add({ mode = "dynamic_flow", source = "word", scope = "buffer", cursor = { 2, 7 }, symbol = "beta" })
   local movement_state = core.get_buf_state(movement)
   local moving = core.get_moving_track(movement)
   assert_true(moving.last_compute_meta.flow_expanded, "dynamic flow should expand its path")
@@ -151,7 +151,7 @@ return function(helpers)
   local stale = delayed[#delayed]
   vim.api.nvim_win_set_cursor(0, { 4, 0 })
   tv.remove() -- no occurrence: remove the latest (moving) track
-  tv.on({ mode = "dynamic_flow", symbol = "gamma", cursor = { 3, 7 } })
+  tv.add({ mode = "dynamic_flow", symbol = "gamma", cursor = { 3, 7 } })
   stale()
   assert_true(core.get_moving_track(movement).symbol == "gamma", "old timer must not retarget a replacement track")
   assert_true(movement_state.tracks[1].symbol == "alpha", "timer invalidation must not disturb other tracks")
@@ -159,8 +159,8 @@ return function(helpers)
   tv.off()
 
   new_buffer({ "alpha beta alpha", "beta alpha", "" })
-  tv.on({ symbol = "alpha", cursor = { 1, 0 }, sources = { "word" }, scope = "buffer" })
-  tv.on({ symbol = "beta", cursor = { 1, 6 }, sources = { "word" }, scope = "buffer" })
+  tv.add({ symbol = "alpha", cursor = { 1, 0 }, sources = { "word" }, scope = "buffer" })
+  tv.add({ symbol = "beta", cursor = { 1, 6 }, sources = { "word" }, scope = "buffer" })
   vim.api.nvim_win_set_cursor(0, { 1, 0 })
   tv.next()
   assert_true(vim.deep_equal(vim.api.nvim_win_get_cursor(0), { 1, 6 }), "next should navigate the union of all tracks")
@@ -185,8 +185,8 @@ return function(helpers)
   tv.off()
 
   local flows = new_buffer({ "local raw = 1", "local scaled = raw + 1", "local other = 2", "local total = other * 2" })
-  tv.on({ symbol = "raw", cursor = { 1, 7 }, mode = "flow", sources = { "word" }, scope = "buffer" })
-  tv.on({ symbol = "other", cursor = { 3, 7 }, mode = "flow", sources = { "word" }, scope = "buffer" })
+  tv.add({ symbol = "raw", cursor = { 1, 7 }, mode = "flow", sources = { "word" }, scope = "buffer" })
+  tv.add({ symbol = "other", cursor = { 3, 7 }, mode = "flow", sources = { "word" }, scope = "buffer" })
   local flow_state = core.get_buf_state(flows)
   assert_true(
     #flow_state.tracks == 2
@@ -237,7 +237,7 @@ return function(helpers)
   tv.remove() -- no resolved range under the cursor: pop the pending track
   late(resolver.make_lsp_result("ok", { [2] = true }, true, { { line = 2, start_col = 6, end_col = 10 } }))
   assert_true(not async_state.path_set[2] and #async_state.tracks == 1, "removed track must ignore late results")
-  tv.on({ symbol = "beta", cursor = { 2, 7 } })
+  tv.add({ symbol = "beta", cursor = { 2, 7 } })
   assert_true(async_state.pending and #async_state.tracks == 2, "second request should not clear completed geometry")
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
   assert_true(#helpers.marks(async_buf) > 0, "completed track should have a visible highlight")
@@ -291,10 +291,16 @@ return function(helpers)
     #invalid_state.tracks == 1 and invalid_state.tracks[1].symbol == "alpha",
     "invalid target operations must not change state"
   )
-  tv.pin({ mode = "flow", symbol = "beta", cursor = { 2, 7 } })
+  tv.pin({ mode = "flow", symbol = "beta", cursor = { 2, 7 }, highlights = { line = { bold = true } } })
   assert_true(
-    invalid_state.tracks[2].config.mode == "flow" and invalid_state.tracks[2].last_compute_meta.flow_expanded,
-    "explicit flow pin must retain flow expansion"
+    invalid_state.tracks[2].config.mode == "flow"
+      and invalid_state.tracks[2].config.highlights.line.bold
+      and invalid_state.tracks[2].last_compute_meta.flow_expanded,
+    "explicit flow pin must retain flow expansion and one-shot styles"
+  )
+  assert_true(
+    not tv.on({ symbol = {}, cursor = { 2, 7 } }) and #invalid_state.tracks == 2,
+    "invalid on must retain pins"
   )
   tv.off()
 
