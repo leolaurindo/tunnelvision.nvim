@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased (breaking API change; next major release)
 
 ### Added
+- `:TunnelVision quickfix` / `set_quickfix(bufnr?)` export the buffer's tracked
+  positions (deduplicated, sorted) to the quickfix list for `:cnext` and `:cdo`;
+  `next`/`prev` now record a jumplist entry so `<C-o>` works, like `n`/`N`.
 - `add(opts?)` adds a track while keeping existing ones; `on(opts?)` keeps its
   original replace-all behavior, so existing mappings do not accumulate tracks.
   `retarget()` remains an alias for `on()`, and `:TunnelVision add` is available.

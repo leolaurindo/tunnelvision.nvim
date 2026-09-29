@@ -250,7 +250,7 @@ Run `:help tunnelvision-config` for the full option reference.
 ## Commands
 
 ```text
-:TunnelVision on|add|pin|remove|retarget|off|toggle|next|prev|next-track|prev-track|refresh|status
+:TunnelVision on|add|pin|remove|retarget|off|toggle|next|prev|next-track|prev-track|refresh|quickfix|status
 :TunnelVision mode [static|dynamic|flow|dynamic_flow]
 :TunnelVision scope [function|buffer]
 :TunnelVision source [lsp|treesitter|word|lsp,word|treesitter,word|lsp,treesitter,word|lsp_else_word|lsp_and_word]
@@ -272,6 +272,13 @@ Commands with optional arguments change defaults only for future tracks;
 `status` describes the active buffer. Run
 `:help tunnelvision` for the complete command and Lua API reference.
 
+### Vim integration
+
+`next`/`prev` are recorded in the jumplist, so `<C-o>` returns and `:jumps` lists
+them, like `n`/`N`. `:TunnelVision quickfix` (or `set_quickfix(bufnr?)`) exports
+the current buffer's tracked positions — deduplicated and sorted — to the
+quickfix list, where `:cnext`, `:cdo`, and `:cwindow` apply. See `:help
+tunnelvision-commands`.
 
 ### Suggested keymaps
 ```lua
@@ -283,6 +290,7 @@ vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "Next across al
 vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "Previous across all tracks" })
 vim.keymap.set("n", "]V", "<cmd>TunnelVision next-track<CR>", { desc = "Next in selected track" })
 vim.keymap.set("n", "[V", "<cmd>TunnelVision prev-track<CR>", { desc = "Previous in selected track" })
+vim.keymap.set("n", "<leader>vq", "<cmd>TunnelVision quickfix<CR>", { desc = "Tracked occurrences to quickfix" })
 vim.keymap.set("n", "<leader>vu", "<cmd>TunnelVision remove<CR>", { desc = "TunnelVision remove" })
 vim.keymap.set("n", "<Esc>", function()
   if tv.is_active() then
