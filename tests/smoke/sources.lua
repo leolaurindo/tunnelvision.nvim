@@ -910,20 +910,16 @@ return function(helpers)
       tunnelvision.on({ sources = { "treesitter" }, scope = "function" })
       assert_true(core.get_buf_state(scope_buf).path_set[2], "treesitter function scope should match alpha on line 2")
       assert_true(core.get_buf_state(scope_buf).path_set[3], "treesitter function scope should match alpha on line 3")
-      -- line 5 (outside function) may or may not be included depending on scope resolution;
-      -- we just verify function scope is narrower than buffer scope
-      local function_scope_matches = vim.tbl_count(core.get_buf_state(scope_buf).path_set)
+      assert_true(
+        not core.get_buf_state(scope_buf).path_set[5],
+        "treesitter function scope should exclude outside alpha"
+      )
       vim.cmd("TunnelVision off")
 
       -- scope = "buffer" should find alpha everywhere
       vim.api.nvim_win_set_cursor(0, { 2, 10 })
       tunnelvision.on({ sources = { "treesitter" }, scope = "buffer" })
       assert_true(core.get_buf_state(scope_buf).path_set[5], "treesitter buffer scope should match alpha on line 5")
-      local buffer_scope_matches = vim.tbl_count(core.get_buf_state(scope_buf).path_set)
-      assert_true(
-        buffer_scope_matches >= function_scope_matches,
-        "buffer scope should match at least as many lines as function scope"
-      )
       vim.cmd("TunnelVision off")
 
       -- combine(lsp, treesitter) fails the combined step when LSP is unavailable

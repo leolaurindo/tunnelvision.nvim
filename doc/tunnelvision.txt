@@ -555,7 +555,9 @@ Checks >
 
 - No symbol under cursor: move to a word identifier before `:TunnelVision on`.
 - Slow or empty LSP mode: try `:TunnelVision source word` to compare.
-- No LSP highlights: use `sources = { "lsp", "word" }` for word fallback.
+- No LSP highlights: the default already falls back to Tree-sitter, then word.
+  Run `:TunnelVision status` to inspect the configured source chain and
+  `:checkhealth tunnelvision` to check LSP documentHighlight support.
 - Too many word matches: try `sources = { "treesitter", "word" }`.
 - Function scope behaving like buffer: check Tree-sitter health/status.
 - Flow mode is heuristic, not full dataflow analysis.
