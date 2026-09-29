@@ -62,10 +62,12 @@ use({
 
 ## Basics
 
-Put the cursor on a symbol and run `:TunnelVision on` to focus it. Use
-`:TunnelVision add` to keep that track while focusing another symbol, navigate
-with `:TunnelVision next` and `:TunnelVision prev`, then finish with
-`:TunnelVision off`.
+Put the cursor on a symbol and run `:TunnelVision on` to focus it (replacing
+any tracks in this buffer). Move to another symbol and run `:TunnelVision add`
+to keep the first track and add a second. Navigate with `:TunnelVision next` and
+`:TunnelVision prev`, then finish with `:TunnelVision off`. For a one-shot mode,
+use `:TunnelVision mode flow` or `:TunnelVision mode dynamic`; later activations
+still use your setup defaults.
 
 See [suggested keymaps](#suggested-keymaps)
 
@@ -169,7 +171,7 @@ tracked identifiers.
 structure is unavailable, statements fall back to path lines and scope heads are
 skipped. Lookup starts at exact symbol columns, or the first nonblank column for
 custom lines without ranges. Structural lines are visual only: `next` and `prev`
-still navigate the source/flow path; warnings follow `fallback_warn` and `notify`.
+still navigate the source/flow path. Structural fallbacks are quiet.
 
 ## Configuration
 
@@ -189,7 +191,7 @@ One-shot dim colors, `dim_hl`, and `max_dim_lines` are not accepted.
 | `flow_settings.extra_keywords` | `{}` | Extra identifiers ignored during flow analysis. |
 | `flow_settings.analyzers` | `{ "treesitter", "text" }` | Ordered analyzer fallback; use one item for strict behavior. |
 | `flow_settings.max_depth` | `nil` | Positive hop limit; `nil` uses the internal 32-hop guard. |
-| `fallback_warn` | `once` | Legacy LSP fallback and structural warnings: `once` per buffer, `always`, or `never`. Strict LSP still warns once. |
+| `fallback_warn` | `once` | Legacy LSP-to-word fallback warning: `once` per buffer, `always`, or `never`. LSP timeouts and strict LSP warn once per buffer when notifications are enabled. |
 | `lsp_timeout_ms` | `150` | Async LSP `documentHighlight` timeout. |
 | `highlights` | `{ line = true }` | Enabled visual contexts and their positive styles. [See configs](#highlights) |
 | `dim` | `nil` | `nil` derives from `Comment`; accepts `"none"`, a highlight group, hex foreground, or style table. |
@@ -267,8 +269,11 @@ at most one moving track can coexist with pins. `next`/`prev` visit the union
 of occurrences (and unmatched custom/flow path lines). `next-track` and
 `prev-track` navigate only the track under the cursor (latest-added if tracks
 overlap); away from a tracked occurrence or path line, they use the latest track.
-Commands with optional arguments change defaults only for future tracks;
-`refresh` recomputes active tracks with their original options.
+`mode`, `direction`, `scope`, and `source` with an argument replace the current
+buffer's tracks with one activation; they do not change setup defaults.
+`direction` starts a flow track. Without an argument, they report the active
+configuration (or setup defaults when inactive). `refresh` recomputes active
+tracks with their original options.
 `status` describes the active buffer. `next`/`prev` record jumps in the
 jumplist (`<C-o>` returns), and `:TunnelVision quickfix` creates a new quickfix
 list with positions from all tracked symbols; `:colder` restores the previous
@@ -278,6 +283,7 @@ list. Run `:help tunnelvision` for the complete command and Lua API reference.
 ```lua
 local tv = require("tunnelvision")
 
+-- on replaces the current buffer's tracks; add keeps them and tracks another symbol.
 vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "Focus only this symbol" })
 vim.keymap.set("n", "<leader>va", "<cmd>TunnelVision add<CR>", { desc = "Add a tracked symbol" })
 vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "Next across all tracks" })

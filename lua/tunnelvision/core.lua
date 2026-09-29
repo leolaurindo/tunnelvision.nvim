@@ -62,8 +62,7 @@ function M.get_buf_state(bufnr)
     scope_head_set = {},
     warned_lsp_fallback = false,
     warned_lsp_strict = false,
-    warned_statement_fallback = false,
-    warned_scope_head_fallback = false,
+    warned_lsp_timeout = false,
     warned_large_buffer = false,
     last_compute_meta = nil,
     pending = false,
@@ -302,36 +301,18 @@ local function maybe_warn_strict_lsp(bs, silent, cfg)
   bs.warned_lsp_strict = true
 end
 
-local function maybe_warn_structural_fallback(bs, silent, cfg, fallback)
-  if silent or not state.config.notify or cfg.fallback_warn == "never" then
-    return
-  end
-
-  local always = cfg.fallback_warn == "always"
-  if fallback.statement and (always or not bs.warned_statement_fallback) then
-    M.notify("TunnelVision: statement structure unavailable; using matched lines", vim.log.levels.WARN)
-    bs.warned_statement_fallback = true
-  end
-  if fallback.scope_head and (always or not bs.warned_scope_head_fallback) then
-    M.notify("TunnelVision: structure unavailable; skipping scope heads", vim.log.levels.WARN)
-    bs.warned_scope_head_fallback = true
-  end
-end
-
 local function apply_path(bufnr, bs, track, opts, cfg, path_set, path_order, meta, ranges, context)
   track.pending = false
   track.request_id = nil
   track.request_handles = {}
   track.path_set, track.path_order, track.last_compute_meta, track.symbol_ranges = path_set, path_order, meta, ranges
-  local structural_fallback
-  track.statement_set, track.scope_head_set, structural_fallback =
+  track.statement_set, track.scope_head_set =
     require("tunnelvision.context").evaluate(cfg, track.path_set, track.symbol_ranges, bufnr, track.scope, context)
   -- Retain the rendered policy while a later asynchronous retarget is pending.
   track.rendered_highlights = cfg.highlights
   track.rendered_request_dim = cfg.request_dim
   maybe_warn_fallback(track, opts.silent, cfg)
   maybe_warn_strict_lsp(track, opts.silent, cfg)
-  maybe_warn_structural_fallback(track, opts.silent, cfg, structural_fallback)
   sync_buffer(bufnr, bs, opts.defer_render, true)
 end
 
@@ -382,6 +363,15 @@ local function resolve_path(bufnr, bs, track, symbol, anchor, scope, opts, cfg, 
         return
       end
 
+      if result.timed_out and state.config.notify and not bs.warned_lsp_timeout then
+        bs.warned_lsp_timeout = true
+        M.notify(
+          "TunnelVision: LSP documentHighlight timed out; future activations will retry LSP. "
+            .. 'To prioritize local matches, use setup({ sources = { "treesitter", "word", "lsp" } }). '
+            .. "See :help tunnelvision-troubleshooting",
+          vim.log.levels.WARN
+        )
+      end
       resolve(result)
     end, pending)
     if track.request_id == request_id then
@@ -997,19 +987,13 @@ function M.get_sources_label()
   return config.format_sources(state.config.sources)
 end
 
--- UI-facing source setter that accepts both legacy values and
--- comma-separated fallback chains (e.g. "lsp,word").
--- Invalid values produce a notify error and leave config unchanged.
-function M.set_source_command(value)
+-- Parse a command source without changing setup defaults.
+function M.parse_source_command(value)
   if config.valid_sources[value] then
-    M.set_source(value)
-    return
+    return config.sources_from_legacy_source(value)
   end
-
-  -- Single non-legacy source name (e.g. "treesitter")
   if config.valid_source_names[value] then
-    M.set_sources({ value })
-    return
+    return { value }
   end
 
   local parts = vim.split(value, ",")
@@ -1023,8 +1007,7 @@ function M.set_source_command(value)
       end
       names[#names + 1] = name
     end
-    M.set_sources(names)
-    return
+    return names
   end
 
   M.notify(

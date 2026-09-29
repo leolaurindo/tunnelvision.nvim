@@ -452,23 +452,43 @@ local function ensure_commands(api)
       values = { "reset", "none", "Comment" },
     },
     mode = {
-      get = api.get_mode,
-      set = api.set_mode,
+      get = function()
+        return api.status().mode
+      end,
+      set = function(value)
+        api.on({ mode = value })
+      end,
       values = { "static", "flow", "dynamic", "dynamic_flow" },
     },
     direction = {
-      get = api.get_direction,
-      set = api.set_direction,
+      get = function()
+        return api.status().direction
+      end,
+      set = function(value)
+        local mode = api.status().mode
+        api.on({ mode = mode == "dynamic_flow" and mode or "flow", flow_settings = { direction = value } })
+      end,
       values = { "forward", "backward", "both" },
     },
     scope = {
-      get = api.get_scope,
-      set = api.set_scope,
+      get = function()
+        return api.status().scope
+      end,
+      set = function(value)
+        api.on({ scope = value })
+      end,
       values = { "function", "buffer" },
     },
     source = {
-      get = core.get_sources_label,
-      set = core.set_source_command,
+      get = function()
+        return api.status().sources_label
+      end,
+      set = function(value)
+        local sources = core.parse_source_command(value)
+        if sources then
+          api.on({ sources = sources })
+        end
+      end,
       values = {
         "word",
         "lsp",
@@ -556,10 +576,6 @@ local function ensure_commands(api)
     end
 
     if sub.values then
-      if args[1] == "direction" and api.get_mode() ~= "flow" and api.get_mode() ~= "dynamic_flow" then
-        core.notify("TunnelVision: direction is used only in flow mode", vim.log.levels.WARN)
-      end
-
       local value = args[2]
       if not value or value == "" then
         local current = sub.get()
@@ -568,6 +584,10 @@ local function ensure_commands(api)
       end
       if args[3] then
         core.notify(("TunnelVision: '%s' takes a single value"):format(args[1]), vim.log.levels.ERROR)
+        return
+      end
+      if args[1] ~= "source" and not vim.tbl_contains(sub.values, value) then
+        core.notify(("TunnelVision: invalid %s '%s'"):format(args[1], value), vim.log.levels.ERROR)
         return
       end
       sub.set(value)

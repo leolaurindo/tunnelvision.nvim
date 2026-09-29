@@ -443,7 +443,6 @@ return function(helpers)
   vim.api.nvim_win_set_cursor(0, { 1, 8 }) -- alpha
 
   vim.cmd("TunnelVision mode dynamic")
-  vim.cmd("TunnelVision on")
 
   vim.api.nvim_win_set_cursor(0, { 2, 8 }) -- beta
   vim.api.nvim_exec_autocmds("CursorMoved", { buffer = 0 })
@@ -456,7 +455,13 @@ return function(helpers)
   assert_true(waited, "dynamic debounce did not retarget to latest symbol")
   assert_true(core.get_buf_state(dynamic_buf).path_set[3], "dynamic retarget should recompute path for latest symbol")
 
-  local no_op = core.activate(dynamic_buf, { silent = true, symbol = "gamma", cursor = { 3, 8 }, reuse_scope = true })
+  local no_op = core.activate(dynamic_buf, {
+    config = core.get_buf_state(dynamic_buf).config,
+    silent = true,
+    symbol = "gamma",
+    cursor = { 3, 8 },
+    reuse_scope = true,
+  })
   assert_true(no_op == false, "identical activate should no-op")
 
   vim.cmd("TunnelVision off")

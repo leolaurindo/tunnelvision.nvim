@@ -157,23 +157,30 @@ return function(helpers)
   assert_true(after_prev == before, "prev path jump did not return cursor")
 
   assert_true(core.get_scope() == "function", "default scope should be function")
-  for _, case in ipairs({
-    { "mode", "static", core.get_mode },
-    { "mode", "flow", core.get_mode },
-    { "mode", "dynamic", core.get_mode },
-    { "mode", "static", core.get_mode },
-    { "direction", "backward", core.get_direction },
-    { "direction", "both", core.get_direction },
-    { "direction", "forward", core.get_direction },
-    { "scope", "buffer", core.get_scope },
-    { "scope", "function", core.get_scope },
-    { "source", "lsp_else_word", core.get_source },
-    { "source", "lsp", core.get_source },
-    { "source", "lsp_and_word", core.get_source },
-    { "source", "word", core.get_source },
-  }) do
-    vim.cmd(("TunnelVision %s %s"):format(case[1], case[2]))
-    assert_true(case[3]() == case[2], ("%s %s not applied"):format(case[1], case[2]))
+  for _, mode in ipairs({ "flow", "dynamic", "static" }) do
+    vim.cmd("TunnelVision mode " .. mode)
+    assert_true(tunnelvision.status().mode == mode, "mode command should activate " .. mode)
+    assert_true(core.get_mode() == "static", "mode command should not change setup defaults")
+  end
+  vim.cmd("TunnelVision mode dynamic_flow")
+  vim.cmd("TunnelVision direction backward")
+  assert_true(tunnelvision.status().mode == "dynamic_flow", "direction should preserve dynamic flow")
+  vim.cmd("TunnelVision mode static")
+  for _, direction in ipairs({ "backward", "both", "forward" }) do
+    vim.cmd("TunnelVision direction " .. direction)
+    assert_true(tunnelvision.status().mode == "flow", "direction command should activate flow")
+    assert_true(tunnelvision.status().direction == direction, "direction command should apply " .. direction)
+    assert_true(core.get_direction() == "forward", "direction command should not change setup defaults")
+  end
+  for _, scope in ipairs({ "buffer", "function" }) do
+    vim.cmd("TunnelVision scope " .. scope)
+    assert_true(tunnelvision.status().scope == scope, "scope command should apply " .. scope)
+    assert_true(core.get_scope() == "function", "scope command should not change setup defaults")
+  end
+  for _, source in ipairs({ "lsp_else_word", "lsp", "lsp_and_word", "word" }) do
+    vim.cmd("TunnelVision source " .. source)
+    assert_true(tunnelvision.status().source == source, "source command should apply " .. source)
+    assert_sources({ "word" }, "source command should not change setup defaults")
   end
   assert_true(
     vim.tbl_contains(vim.fn.getcompletion("TunnelVision direction b", "cmdline"), "backward"),
@@ -182,7 +189,8 @@ return function(helpers)
 
   -- Fallback-chain command syntax
   vim.cmd("TunnelVision source lsp,word")
-  assert_sources({ "lsp", "word" }, "comma-separated fallback chain lsp,word")
+  assert_true(tunnelvision.status().sources_label == "lsp,word", "comma-separated command source should activate")
+  assert_sources({ "word" }, "comma-separated command source should not change setup defaults")
 
   tunnelvision.setup({ notify = false })
   local sources_copy = tunnelvision.get_sources()
@@ -190,10 +198,19 @@ return function(helpers)
   assert_sources({ "lsp", "treesitter", "word" }, "get_sources should return an isolated copy")
   for _, value in ipairs({ "treesitter", "lsp,treesitter,word" }) do
     vim.cmd("TunnelVision source " .. value)
-    assert_sources(vim.split(value, ",", { plain = true }), "Tree-sitter command source " .. value)
+    assert_true(tunnelvision.status().sources_label == value, "Tree-sitter command source " .. value)
+    assert_sources({ "lsp", "treesitter", "word" }, "source command should preserve setup defaults")
   end
   vim.cmd("TunnelVision source lsp,word")
-  assert_sources({ "lsp", "word" }, "restored to lsp,word")
+  assert_true(tunnelvision.status().sources_label == "lsp,word", "restored active source to lsp,word")
+  vim.cmd("TunnelVision mode invalid")
+  assert_true(tunnelvision.status().sources_label == "lsp,word", "invalid command should preserve active tracks")
+  vim.cmd("TunnelVision on")
+  assert_true(
+    tunnelvision.status().sources_label == "lsp,treesitter,word",
+    "activation after a one-shot command should use setup defaults"
+  )
+  vim.cmd("TunnelVision source lsp,word")
 
   -- Status display uses source= label
   do
@@ -220,7 +237,8 @@ return function(helpers)
     end
     vim.cmd("TunnelVision source lsp,foo")
     assert_true(notify_msg and notify_msg:find("invalid source"), "invalid chain source should error")
-    assert_sources({ "lsp", "word" }, "sources unchanged after invalid chain")
+    assert_true(tunnelvision.status().sources_label == "lsp,word", "active source unchanged after invalid chain")
+    assert_sources({ "lsp", "treesitter", "word" }, "setup sources unchanged after invalid chain")
     core.notify = orig_notify
   end
 

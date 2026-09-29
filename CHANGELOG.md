@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `:TunnelVision dim <#RRGGBB|group|none|reset>` sets or resets buffer dimming.
 
 ### Changed
+- `:TunnelVision mode`, `direction`, `scope`, and `source` with values now
+  activate one track without changing setup defaults. Expected Tree-sitter
+  structural fallbacks no longer warn. LSP documentHighlight timeouts warn once
+  per buffer and suggest a local-first source order.
 - Dimming is a shared buffer layer, enabled by any requesting track or a
   buffer's force setting. `on({ dim = "none" })` opts out only that track.
 - One-shot dim colors, `dim_hl`, and `max_dim_lines` are no longer accepted;

@@ -265,33 +265,20 @@ return function(helpers)
     end
 
     local structural_fallback_buf = new_buffer({ "alpha = 1", "print(alpha)" }, "plaintext")
-    local function warning_count(policy, notify)
-      messages = {}
-      tunnelvision.setup({
-        notify = notify,
-        source = "word",
-        scope = "buffer",
-        fallback_warn = policy,
-        highlights = { statement = true, scope_head = true },
-      })
-      vim.api.nvim_win_set_cursor(0, { 1, 1 })
-      tunnelvision.on()
-      local bs = core.get_buf_state(structural_fallback_buf)
-      assert_true(vim.deep_equal(bs.statement_set, bs.path_set), "missing parser should preserve matched geometry")
-      assert_true(next(bs.scope_head_set) == nil, "missing parser should skip scope heads")
-      core.activate(structural_fallback_buf, { force = true, silent = false, symbol = "alpha", cursor = { 1, 1 } })
-      vim.cmd("TunnelVision off")
-      return #messages
-    end
-    for _, case in ipairs({
-      { "once", true, 2 },
-      { "always", true, 4 },
-      { "never", true, 0 },
-      { "always", false, 0 },
-    }) do
-      assert_true(warning_count(case[1], case[2]) == case[3], "structural fallback_warn " .. case[1])
-    end
-
+    tunnelvision.setup({
+      notify = true,
+      source = "word",
+      scope = "buffer",
+      highlights = { statement = true, scope_head = true },
+    })
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    tunnelvision.on()
+    local bs = core.get_buf_state(structural_fallback_buf)
+    assert_true(vim.deep_equal(bs.statement_set, bs.path_set), "missing parser should preserve matched geometry")
+    assert_true(next(bs.scope_head_set) == nil, "missing parser should skip scope heads")
+    core.activate(structural_fallback_buf, { force = true, silent = false, symbol = "alpha", cursor = { 1, 1 } })
+    assert_true(#messages == 0, "expected structural fallback should not warn")
+    vim.cmd("TunnelVision off")
     vim.notify = orig_notify
   end
 

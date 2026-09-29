@@ -530,10 +530,20 @@ return function(helpers)
     respond(batch[4], nil, { code = -1, message = "boom" })
     assert_true(not bs.pending and bs.path_set[2], "valid partial results should survive another client error")
 
+    local timeout_messages = {}
+    local original_notify = vim.notify
+    vim.notify = function(message)
+      timeout_messages[#timeout_messages + 1] = message
+    end
+    core.state.config.notify = true
     core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 3, 0 } })
     batch, timeout = take_batch()
     respond(batch[1], { { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } } })
     timeout()
+    assert_true(
+      #timeout_messages == 1 and timeout_messages[1]:find("LSP documentHighlight timed out"),
+      "partial LSP timeout should warn"
+    )
     assert_true(was_canceled(batch[2]) and not was_canceled(batch[1]), "timeout should cancel only unresolved clients")
     assert_true(not bs.pending, "partial result should complete at the global timeout")
     assert_true(bs.path_set[3], "timed-out clients should not discard valid partial results")
@@ -565,6 +575,8 @@ return function(helpers)
       was_canceled(batch[1]) and was_canceled(batch[2]) and bs.last_compute_meta.used_source == "treesitter",
       "reentrant total timeout should cancel its owned requests and fall back"
     )
+    assert_true(#timeout_messages == 1, "repeated LSP timeouts should warn once per buffer")
+    vim.notify = original_notify
 
     tunnelvision.setup({ notify = false, sources = { "lsp" }, scope = "buffer", lsp_timeout_ms = 1000 })
     core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })

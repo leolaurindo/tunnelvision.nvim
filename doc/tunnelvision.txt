@@ -86,9 +86,11 @@ Call `require("tunnelvision").setup()` first so `:TunnelVision` is available.
   :TunnelVision off
 
 Use |:TunnelVision| with subcommands. `on` focuses one symbol and replaces
-existing tracks; `add` keeps them. `mode`, `direction`, `scope`, and `source`
-show their persistent defaults when called without an argument. Use
-`:TunnelVision status` to inspect the active buffer configuration.
+existing tracks; `add` keeps them and tracks another symbol. `mode`,
+`direction`, `scope`, and `source` with arguments activate a new track without
+changing setup defaults. Without an argument, they report the active setting
+(or setup default when inactive). Use `:TunnelVision status` to inspect the
+active buffer configuration.
 
 ===============================================================================
 4. Commands                                               *tunnelvision-commands*
@@ -158,17 +160,20 @@ show their persistent defaults when called without an argument. Use
       Show active-buffer state, mode, source chain, and tracked symbols.
 
   :TunnelVision mode [static|flow|dynamic|dynamic_flow]
-      Query or set the mode default for new tracks. Existing tracks are unchanged.
+      With a value, replace tracks with one track in that mode. Without a value,
+      show the active mode (or setup default when inactive).
 
   :TunnelVision direction [forward|backward|both]
-      Query or set the persistent flow-direction default.
-      Direction is used in flow and dynamic_flow modes.
+      With a value, replace tracks with one flow track in that direction.
+      Without a value, show the active direction (or setup default).
 
   :TunnelVision scope [function|buffer]
-      Query or set the persistent search-scope default.
+      With a value, replace tracks with one track using that search scope.
+      Without a value, show the active scope (or setup default).
 
   :TunnelVision source [value]
-      Query or set the persistent source-chain default.
+      With a value, replace tracks with one track using that source chain.
+      Without a value, show the active chain (or setup default).
 
       Supported command values include:
         word
@@ -215,7 +220,7 @@ Options >
   flow_settings.extra_keywords  extra identifiers ignored in flow analysis
   flow_settings.analyzers       ordered treesitter | text fallback chain
   flow_settings.max_depth       positive hop limit capped at 32; nil uses 32
-  fallback_warn                 LSP fallback and structural: once | always | never
+  fallback_warn                 legacy LSP-to-word fallback: once | always | never
   lsp_timeout_ms                timeout for async LSP documentHighlight requests
   highlights                    visual contexts and positive styles
   dim                           nil, "none", highlight group, #RRGGBB, or table
@@ -228,9 +233,10 @@ By default, `dim = nil` derives TunnelVision's dim style from your colorscheme's
 that highlight group. `dim = "none"` disables dimming but retains positive
 highlight styles.
 
-`fallback_warn` controls legacy LSP-to-word and structural warnings. Strict LSP
-mode warns once per buffer when unavailable regardless of this setting. All
-notifications, including command queries and status output, respect `notify`.
+`fallback_warn` controls legacy LSP-to-word warnings. Structural fallbacks are
+quiet. Strict LSP failures and LSP timeouts warn once per buffer regardless of
+this setting. All notifications, including command queries and status output,
+respect `notify`.
 
 Flow analyzers are separate from sources. Sources choose the initial matching
 path; flow analyzers expand assignments from the active symbol. The default
@@ -495,9 +501,7 @@ identifiers are added on flow path lines.
 not require the `treesitter` source, and LSP does not resolve them. Lookup starts
 at exact symbol columns, or at the first nonblank column for a custom-source line
 without a range. If structure is unavailable or unsafe, `statement` falls back
-to path lines and `scope_head` is skipped. Warnings obey
-`fallback_warn = "once" | "always" | "never"` (`once` is per buffer) and
-`notify`.
+to path lines and `scope_head` is skipped without a warning.
 
 Structural lines never become navigation targets. `next` and `prev` continue
 through source/flow path lines only.
@@ -554,6 +558,10 @@ Checks >
 11. Troubleshooting                         *tunnelvision-troubleshooting*
 
 - No symbol under cursor: move to a word identifier before `:TunnelVision on`.
+- LSP documentHighlight timeout: TunnelVision warns once per buffer when a
+  request reaches `lsp_timeout_ms` (150 ms by default). Later activations still
+  retry LSP. To prioritize local matches, use
+  `setup({ sources = { "treesitter", "word", "lsp" } })`.
 - Slow or empty LSP mode: try `:TunnelVision source word` to compare.
 - No LSP highlights: the default already falls back to Tree-sitter, then word.
   Run `:TunnelVision status` to inspect the configured source chain and
