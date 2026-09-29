@@ -269,16 +269,10 @@ of occurrences (and unmatched custom/flow path lines). `next-track` and
 overlap); away from a tracked occurrence or path line, they use the latest track.
 Commands with optional arguments change defaults only for future tracks;
 `refresh` recomputes active tracks with their original options.
-`status` describes the active buffer. Run
-`:help tunnelvision` for the complete command and Lua API reference.
-
-### Vim integration
-
-`next`/`prev` are recorded in the jumplist, so `<C-o>` returns and `:jumps` lists
-them, like `n`/`N`. `:TunnelVision quickfix` (or `set_quickfix(bufnr?)`) exports
-the current buffer's tracked positions — deduplicated and sorted — to the
-quickfix list, where `:cnext`, `:cdo`, and `:cwindow` apply. See `:help
-tunnelvision-commands`.
+`status` describes the active buffer. `next`/`prev` record jumps in the
+jumplist (`<C-o>` returns), and `:TunnelVision quickfix` creates a new quickfix
+list with positions from all tracked symbols; `:colder` restores the previous
+list. Run `:help tunnelvision` for the complete command and Lua API reference.
 
 ### Suggested keymaps
 ```lua

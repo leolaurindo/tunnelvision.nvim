@@ -149,9 +149,10 @@ show their persistent defaults when called without an argument. Use
       Recompute all active tracks with their saved options.
 
   :TunnelVision quickfix
-      Put the tracked occurrence positions of the current buffer into the
-      quickfix list. Entries are deduplicated across tracks and sorted, so
-      overlapping tracks never repeat a position. The list is replaced.
+      Put positions from all tracked symbols in the current buffer into a
+      new quickfix list. Entries are deduplicated across tracks and sorted, so
+      overlapping tracks never repeat a position. Use |:colder| to return to
+      the previous list.
 
   :TunnelVision status
       Show active-buffer state, mode, source chain, and tracked symbols.
@@ -321,12 +322,12 @@ Example >lua
 `get_source()` and `set_source(source)` are compatibility APIs for old source
 strings. Prefer `get_sources()` and `set_sources(sources)` for new code.
 
-`set_quickfix(bufnr?)` fills the quickfix list with the tracked positions of a
-buffer (current buffer by default) and returns the number of entries, or 0 when
-nothing is tracked or the source buffer is inactive. Positions are deduplicated
-across tracks and sorted, matching what `next`/`prev` visit. The list is
-replaced, so it is an export of the current track set rather than an append.
-From there the usual commands apply, including |:cnext|, |:cdo|, and |:cwindow|.
+`set_quickfix(bufnr?)` fills a new quickfix list with positions from all tracks
+in a buffer (current buffer by default) and returns the number of entries, or 0
+when nothing is tracked or the source buffer is inactive. Positions are
+deduplicated across tracks and sorted, matching what `next`/`prev` visit. Older
+quickfix results remain accessible with |:colder|; the usual commands apply to
+the new list, including |:cnext|, |:cdo|, and |:cwindow|.
 
 ===============================================================================
 7. Sources                                                *tunnelvision-sources*

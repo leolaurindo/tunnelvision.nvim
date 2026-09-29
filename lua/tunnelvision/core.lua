@@ -873,7 +873,7 @@ function M.set_quickfix(bufnr)
 
   local name = vim.api.nvim_buf_get_name(b)
   local title = name ~= "" and vim.fn.fnamemodify(name, ":~:.") or "[No Name]"
-  vim.fn.setqflist({}, "r", { title = "TunnelVision: " .. title, items = items })
+  vim.fn.setqflist({}, " ", { title = "TunnelVision: " .. title, items = items })
   return #items
 end
 
