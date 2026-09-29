@@ -138,46 +138,26 @@ return function(helpers)
     "missing dim groups should use the Comment fallback"
   )
 
-  -- one-shot dim = "#AA33CC" works
-  local oneshot_hex_buf = new_buffer({
-    "local alpha = 1",
-    "print(alpha)",
-  })
+  -- Per-buffer styles are independent of activation and setup styles.
+  local oneshot_hex_buf = new_buffer({ "local alpha = 1", "print(alpha)" })
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
-  tunnelvision.on({ source = "word", dim = "#AA33CC" })
-  local oneshot_hex_hl =
-    vim.api.nvim_get_hl(0, { name = core.get_buf_state(oneshot_hex_buf).config.dim_hl, link = false })
-  assert_true(oneshot_hex_hl and oneshot_hex_hl.fg == 0xAA33CC, "one-shot dim = '#AA33CC' should set fg")
-  vim.cmd("TunnelVision off")
-
-  vim.api.nvim_win_set_cursor(0, { 1, 7 })
-  tunnelvision.on({ source = "word", dim_hl = "CompatDim" })
+  assert_true(not tunnelvision.on({ source = "word", dim = "#AA33CC" }), "one-shot dim colors should be rejected")
+  assert_true(not tunnelvision.is_active(), "rejected activation should not create a track")
+  assert_true(tunnelvision.set_buffer_dim("#AA33CC"), "buffer dim style should be accepted")
+  tunnelvision.on({ source = "word" })
+  local buffer_group = ("TunnelVisionDimBuffer%d"):format(oneshot_hex_buf)
   assert_true(
-    core.get_buf_state(oneshot_hex_buf).config.dim_hl == "CompatDim",
-    "deprecated one-shot dim_hl should select its public group"
+    vim.api.nvim_get_hl(0, { name = buffer_group, link = false }).fg == 0xAA33CC,
+    "buffer dim override should use its own group"
   )
-  vim.cmd("TunnelVision off")
-
-  -- one-shot dim without one-shot dim_hl uses buffer-specific dim group
+  tunnelvision.off()
+  assert_true(core.get_buf_state(oneshot_hex_buf).dim_override ~= nil, "off should retain the buffer override")
+  tunnelvision.set_buffer_dim(nil)
   tunnelvision.setup({ notify = false, dim = { fg = 0x445566 } })
-  local buf_a = new_buffer({
-    "local alpha = 1",
-    "print(alpha)",
-  })
-  vim.api.nvim_win_set_cursor(0, { 1, 7 })
-  tunnelvision.on({ source = "word", dim = "#BB44DD" })
-  local buf_a_dim_hl = core.get_buf_state(buf_a).config.dim_hl
   assert_true(
-    buf_a_dim_hl:match("TunnelVisionDim%d+$"),
-    "one-shot dim without one-shot dim_hl should use buffer-specific group"
+    vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false }).fg == 0x445566,
+    "buffer overrides should not affect the global style"
   )
-  -- Global dim should still use global group
-  local global_dim_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
-  assert_true(global_dim_hl and global_dim_hl.fg == 0x445566, "global dim should be unchanged by buffer-specific group")
-  -- Buffer-specific group should have the one-shot color
-  local buf_a_hl = vim.api.nvim_get_hl(0, { name = buf_a_dim_hl, link = false })
-  assert_true(buf_a_hl and buf_a_hl.fg == 0xBB44DD, "buffer-specific dim group should have one-shot color")
-  vim.cmd("TunnelVision off")
 
   -- invalid dim falls back to Comment-derived behavior
   tunnelvision.setup({ notify = false, dim = 42 })
@@ -332,7 +312,7 @@ return function(helpers)
       ui.render(render_buf)
     end)
     assert_true(
-      setups[bs.config] == 1 and vim.tbl_count(setups) == 1,
+      setups[core.state.config] == 1 and vim.tbl_count(setups) == 1,
       "each render should setup only its effective highlights once"
     )
     local symbol_marks = marks(render_buf)
@@ -363,7 +343,7 @@ return function(helpers)
       "empty styles should preserve exact visible geometry: " .. vim.inspect(mark_snapshot(render_buf))
     )
 
-    bs.symbol_ranges = {
+    bs.tracks[1].symbol_ranges = {
       { line = 1, start_col = 3, end_col = 8 },
       { line = 1, start_col = 4, end_col = 6 },
       { line = 1, start_col = 12, end_col = 17 },
@@ -392,8 +372,8 @@ return function(helpers)
     reset_highlight_calls()
     tunnelvision.on()
     bs = core.get_buf_state(render_buf)
-    bs.scope_head_set = { [1] = true }
-    bs.statement_set = { [1] = true }
+    bs.tracks[1].scope_head_set = { [1] = true }
+    bs.tracks[1].statement_set = { [1] = true }
     ui.clear_render_groups(bs)
     reset_highlight_calls()
     ui.render(render_buf)
@@ -458,12 +438,12 @@ return function(helpers)
     })
     tunnelvision.on()
     local collision_bs = core.get_buf_state(collision_buf)
-    collision_bs.symbol_ranges = {}
-    collision_bs.statement_set = {}
+    collision_bs.tracks[1].symbol_ranges = {}
+    collision_bs.tracks[1].statement_set = {}
 
     local function assert_collision_order(valid_line, invalid_line)
-      collision_bs.path_set = { [valid_line] = true }
-      collision_bs.scope_head_set = { [invalid_line] = true }
+      collision_bs.tracks[1].path_set = { [valid_line] = true }
+      collision_bs.tracks[1].scope_head_set = { [invalid_line] = true }
       ui.clear_render_groups(collision_bs)
       ui.render(collision_buf)
       local collision_marks = marks(collision_buf)
@@ -535,8 +515,8 @@ return function(helpers)
     reset_highlight_calls()
     local expected_setups = { [false] = 1 }
     for _, state in pairs(core.state.bufs) do
-      if state.active and not state.pending then
-        expected_setups[state.config] = (expected_setups[state.config] or 0) + 1
+      if state.active and not state.dim_override and core.state.config.dim ~= "none" then
+        expected_setups[core.state.config] = (expected_setups[core.state.config] or 0) + 1
       end
     end
     setups = capture_setups(function()
@@ -625,10 +605,10 @@ return function(helpers)
     tunnelvision.on()
     reset_highlight_calls()
     assert_true(
-      core.activate(render_buf, { max_dim_lines = 1, symbol = "alpha", cursor = { 1, 4 } }),
-      "one-shot max_dim_lines should invalidate same-target rendering"
+      not core.activate(render_buf, { max_dim_lines = 1, symbol = "alpha", cursor = { 1, 4 } }),
+      "one-shot max_dim_lines should be rejected"
     )
-    assert_true(core.get_buf_state(render_buf).config.max_dim_lines == 1, "one-shot max_dim_lines should normalize")
+    tunnelvision.setup({ notify = false, max_dim_lines = 1, dim = nil })
     local large_marks = marks(render_buf)
     assert_true(#large_marks == 1, "large-buffer dim skipping should retain positive path styles")
     assert_true(large_marks[1][4].hl_group ~= nil, "large-buffer positive style should use a range highlight")
@@ -674,6 +654,36 @@ return function(helpers)
       "setup dim none should create no dim extmarks"
     )
     vim.cmd("TunnelVision off")
+  end
+
+  -- Buffer dim commands change style without changing tracks; reset also clears force.
+  do
+    tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+    local dim_buf = new_buffer({ "alpha", "outside" })
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd("TunnelVision dim #123456")
+    local bs = core.get_buf_state(dim_buf)
+    assert_true(vim.deep_equal(bs.dim_override, { fg = "#123456" }), "dim command should set a buffer color")
+    tunnelvision.on()
+    assert_true(
+      vim.api.nvim_get_hl(0, { name = ("TunnelVisionDimBuffer%d"):format(dim_buf), link = false }).fg == 0x123456,
+      "dim command should apply to an active buffer"
+    )
+    vim.cmd("TunnelVision dim none")
+    assert_true(#marks(dim_buf) == 0, "dim none should disable the shared layer")
+    vim.cmd("TunnelVision dim Comment")
+    assert_true(bs.dim_override == "Comment" and #marks(dim_buf) > 0, "dim command should accept group names")
+    tunnelvision.force_buffer_dim(true)
+    vim.cmd("TunnelVision dim reset")
+    assert_true(bs.dim_override == nil and not bs.force_dim, "dim reset should clear override and force together")
+    assert_true(marks(dim_buf)[1][4].line_hl_group == "TunnelVisionDim", "reset should use global dim")
+    vim.cmd("TunnelVision dim #123")
+    assert_true(bs.dim_override == nil, "invalid hex command should leave dim unchanged")
+    assert_true(
+      vim.tbl_contains(vim.fn.getcompletion("TunnelVision dim r", "cmdline"), "reset"),
+      "dim completion should offer reset"
+    )
+    tunnelvision.off()
   end
 
   -- Documented baseline for later domains.

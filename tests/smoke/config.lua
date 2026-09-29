@@ -194,7 +194,10 @@ return function(helpers)
     end
     vim.cmd("TunnelVision status")
     assert_true(notify_msg and notify_msg:find("source="), "status should use source= label")
-    assert_true(notify_msg and notify_msg:find("source=lsp,word"), "status should show formatted source label")
+    assert_true(
+      notify_msg and notify_msg:find("source=" .. tunnelvision.status().sources_label, 1, true),
+      "status should show active source label"
+    )
     core.notify = orig_notify
   end
 

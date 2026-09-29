@@ -80,6 +80,8 @@ Call `require("tunnelvision").setup()` first so `:TunnelVision` is available.
   :TunnelVision on
   :TunnelVision next
   :TunnelVision prev
+  :TunnelVision next-track
+  :TunnelVision prev-track
   :TunnelVision off
 
 Use |:TunnelVision| with subcommands. `mode`, `direction`, `scope`, and `source`
@@ -91,35 +93,60 @@ show their persistent defaults when called without an argument. Use
                                                         *:TunnelVision*
 
   :TunnelVision on
-      Activate TunnelVision for the symbol under cursor.
+      Add a track for the symbol under cursor without replacing other tracks.
+
+  :TunnelVision pin
+      Pin the symbol under cursor even while a dynamic track is active.
+
+  :TunnelVision remove
+      Remove the track under cursor, or the most recently added track.
 
   :TunnelVision retarget
-      Alias of `:TunnelVision on`.
+      Replace all tracks in the current buffer with the current symbol.
 
   :TunnelVision off
-      Deactivate TunnelVision in the current buffer.
+      Clear all tracks in the current buffer.
 
   :TunnelVision toggle
       Toggle TunnelVision on or off.
 
+  :TunnelVision dim {#RRGGBB|group|none}
+      Override the dim style in the current buffer. A hex value sets the
+      foreground; a highlight group copies its attributes. `none` disables
+      dimming even if a track requests it.
+
+  :TunnelVision dim reset
+      Clear the buffer dim override and force-dim setting, returning to the
+      setup style. Without an argument, `dim` reports the current override.
+
   :TunnelVision next
-      Jump to the next visible path line.
+      Jump to the next occurrence or unmatched path line across all tracks.
 
   :TunnelVision prev
-      Jump to the previous visible path line.
+      Jump to the previous occurrence or unmatched path line across all tracks.
+
+  :TunnelVision next-track
+      Jump to the next occurrence or unmatched path line in the track under the cursor.
+      If tracks overlap, use the latest-added track. Away from a tracked occurrence
+      or path line, use the latest track.
+
+  :TunnelVision prev-track
+      Jump to the previous occurrence or unmatched path line in the selected track.
+      If tracks overlap, use the latest-added track. Away from a tracked occurrence
+      or path line, use the latest track.
 
   :TunnelVision refresh
-      Recompute the current path.
+      Recompute all active tracks with their saved options.
 
   :TunnelVision status
-      Show active-buffer state, mode, direction, scope, source chain, and symbol.
+      Show active-buffer state, mode, source chain, and tracked symbols.
 
-  :TunnelVision mode [static|flow|dynamic]
-      Query or set the persistent mode default.
+  :TunnelVision mode [static|flow|dynamic|dynamic_flow]
+      Query or set the mode default for new tracks. Existing tracks are unchanged.
 
   :TunnelVision direction [forward|backward|both]
       Query or set the persistent flow-direction default.
-      Direction is used only in flow mode.
+      Direction is used in flow and dynamic_flow modes.
 
   :TunnelVision scope [function|buffer]
       Query or set the persistent search-scope default.
@@ -165,7 +192,7 @@ Default shape >lua
 <
 
 Options >
-  mode                          static | flow | dynamic
+  mode                          static | flow | dynamic | dynamic_flow
   scope                         function | buffer
   sources                       ordered source fallback chain
   flow_settings.direction       forward | backward | both
@@ -206,16 +233,34 @@ Dim examples >lua
   require("tunnelvision").setup({ dim = "none" })
 <
 
+The setup style is the default for every buffer. `set_buffer_dim(style, bufnr?)`
+sets a buffer-local override (same style forms as `setup({ dim = ... })`);
+`set_buffer_dim(nil, bufnr?)` clears it and force-dim, returning to setup's style.
+`:TunnelVision dim reset` does the same for the current buffer.
+`force_buffer_dim(true, bufnr?)` enables dimming even if all active tracks
+opt out; pass `false` to stop forcing it. Both return a boolean and default to
+the current buffer. Neither a style override nor force creates visible dimming
+without active tracks; an effective style of `"none"` prevents dimming even
+when forced. A buffer override may replace a setup style of `"none"`. Settings
+survive `off()` and are cleared on buffer deletion. `setup()` changes dim style
+for active buffers without reconfiguring their tracks.
+
 ===============================================================================
 6. Lua API                                                    *tunnelvision-api*
 
 From `require("tunnelvision")` >
   setup(opts?)
   on(opts?)
+  pin(opts?)
+  on_many(positions, opts?)
+  set_buffer_dim(style?, bufnr?)
+  force_buffer_dim(enabled, bufnr?)
+  remove()
+  retarget(opts?)
   off()
   toggle()
-  next(count?)
-  prev(count?)
+  next(count?) / prev(count?)
+  next_track(count?) / prev_track(count?)
   refresh()
   is_active(bufnr?)
   status(bufnr?)
@@ -230,9 +275,22 @@ From `require("tunnelvision")` >
 <
 
 `on(opts)` accepts one-shot overrides such as `scope`, `sources`, `mode`,
-`flow_settings`, `highlights`, and `dim`. These overrides affect that activation
-without changing defaults set by `setup()` or runtime setters. A supplied
-non-empty `highlights` table replaces setup highlight rules for that activation.
+`flow_settings`, and `highlights`. A supplied non-empty `highlights` table
+replaces setup highlight rules for that activation. `on({ dim = "none" })`
+opts that activation out of requesting dimming; omitted `dim` requests it.
+One-shot dim colors, `dim_hl`, and `max_dim_lines` are rejected. Each track
+styles its own ranges; newer tracks override conflicting style attributes.
+The focused union shares one buffer-wide dim layer. `next`/`prev` navigate the
+union of all track occurrences.
+`next_track`/`prev_track` select the track at the cursor (the most recently added
+match if tracks overlap), falling back to the latest track when the cursor is
+outside tracked occurrences and path lines. `dynamic_flow` moves and recomputes
+flow; `pin({ mode = "flow" })` and `pin({ mode = "dynamic_flow" })` create
+pinned flow tracks.
+`on_many(positions, opts)` accepts (1,0)-indexed current-buffer positions;
+with dynamic mode, all but the last position are pinned. Neovim 0.13's
+cursor-enumeration behavior must be verified before native multicursor
+activation or cursor creation is wired up.
 
 Example >lua
   local tv = require("tunnelvision")
@@ -357,6 +415,8 @@ Overlapping contexts compose in this order:
   scope_head -> statement -> line -> symbol
 
 Later contexts override only attributes they specify and inherit the rest.
+Across tracks, newer tracks override only conflicting attributes. Unstyled
+contexts still protect their ranges from the shared dim layer.
 Supported style keys are `fg`, `bg`, `bold`, `italic`, `underline`, `undercurl`,
 and `strikethrough`. `fg` and `bg` accept Neovim color strings or numbers; the
 other standard keys are booleans. Numeric `bg_opacity` is clamped to 0 through 1
@@ -388,7 +448,7 @@ Examples >lua
     },
   }
 
-  -- Positive styles without dimming
+  -- Positive styles without requesting dimming from this track
   {
     dim = "none",
     highlights = { symbol = { bold = true } },
@@ -437,6 +497,10 @@ configuration migration is required. `setup()`, `setup({})`, legacy `source`
 values, and modern `sources` chains behave as before without `highlights`: line
 focus with Comment-derived dimming. In particular, `source = "lsp_else_word"`
 maps to `sources = { "lsp", "word" }`.
+
+Breaking change after 0.4: one-shot dim colors must move to
+`set_buffer_dim(style)` or `setup({ dim = style })`; only `on({ dim = "none" })`
+remains valid. One-shot `dim_hl` and `max_dim_lines` must move to `setup()`.
 
 ===============================================================================
 10. Health                                                  *tunnelvision-health*
