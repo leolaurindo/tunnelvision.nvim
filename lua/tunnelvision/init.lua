@@ -3,7 +3,7 @@ local ui = require("tunnelvision.ui")
 
 local M = {}
 
-function M.on(opts)
+function M.add(opts)
   return core.activate(vim.api.nvim_get_current_buf(), opts)
 end
 
@@ -18,7 +18,7 @@ function M.remove()
   return core.remove(vim.api.nvim_get_current_buf())
 end
 
-function M.retarget(opts)
+function M.on(opts)
   opts = opts or {}
   local bufnr = vim.api.nvim_get_current_buf()
   if opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil then
@@ -34,6 +34,8 @@ function M.retarget(opts)
   core.deactivate(bufnr)
   return core.activate(bufnr, vim.tbl_extend("force", opts, { symbol = symbol }))
 end
+
+M.retarget = M.on
 
 function M.on_many(positions, opts)
   return core.activate_many(vim.api.nvim_get_current_buf(), positions, opts)

@@ -426,6 +426,7 @@ return function(helpers)
       highlights = { line = { fg = 0xAABBCC } },
       lsp_timeout_ms = 1000,
     })
+    local pre_request_marks = marks(lsp_buf)
     core.activate(lsp_buf, { silent = true, symbol = "alpha", cursor = { 1, 5 } })
     local batch = take_batch()
     local timeout
@@ -445,7 +446,10 @@ return function(helpers)
         and pending_status.flow_tracked_count == 0,
       "pending status should not expose stale flow metadata"
     )
-    assert_true(vim.deep_equal(marks(lsp_buf), old_marks), "pending LSP request should retain the previous render")
+    assert_true(
+      vim.deep_equal(marks(lsp_buf), pre_request_marks),
+      "pending LSP request should retain the previous render"
+    )
     local ui = require("tunnelvision.ui")
     local resolver = require("tunnelvision.resolver")
     local orig_ensure_highlights = ui.ensure_highlights

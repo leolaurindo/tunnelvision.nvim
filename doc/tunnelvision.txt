@@ -78,13 +78,15 @@ Requirements >
 Call `require("tunnelvision").setup()` first so `:TunnelVision` is available.
 
   :TunnelVision on
+  :TunnelVision add
   :TunnelVision next
   :TunnelVision prev
   :TunnelVision next-track
   :TunnelVision prev-track
   :TunnelVision off
 
-Use |:TunnelVision| with subcommands. `mode`, `direction`, `scope`, and `source`
+Use |:TunnelVision| with subcommands. `on` focuses one symbol and replaces
+existing tracks; `add` keeps them. `mode`, `direction`, `scope`, and `source`
 show their persistent defaults when called without an argument. Use
 `:TunnelVision status` to inspect the active buffer configuration.
 
@@ -93,16 +95,19 @@ show their persistent defaults when called without an argument. Use
                                                         *:TunnelVision*
 
   :TunnelVision on
-      Add a track for the symbol under cursor without replacing other tracks.
+      Replace all tracks with the symbol under cursor (the original behavior).
+
+  :TunnelVision add
+      Add the symbol under cursor without removing other tracks.
 
   :TunnelVision pin
-      Pin the symbol under cursor even while a dynamic track is active.
+      Add a fixed track even with a dynamic mode. One-shot highlights apply.
 
   :TunnelVision remove
       Remove the track under cursor, or the most recently added track.
 
   :TunnelVision retarget
-      Replace all tracks in the current buffer with the current symbol.
+      Compatibility alias for :TunnelVision on.
 
   :TunnelVision off
       Clear all tracks in the current buffer.
@@ -251,6 +256,7 @@ for active buffers without reconfiguring their tracks.
 From `require("tunnelvision")` >
   setup(opts?)
   on(opts?)
+  add(opts?)
   pin(opts?)
   on_many(positions, opts?)
   set_buffer_dim(style?, bufnr?)
@@ -274,14 +280,18 @@ From `require("tunnelvision")` >
   get_source() / set_source(source)
 <
 
-`on(opts)` accepts one-shot overrides such as `scope`, `sources`, `mode`,
-`flow_settings`, and `highlights`. A supplied non-empty `highlights` table
-replaces setup highlight rules for that activation. `on({ dim = "none" })`
-opts that activation out of requesting dimming; omitted `dim` requests it.
-One-shot dim colors, `dim_hl`, and `max_dim_lines` are rejected. Each track
-styles its own ranges; newer tracks override conflicting style attributes.
-The focused union shares one buffer-wide dim layer. `next`/`prev` navigate the
-union of all track occurrences.
+`on(opts)` replaces every track in the buffer with the symbol under the cursor.
+`add(opts)` keeps existing tracks and adds one. `pin(opts)` adds a fixed track
+even when the requested mode is `dynamic` or `dynamic_flow`, converting it to
+`static` or `flow`. All three accept one-shot overrides such as `scope`,
+`sources`, `mode`, `flow_settings`, and `highlights`; a supplied non-empty
+`highlights` table replaces setup highlight rules for that activation. Setting
+`dim = "none"` opts that activation out of requesting dimming; omitted `dim`
+requests it. One-shot dim colors, `dim_hl`, and `max_dim_lines` are rejected.
+Each track styles its own ranges; newer tracks override conflicting style
+attributes. The focused union shares one buffer-wide dim layer. `next`/`prev`
+navigate the union of all track occurrences. `retarget(opts?)` is retained as a
+compatibility alias for `on(opts?)`.
 `next_track`/`prev_track` select the track at the cursor (the most recently added
 match if tracks overlap), falling back to the latest track when the cursor is
 outside tracked occurrences and path lines. `dynamic_flow` moves and recomputes
@@ -501,6 +511,11 @@ maps to `sources = { "lsp", "word" }`.
 Breaking change after 0.4: one-shot dim colors must move to
 `set_buffer_dim(style)` or `setup({ dim = style })`; only `on({ dim = "none" })`
 remains valid. One-shot `dim_hl` and `max_dim_lines` must move to `setup()`.
+
+`on()` intentionally keeps its original replace-one-target behavior, so existing
+mappings do not start accumulating tracks. Use `add()`, `pin()`, or `on_many()`
+when multiple tracks are wanted; `:TunnelVision retarget` still behaves like
+`:TunnelVision on`. The `dim`-related breaks above apply to the same release.
 
 ===============================================================================
 10. Health                                                  *tunnelvision-health*

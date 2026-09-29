@@ -62,8 +62,9 @@ use({
 
 ## Basics
 
-Put the cursor on a symbol, run `:TunnelVision on`, navigate with
-`:TunnelVision next` and `:TunnelVision prev`, then finish with
+Put the cursor on a symbol and run `:TunnelVision on` to focus it. Use
+`:TunnelVision add` to keep that track while focusing another symbol, navigate
+with `:TunnelVision next` and `:TunnelVision prev`, then finish with
 `:TunnelVision off`.
 
 See [suggested keymaps](#suggested-keymaps)
@@ -173,10 +174,11 @@ still navigate the source/flow path; warnings follow `fallback_warn` and `notify
 ## Configuration
 
 `setup()` defines defaults for new tracks; existing tracks keep their options.
-`on(opts)` accepts one-shot overrides for `mode`, `scope`, `sources`,
-`flow_settings`, and `highlights`. `on({ dim = "none" })` opts that track out of
-dimming; omitted `dim` requests dimming. One-shot dim colors, `dim_hl`, and
-`max_dim_lines` are not accepted.
+`on(opts)` replaces the buffer's tracks; `add(opts)` keeps them; `pin(opts)` adds
+a fixed track even with a dynamic mode. All three accept one-shot overrides for
+`mode`, `scope`, `sources`, `flow_settings`, and `highlights`. Setting
+`dim = "none"` opts that track out of dimming; omitted `dim` requests dimming.
+One-shot dim colors, `dim_hl`, and `max_dim_lines` are not accepted.
 
 | Option | Default | Notes |
 | --- | --- | --- |
@@ -211,8 +213,9 @@ require("tunnelvision").on({
 })
 ```
 
-In `on(opts)`, omitted `highlights` inherits setup; an empty table selects line
-focus; a non-empty table replaces the setup rules for that activation.
+For `on(opts)`, `add(opts)`, and `pin(opts)`, omitted `highlights` inherits
+setup; an empty table selects line focus; a non-empty table replaces the setup
+rules for that activation.
 
 The dim style is shared per buffer: a buffer override takes precedence over
 `setup({ dim = ... })`. The complement of all focused ranges dims only while at
@@ -247,22 +250,23 @@ Run `:help tunnelvision-config` for the full option reference.
 ## Commands
 
 ```text
-:TunnelVision on|pin|remove|retarget|off|toggle|next|prev|next-track|prev-track|refresh|status
+:TunnelVision on|add|pin|remove|retarget|off|toggle|next|prev|next-track|prev-track|refresh|status
 :TunnelVision mode [static|dynamic|flow|dynamic_flow]
 :TunnelVision scope [function|buffer]
 :TunnelVision source [lsp|treesitter|word|lsp,word|treesitter,word|lsp,treesitter,word|lsp_else_word|lsp_and_word]
 :TunnelVision direction [forward|backward|both]
 ```
 
-`on` adds a track without removing other pins. `pin` keeps the current symbol
-fixed even while dynamic tracking continues; `remove` removes the track under
-the cursor or, if none is there, the latest track. `retarget` replaces all tracks
-with the symbol under the cursor; `off` clears the current buffer. Multiple
-static tracks, including flow tracks, can coexist; at most one moving track can
-coexist with pins. `next`/`prev` visit the union of occurrences (and unmatched
-custom/flow path lines). `next-track`/`prev-track` navigate only the track under
-the cursor (latest-added if tracks overlap); away from a tracked occurrence or
-path line, they use the latest track.
+`on` replaces all tracks with one new target, preserving the pre-existing API.
+`add` adds a track without removing other pins. `pin` adds a fixed track even
+while dynamic tracking continues and accepts the same one-shot highlight rules.
+`retarget` remains an alias for `on` for compatibility. `remove` removes the
+track under the cursor or, if none is there, the latest track; `off` clears the
+current buffer. Multiple static tracks, including flow tracks, can coexist;
+at most one moving track can coexist with pins. `next`/`prev` visit the union
+of occurrences (and unmatched custom/flow path lines). `next-track` and
+`prev-track` navigate only the track under the cursor (latest-added if tracks
+overlap); away from a tracked occurrence or path line, they use the latest track.
 Commands with optional arguments change defaults only for future tracks;
 `refresh` recomputes active tracks with their original options.
 `status` describes the active buffer. Run
@@ -273,7 +277,8 @@ Commands with optional arguments change defaults only for future tracks;
 ```lua
 local tv = require("tunnelvision")
 
-vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "TunnelVision on" })
+vim.keymap.set("n", "<leader>v", "<cmd>TunnelVision on<CR>", { desc = "Focus only this symbol" })
+vim.keymap.set("n", "<leader>va", "<cmd>TunnelVision add<CR>", { desc = "Add a tracked symbol" })
 vim.keymap.set("n", "]v", "<cmd>TunnelVision next<CR>", { desc = "Next across all tracks" })
 vim.keymap.set("n", "[v", "<cmd>TunnelVision prev<CR>", { desc = "Previous across all tracks" })
 vim.keymap.set("n", "]V", "<cmd>TunnelVision next-track<CR>", { desc = "Next in selected track" })
@@ -293,10 +298,11 @@ end, { desc = "TunnelVision word in buffer" })
 ```
 
 Use `toggle` instead of `on` in the first mapping if preferred. For scripted
-batch activation, `on_many({ { row, col }, ... }, opts)` accepts (1,0)-indexed
-positions in the current buffer. With a dynamic default, all but the last
-position are pinned and the last becomes the moving track. Native multicursor activation and cursor creation are deferred until Neovim
-0.13 APIs can be verified; pass positions explicitly for now.
+additive batch activation, `on_many({ { row, col }, ... }, opts)` accepts
+(1,0)-indexed positions in the current buffer. With a dynamic default, all but
+the last position are pinned and the last becomes the moving track. Native
+multicursor activation and cursor creation are deferred until Neovim 0.13 APIs
+can be verified; pass positions explicitly for now.
 
 ## Custom Sources
 
@@ -352,6 +358,9 @@ configuration should use the composable forms:
 | `extra_keywords = { ... }` | `flow_settings = { extra_keywords = { ... } }` |
 | `dim_hl = "..."` | `dim = ...` |
 
+`on()` keeps its original replace-one-target behavior. Use `add()` to retain
+other tracks, `pin()` for a fixed track, or `on_many()` for additive batches.
+The existing `:TunnelVision retarget` alias still acts like `on`.
 Existing setup defaults still produce line focus with Comment-derived dimming.
 One-shot `on({ dim = color })` must move to `set_buffer_dim(color)` or
 `setup({ dim = color })`; only `on({ dim = "none" })` remains valid. Move one-shot

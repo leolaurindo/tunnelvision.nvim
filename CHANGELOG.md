@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased (breaking API change; next major release)
 
 ### Added
+- `add(opts?)` adds a track while keeping existing ones; `on(opts?)` keeps its
+  original replace-all behavior, so existing mappings do not accumulate tracks.
+  `retarget()` remains an alias for `on()`, and `:TunnelVision add` is available.
 - Tracks now apply their own positive highlight styles; on overlaps, newer tracks
   override conflicting attributes.
 - `set_buffer_dim(style, bufnr?)` overrides the setup dim style for a buffer;
