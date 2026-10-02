@@ -56,7 +56,10 @@ end
 
 function helpers.assert_default_visual_config(msg)
   helpers.assert_true(config.format_sources(core.state.config.sources) == "lsp,treesitter,word", msg .. " sources")
-  helpers.assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), msg .. " highlights")
+  helpers.assert_true(
+    vim.deep_equal(core.state.config.highlights, { statement = {}, symbol = { bg_group = "Search" } }),
+    msg .. " highlights"
+  )
   helpers.assert_true(core.state.config.dim == nil, msg .. " dim")
 end
 

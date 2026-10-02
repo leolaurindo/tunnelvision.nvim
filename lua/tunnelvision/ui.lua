@@ -109,7 +109,7 @@ function M.ensure_highlights(config)
   end
 end
 
-local style_keys = { "fg", "bg", "bold", "italic", "underline", "undercurl", "strikethrough" }
+local style_keys = { "fg", "bg", "fg_group", "bg_group", "bold", "italic", "underline", "undercurl", "strikethrough" }
 
 local function has_style(style)
   for _, key in ipairs(style_keys) do
@@ -133,6 +133,16 @@ end
 
 local function resolved_style(style, render_cache)
   local resolved = vim.deepcopy(style)
+  local fg_group, bg_group = resolved.fg_group, resolved.bg_group
+  resolved.fg_group, resolved.bg_group = nil, nil
+  if fg_group and resolved.fg == nil then
+    local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = fg_group, link = false })
+    resolved.fg = ok and hl and hl.fg or nil
+  end
+  if bg_group and resolved.bg == nil then
+    local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = bg_group, link = false })
+    resolved.bg = ok and hl and hl.bg or nil
+  end
   local opacity = resolved.bg_opacity
   resolved.bg_opacity = nil
   if opacity == nil or resolved.bg == nil then
@@ -160,8 +170,9 @@ local function resolved_style(style, render_cache)
   local amount = math.max(0, math.min(1, opacity))
   local blended = 0
   for shift = 0, 16, 8 do
-    local channel =
-      math.floor(((bg / 2 ^ shift) % 256) * amount + ((render_cache.normal_bg / 2 ^ shift) % 256) * (1 - amount) + 0.5)
+    local bg_channel = math.floor(bg / 2 ^ shift) % 256
+    local normal_channel = math.floor(render_cache.normal_bg / 2 ^ shift) % 256
+    local channel = math.floor(bg_channel * amount + normal_channel * (1 - amount) + 0.5)
     blended = blended + channel * 2 ^ shift
   end
   resolved.bg = blended

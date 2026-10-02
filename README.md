@@ -133,9 +133,14 @@ positive style:
 
 A missing key or `false` disables a context. `true` or `{}` preserves its
 original syntax colors; a style table applies `fg`, `bg`, `bold`, `italic`,
-`underline`, `undercurl`, `strikethrough`, or `bg_opacity`. Numeric opacity is
-clamped to `0..1` and pre-blended against `Normal`, not alpha-blended; without
-usable backgrounds, the configured `bg` is used unchanged.
+`underline`, `undercurl`, `strikethrough`, `bg_opacity`, `fg_group`, or
+`bg_group`. `fg_group` and `bg_group` take the foreground or background,
+respectively, from a colorscheme highlight group; explicit `fg` or `bg` takes
+precedence. If a group lacks that color, other styles still apply. A group
+background is used directly unless `bg_opacity` is explicitly set; no opacity is
+inferred from the source group. Numeric opacity is clamped to `0..1` and
+pre-blended against `Normal`, not alpha-blended; without a usable `Normal`
+background, the source background is used unchanged.
 
 Within each track, overlaps compose from `scope_head` to `statement` to `line`
 to `symbol`: more specific contexts override only the attributes they define.
@@ -154,11 +159,16 @@ require("tunnelvision").setup({
 })
 ```
 
-Omitted or empty `highlights` defaults to `{ line = true }`. A non-empty table
-replaces that default; it is not merged. Useful variations include:
+Omitted or empty `highlights` defaults to
+`{ statement = true, symbol = { bg_group = "Search" } }`.
+Statement focus falls back to path lines without a usable Tree-sitter structure;
+`Search` supplies a theme-derived symbol background when it has one, used directly
+without added opacity. A non-empty table replaces the default; it is not merged.
+Useful variations include:
 
 ```lua
 { highlights = { symbol = true } } -- token-only focus, original colors
+{ highlights = { symbol = { bg_group = "Search", bold = true } } } -- theme-derived symbol background
 { dim = "none", highlights = { symbol = { bold = true } } } -- this track does not request dimming
 ```
 
@@ -193,7 +203,7 @@ One-shot dim colors, `dim_hl`, and `max_dim_lines` are not accepted.
 | `flow_settings.max_depth` | `nil` | Positive hop limit; `nil` uses the internal 32-hop guard. |
 | `fallback_warn` | `once` | Legacy LSP-to-word fallback warning: `once` per buffer, `always`, or `never`. LSP timeouts and strict LSP warn once per buffer when notifications are enabled. |
 | `lsp_timeout_ms` | `150` | Async LSP `documentHighlight` timeout. |
-| `highlights` | `{ line = true }` | Enabled visual contexts and their positive styles. [See configs](#highlights) |
+| `highlights` | `{ statement = true, symbol = { bg_group = "Search" } }` | Enabled visual contexts and their positive styles. [See configs](#highlights) |
 | `dim` | `nil` | `nil` derives from `Comment`; accepts `"none"`, a highlight group, hex foreground, or style table. |
 | `max_dim_lines` | `6000` | Skip dimming in larger buffers. |
 | `notify` | `true` | Enable plugin notifications. |
@@ -216,8 +226,8 @@ require("tunnelvision").on({
 ```
 
 For `on(opts)`, `add(opts)`, and `pin(opts)`, omitted `highlights` inherits
-setup; an empty table selects line focus; a non-empty table replaces the setup
-rules for that activation.
+setup; an empty table selects the plugin default; a non-empty table replaces the setup
+rules for that activation. Use `{ line = true }` for line focus.
 
 The dim style is shared per buffer: a buffer override takes precedence over
 `setup({ dim = ... })`. The complement of all focused ranges dims only while at
@@ -369,7 +379,7 @@ configuration should use the composable forms:
 `on()` keeps its original replace-one-target behavior. Use `add()` to retain
 other tracks, `pin()` for a fixed track, or `on_many()` for additive batches.
 The existing `:TunnelVision retarget` alias still acts like `on`.
-Existing setup defaults still produce line focus with Comment-derived dimming.
+The current default uses statement focus and theme-derived symbol emphasis with Comment-derived dimming.
 One-shot `on({ dim = color })` must move to `set_buffer_dim(color)` or
 `setup({ dim = color })`; only `on({ dim = "none" })` remains valid. Move one-shot
 `dim_hl` and `max_dim_lines` settings to `setup()`. This is a breaking API change.

@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased (breaking API change; next major release)
 
 ### Added
+- Theme-derived `fg_group` and `bg_group` highlight styles; group backgrounds can
+  use `bg_opacity` to blend against `Normal` and refresh with colorscheme changes.
 - `:TunnelVision quickfix` / `set_quickfix(bufnr?)` export positions from all
   active tracks (deduplicated, sorted) to a new quickfix list for `:cnext` and
   `:cdo`. Line-changing `next`/`prev` moves now enter the jumplist, so `<C-o>`
@@ -23,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `:TunnelVision dim <#RRGGBB|group|none|reset>` sets or resets buffer dimming.
 
 ### Changed
+- Default visual focus now keeps recognized Tree-sitter statements (falling
+  back to path lines) and emphasizes source-owned symbols with the colorscheme's
+  `Search` background without bold. The group background is used without added
+  opacity; `highlights = { line = true }` restores line-only focus.
 - `:TunnelVision mode`, `direction`, `scope`, and `source` with values now
   activate one track without changing setup defaults. Expected Tree-sitter
   structural fallbacks no longer warn. LSP documentHighlight timeouts warn once

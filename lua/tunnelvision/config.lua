@@ -27,7 +27,7 @@ local defaults = {
   source = "lsp_else_word",
   sources = { "lsp", "treesitter", "word" },
   fallback_warn = "once",
-  highlights = { line = true },
+  highlights = { statement = true, symbol = { bg_group = "Search" } },
   dim = nil,
   dim_hl = "TunnelVisionDim",
   max_dim_lines = 6000,
@@ -204,7 +204,7 @@ end
 
 function M.normalize_highlights(highlights)
   if type(highlights) ~= "table" or next(highlights) == nil then
-    return { line = {} }
+    highlights = defaults.highlights
   end
 
   local normalized = {}
@@ -216,6 +216,8 @@ function M.normalize_highlights(highlights)
       local style = {}
       for key, value in pairs(rule) do
         if color_style_keys[key] and (type(value) == "string" or type(value) == "number") then
+          style[key] = value
+        elseif (key == "fg_group" or key == "bg_group") and type(value) == "string" then
           style[key] = value
         elseif boolean_style_keys[key] and type(value) == "boolean" then
           style[key] = value

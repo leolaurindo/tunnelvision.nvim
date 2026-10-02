@@ -9,12 +9,16 @@ return function(helpers)
   local core = require("tunnelvision.core")
   local config = require("tunnelvision.config")
 
-  -- Highlight rules normalize without deep-merging the default line context.
+  -- Empty highlights select plugin defaults; explicit rules replace them.
   tunnelvision.setup({ notify = false, highlights = {} })
-  assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), "empty highlights should use line default")
+  local default_rules = { statement = {}, symbol = { bg_group = "Search" } }
+  assert_true(
+    vim.deep_equal(core.state.config.highlights, default_rules),
+    "empty highlights should use visual defaults"
+  )
 
   tunnelvision.setup({ notify = false, highlights = { symbol = true } })
-  assert_true(vim.deep_equal(core.state.config.highlights, { symbol = {} }), "symbol rule should replace line default")
+  assert_true(vim.deep_equal(core.state.config.highlights, { symbol = {} }), "symbol rule should replace defaults")
 
   tunnelvision.setup({ notify = false, highlights = { line = false } })
   assert_true(vim.deep_equal(core.state.config.highlights, {}), "false context should remain disabled")
@@ -34,6 +38,7 @@ return function(helpers)
       scope_head = {
         fg = "#112233",
         bg = 0x445566,
+        bg_group = "Search",
         bg_opacity = 2,
         bold = true,
         italic = false,
@@ -48,6 +53,7 @@ return function(helpers)
       scope_head = {
         fg = "#112233",
         bg = 0x445566,
+        bg_group = "Search",
         bg_opacity = 1,
         bold = true,
         italic = false,
@@ -74,7 +80,7 @@ return function(helpers)
   )
 
   tunnelvision.setup({ notify = false, highlights = 42 })
-  assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), "invalid highlights should use line default")
+  assert_true(vim.deep_equal(core.state.config.highlights, default_rules), "invalid highlights should use defaults")
   tunnelvision.setup({ notify = false }) -- restore
 
   tunnelvision.setup({

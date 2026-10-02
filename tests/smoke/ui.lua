@@ -226,8 +226,11 @@ return function(helpers)
       force = true,
     })
     assert_true(
-      vim.deep_equal(core.get_buf_state(highlight_buf).config.highlights, { line = {} }),
-      "empty one-shot highlights should use line default"
+      vim.deep_equal(
+        core.get_buf_state(highlight_buf).config.highlights,
+        { statement = {}, symbol = { bg_group = "Search" } }
+      ),
+      "empty one-shot highlights should use plugin defaults"
     )
 
     core.activate(highlight_buf, {
@@ -239,7 +242,7 @@ return function(helpers)
     })
     assert_true(
       vim.deep_equal(core.get_buf_state(highlight_buf).config.highlights, { line = {} }),
-      "invalid one-shot highlight rules should normalize safely"
+      "invalid one-shot style fields should normalize safely"
     )
     vim.cmd("TunnelVision off")
   end
@@ -294,12 +297,33 @@ return function(helpers)
     local render_buf = new_buffer({ "xx alpha yy alpha zz", "local beta = 1" })
     vim.api.nvim_win_set_cursor(0, { 1, 4 })
 
+    local original_search = orig_get_hl(0, { name = "Search", link = true })
+    orig_set_hl(0, "Search", { bg = 0x55AA77 })
     tunnelvision.setup()
     reset_highlight_calls()
     tunnelvision.on({ scope = "buffer", silent = true })
-    local default_snapshot = mark_snapshot(render_buf)
-    assert_true(#default_snapshot == 1, "default renderer should add only the unrelated-line dim mark")
-    assert_true(default_snapshot[1][5] == "TunnelVisionDim", "default renderer should use line dimming")
+    local default_marks = marks(render_buf)
+    assert_true(#default_marks == 3, "default renderer should emphasize two symbols and dim the unrelated line")
+    local default_group = default_marks[1][4].hl_group
+    local default_hl = orig_get_hl(0, { name = default_group, link = false })
+    assert_true(
+      default_hl.bg == 0x55AA77 and not default_hl.bold,
+      "default symbol should use Search background without bold"
+    )
+    assert_true(default_marks[3][4].line_hl_group == "TunnelVisionDim", "unrelated line should stay dim")
+    orig_set_hl(0, "Search", { bg = 0xAA7755 })
+    vim.api.nvim_exec_autocmds("ColorScheme", {})
+    local updated_group = marks(render_buf)[1][4].hl_group
+    assert_true(
+      orig_get_hl(0, { name = updated_group, link = false }).bg == 0xAA7755,
+      "active symbol should adopt the updated Search background"
+    )
+    orig_set_hl(0, "Search", {})
+    vim.api.nvim_exec_autocmds("ColorScheme", {})
+    local plain_group = marks(render_buf)[1][4].hl_group
+    local plain_hl = orig_get_hl(0, { name = plain_group, link = false })
+    assert_true(plain_hl.bg == nil and not plain_hl.bold, "missing Search background should not add a style")
+    orig_set_hl(0, "Search", original_search)
     vim.cmd("TunnelVision off")
 
     tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { symbol = true } })
@@ -592,6 +616,31 @@ return function(helpers)
       "named background colors should support pseudo-opacity"
     )
     vim.cmd("TunnelVision off")
+
+    vim.api.nvim_set_hl(0, "Normal", { bg = 0x0000FF })
+    vim.api.nvim_set_hl(0, "Search", { bg = 0xFF0000 })
+    tunnelvision.setup({
+      notify = false,
+      source = "word",
+      scope = "buffer",
+      dim = "none",
+      highlights = { symbol = { bg_group = "Search", bold = true } },
+    })
+    tunnelvision.on()
+    local group_bg = marks(render_buf)[1][4].hl_group
+    local search_hl = vim.api.nvim_get_hl(0, { name = group_bg, link = false })
+    assert_true(
+      search_hl.bg == 0xFF0000 and search_hl.bold,
+      "theme group background should be used without added opacity"
+    )
+
+    vim.api.nvim_set_hl(0, "Normal", { bg = 0xFFFFFF })
+    vim.api.nvim_set_hl(0, "Search", { bg = 0x00FF00 })
+    vim.api.nvim_exec_autocmds("ColorScheme", {})
+    group_bg = marks(render_buf)[1][4].hl_group
+    search_hl = vim.api.nvim_get_hl(0, { name = group_bg, link = false })
+    assert_true(search_hl.bg == 0x00FF00, "active style should refresh to the new theme group background")
+    vim.cmd("TunnelVision off")
     vim.cmd("colorscheme default")
 
     tunnelvision.setup({
@@ -634,7 +683,7 @@ return function(helpers)
 
   -- dim = "none" clears existing marks and skips dim rendering.
   do
-    tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+    tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { line = true } })
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
     tunnelvision.on()
     assert_true(#vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {}) > 0, "default dim should create extmarks")
@@ -646,7 +695,13 @@ return function(helpers)
     )
     vim.cmd("TunnelVision off")
 
-    tunnelvision.setup({ notify = false, source = "word", scope = "buffer", dim = "none" })
+    tunnelvision.setup({
+      notify = false,
+      source = "word",
+      scope = "buffer",
+      dim = "none",
+      highlights = { line = true },
+    })
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
     tunnelvision.on()
     assert_true(
@@ -658,7 +713,7 @@ return function(helpers)
 
   -- Buffer dim commands change style without changing tracks; reset also clears force.
   do
-    tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+    tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { line = true } })
     local dim_buf = new_buffer({ "alpha", "outside" })
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
     vim.cmd("TunnelVision dim #123456")

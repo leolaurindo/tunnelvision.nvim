@@ -205,7 +205,7 @@ Default shape >lua
     },
     fallback_warn = "once",
     lsp_timeout_ms = 150,
-    highlights = { line = true },
+    highlights = { statement = true, symbol = { bg_group = "Search" } },
     dim = nil,
     max_dim_lines = 6000,
     notify = true,
@@ -424,10 +424,12 @@ language's string or comment syntax.
 8. Visual focus                              *tunnelvision-visual-focus*
 
 `highlights` selects visual contexts and optionally adds positive highlight
-attributes. Omitted or empty, it defaults to `{ line = true }`. A non-empty
-table replaces that default rather than merging with it. In `on(opts)`, omitting
-`highlights` inherits setup rules; an empty table selects the line default, and
-a non-empty table replaces them for that activation.
+attributes. Omitted or empty, it defaults to statement focus with the
+colorscheme's `Search` background on symbols, used as-is without added opacity.
+No bold is applied by default. A non-empty table replaces that default rather
+than merging with it. In `on(opts)`, omitting
+`highlights` inherits setup rules; an empty table selects the plugin default,
+and a non-empty table replaces them for that activation.
 
 Rule values >
   missing or false  disable the context
@@ -452,19 +454,29 @@ Overlapping contexts compose in this order:
 Later contexts override only attributes they specify and inherit the rest.
 Across tracks, newer tracks override only conflicting attributes. Unstyled
 contexts still protect their ranges from the shared dim layer.
-Supported style keys are `fg`, `bg`, `bold`, `italic`, `underline`, `undercurl`,
-and `strikethrough`. `fg` and `bg` accept Neovim color strings or numbers; the
-other standard keys are booleans. Numeric `bg_opacity` is clamped to 0 through 1
-and pre-blends the context's `bg` against `Normal`. This is pseudo-opacity, not
-true alpha blending. Without a usable `bg` or `Normal` background, the
-configured background is used unchanged.
+Supported style keys are `fg`, `bg`, `fg_group`, `bg_group`, `bold`, `italic`,
+`underline`, `undercurl`, and `strikethrough`. `fg` and `bg` accept Neovim color
+strings or numbers; `fg_group` and `bg_group` use the foreground or background
+of a colorscheme highlight group. Explicit `fg` or `bg` takes precedence. If a
+group lacks that color, other styles still apply. A group background is used
+directly unless `bg_opacity` is explicitly set; opacity is never inferred from
+the source group. The other standard keys are booleans. Numeric `bg_opacity` is
+clamped to 0 through 1 and pre-blends the context's background against `Normal`.
+This is pseudo-opacity, not true alpha blending. Without a usable `Normal`
+background, the source background is used unchanged.
 
 Examples >lua
-  -- Default line focus
+  -- Default statement focus and theme-derived symbol emphasis
   {}
+
+  -- Previous line-only focus
+  { highlights = { line = true } }
 
   -- Token-only focus, original colors
   { highlights = { symbol = true } }
+
+  -- Theme-derived Search background, used directly without added opacity
+  { highlights = { symbol = { bg_group = "Search", bold = true } } }
 
   -- Statement focus with composed line and symbol emphasis
   {
@@ -527,9 +539,10 @@ chains such as `sources = { "treesitter", "word" }`.
 
 Version 0.4 adds opt-in visual rules and reorganizes rendering internals, but no
 configuration migration is required. `setup()`, `setup({})`, legacy `source`
-values, and modern `sources` chains behave as before without `highlights`: line
-focus with Comment-derived dimming. In particular, `source = "lsp_else_word"`
-maps to `sources = { "lsp", "word" }`.
+values, and modern `sources` chains retained line focus in 0.4. The current
+default instead uses statement focus and theme-derived symbol emphasis with
+Comment-derived dimming. In particular, `source = "lsp_else_word"` maps to
+`sources = { "lsp", "word" }`.
 
 Breaking change after 0.4: one-shot dim colors must move to
 `set_buffer_dim(style)` or `setup({ dim = style })`; only `on({ dim = "none" })`
