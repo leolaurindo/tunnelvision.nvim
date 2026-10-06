@@ -15,6 +15,7 @@ local resolver = require("tunnelvision.resolver")
 local M = {}
 
 local defaults = {
+  primary_action = "retarget",
   mode = "static",
   direction = "forward",
   scope = "function",
@@ -259,6 +260,9 @@ function M.normalize_dim(dim)
 end
 
 function M.normalize(cfg, custom_sources)
+  if cfg.primary_action ~= "retarget" and cfg.primary_action ~= "add" then
+    cfg.primary_action = defaults.primary_action
+  end
   if not valid_modes[cfg.mode] then
     cfg.mode = defaults.mode
   end

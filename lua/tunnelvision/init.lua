@@ -18,7 +18,7 @@ function M.remove()
   return core.remove(vim.api.nvim_get_current_buf())
 end
 
-function M.on(opts)
+function M.retarget(opts)
   opts = opts or {}
   local bufnr = vim.api.nvim_get_current_buf()
   if opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil then
@@ -35,7 +35,12 @@ function M.on(opts)
   return core.activate(bufnr, vim.tbl_extend("force", opts, { symbol = symbol }))
 end
 
-M.retarget = M.on
+function M.on(opts)
+  if core.state.config.primary_action == "add" then
+    return M.add(opts)
+  end
+  return M.retarget(opts)
+end
 
 function M.on_many(positions, opts)
   return core.activate_many(vim.api.nvim_get_current_buf(), positions, opts)

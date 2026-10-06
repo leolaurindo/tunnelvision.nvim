@@ -279,7 +279,12 @@ at most one moving track can coexist with pins. `next`/`prev` visit the union
 of occurrences (and unmatched custom/flow path lines). `next-track` and
 `prev-track` navigate only the track under the cursor (latest-added if tracks
 overlap); away from a tracked occurrence or path line, they use the latest track.
-`mode`, `direction`, `scope`, and `source` with an argument replace the current
+`on()` uses `primary_action = "retarget"` by default; set it to `"add"` to retain
+existing tracks. Explicit `retarget()` always replaces tracks, and `add()` always
+adds. Track mode is independent of this action.
+
+`mode`, `direction`, `scope`, and `source` with an argument use the configured
+`on()` action for the current
 buffer's tracks with one activation; they do not change setup defaults.
 `direction` starts a flow track. Without an argument, they report the active
 configuration (or setup defaults when inactive). `refresh` recomputes active

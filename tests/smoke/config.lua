@@ -142,7 +142,6 @@ return function(helpers)
   vim.api.nvim_win_set_cursor(0, { 2, 7 }) -- copy
   vim.cmd("TunnelVision retarget")
   assert_true(core.get_buf_state(first_buf).symbol == "copy", "retarget alias should re-run on current symbol")
-  assert_true(tunnelvision.retarget == tunnelvision.on, "Lua retarget should alias on")
   vim.api.nvim_win_set_cursor(0, { 1, 7 }) -- value
   vim.cmd("TunnelVision add")
   assert_true(#core.get_buf_state(first_buf).tracks == 2, "add should retain the existing track")
@@ -152,6 +151,24 @@ return function(helpers)
     #core.get_buf_state(first_buf).tracks == 1 and core.get_buf_state(first_buf).tracks[1].symbol == "copy",
     "on should replace all tracks"
   )
+
+  tunnelvision.setup({ notify = false, sources = { "word" }, primary_action = "add" })
+  vim.api.nvim_win_set_cursor(0, { 1, 7 })
+  tunnelvision.on()
+  assert_true(#tunnelvision.status().tracks == 2, "add primary action should preserve tracks")
+  for _, command in ipairs({ "mode flow", "direction backward", "scope buffer", "source treesitter,word" }) do
+    local original = core.get_buf_state(first_buf).tracks[1]
+    vim.cmd("TunnelVision " .. command)
+    assert_true(core.get_buf_state(first_buf).tracks[1] == original, "one-shot commands should retain existing tracks")
+  end
+  assert_true(core.get_mode() == "static" and core.get_scope() == "function", "commands preserve defaults")
+  tunnelvision.retarget()
+  assert_true(#tunnelvision.status().tracks == 1, "explicit Lua retarget must replace under add primary action")
+  vim.api.nvim_win_set_cursor(0, { 2, 7 })
+  tunnelvision.add()
+  vim.cmd("TunnelVision retarget")
+  assert_true(#tunnelvision.status().tracks == 1, "explicit command retarget must replace under add primary action")
+  tunnelvision.setup({ notify = false, source = "word" })
 
   local before = vim.api.nvim_win_get_cursor(0)[1]
   vim.cmd("TunnelVision next")
