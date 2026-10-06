@@ -41,36 +41,51 @@ local function schedule_edit_refresh(bufnr)
   state.edit_timers[bufnr] = timer
 end
 
-local function schedule_dynamic_activate(bufnr, symbol, cursor)
+local function schedule_dynamic_activate(bufnr)
   cancel_dynamic_activate(bufnr)
   local seq = state.dynamic_seq[bufnr]
-  local queued_symbol = symbol
-  local queued_cursor = { cursor[1], cursor[2] }
-  local queued_track = core.get_moving_track(bufnr)
+  local bs = core.state.bufs[bufnr]
+  local queued_tracks = {}
+  for _, track in ipairs(bs and bs.tracks or {}) do
+    if track.moving then
+      queued_tracks[#queued_tracks + 1] = track
+    end
+  end
 
   vim.defer_fn(function()
-    if state.dynamic_seq[bufnr] ~= seq or not vim.api.nvim_buf_is_valid(bufnr) then
+    if
+      state.dynamic_seq[bufnr] ~= seq
+      or not vim.api.nvim_buf_is_valid(bufnr)
+      or bufnr ~= vim.api.nvim_get_current_buf()
+    then
       return
     end
-
-    local bs = core.state.bufs[bufnr]
-    local track = core.get_moving_track(bufnr)
-    if not bs or not bs.active or track ~= queued_track then
-      return
+    local positions, ids = core.cursor_positions(bufnr)
+    for _, track in ipairs(queued_tracks) do
+      local cursor
+      for index, id in ipairs(ids) do
+        if id == track.cursor_id then
+          cursor = positions[index]
+          break
+        end
+      end
+      if not cursor and type(track.cursor_id) == "string" and track.cursor_id:match("^batch:") then
+        cursor = positions[track.cursor_index]
+      end
+      local symbol = cursor and core.symbol_at(bufnr, cursor)
+      if cursor and core.should_dynamic_retarget(bufnr, symbol, cursor, track) then
+        core.activate(bufnr, {
+          silent = true,
+          config = track.config,
+          track = track,
+          symbol = symbol,
+          cursor = cursor,
+          cursor_id = track.cursor_id,
+          cursor_index = track.cursor_index,
+          reuse_scope = true,
+        })
+      end
     end
-
-    if not core.should_dynamic_retarget(bufnr, queued_symbol, queued_cursor) then
-      return
-    end
-
-    core.activate(bufnr, {
-      silent = true,
-      config = track.config,
-      track = track,
-      symbol = queued_symbol,
-      cursor = queued_cursor,
-      reuse_scope = true,
-    })
   end, DYNAMIC_DEBOUNCE_MS)
 end
 
@@ -109,7 +124,7 @@ function M.ensure_highlights(config)
   end
 end
 
-local style_keys = { "fg", "bg", "bold", "italic", "underline", "undercurl", "strikethrough" }
+local style_keys = { "fg", "bg", "fg_group", "bg_group", "bold", "italic", "underline", "undercurl", "strikethrough" }
 
 local function has_style(style)
   for _, key in ipairs(style_keys) do
@@ -133,6 +148,16 @@ end
 
 local function resolved_style(style, render_cache)
   local resolved = vim.deepcopy(style)
+  local fg_group, bg_group = resolved.fg_group, resolved.bg_group
+  resolved.fg_group, resolved.bg_group = nil, nil
+  if fg_group and resolved.fg == nil then
+    local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = fg_group, link = false })
+    resolved.fg = ok and hl and hl.fg or nil
+  end
+  if bg_group and resolved.bg == nil then
+    local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = bg_group, link = false })
+    resolved.bg = ok and hl and hl.bg or nil
+  end
   local opacity = resolved.bg_opacity
   resolved.bg_opacity = nil
   if opacity == nil or resolved.bg == nil then
@@ -160,8 +185,9 @@ local function resolved_style(style, render_cache)
   local amount = math.max(0, math.min(1, opacity))
   local blended = 0
   for shift = 0, 16, 8 do
-    local channel =
-      math.floor(((bg / 2 ^ shift) % 256) * amount + ((render_cache.normal_bg / 2 ^ shift) % 256) * (1 - amount) + 0.5)
+    local bg_channel = math.floor(bg / 2 ^ shift) % 256
+    local normal_channel = math.floor(render_cache.normal_bg / 2 ^ shift) % 256
+    local channel = math.floor(bg_channel * amount + normal_channel * (1 - amount) + 0.5)
     blended = blended + channel * 2 ^ shift
   end
   resolved.bg = blended
@@ -452,23 +478,43 @@ local function ensure_commands(api)
       values = { "reset", "none", "Comment" },
     },
     mode = {
-      get = api.get_mode,
-      set = api.set_mode,
+      get = function()
+        return api.status().mode
+      end,
+      set = function(value)
+        api.on({ mode = value })
+      end,
       values = { "static", "flow", "dynamic", "dynamic_flow" },
     },
     direction = {
-      get = api.get_direction,
-      set = api.set_direction,
+      get = function()
+        return api.status().direction
+      end,
+      set = function(value)
+        local mode = api.status().mode
+        api.on({ mode = mode == "dynamic_flow" and mode or "flow", flow_settings = { direction = value } })
+      end,
       values = { "forward", "backward", "both" },
     },
     scope = {
-      get = api.get_scope,
-      set = api.set_scope,
+      get = function()
+        return api.status().scope
+      end,
+      set = function(value)
+        api.on({ scope = value })
+      end,
       values = { "function", "buffer" },
     },
     source = {
-      get = core.get_sources_label,
-      set = core.set_source_command,
+      get = function()
+        return api.status().sources_label
+      end,
+      set = function(value)
+        local sources = core.parse_source_command(value)
+        if sources then
+          api.on({ sources = sources })
+        end
+      end,
       values = {
         "word",
         "lsp",
@@ -556,10 +602,6 @@ local function ensure_commands(api)
     end
 
     if sub.values then
-      if args[1] == "direction" and api.get_mode() ~= "flow" and api.get_mode() ~= "dynamic_flow" then
-        core.notify("TunnelVision: direction is used only in flow mode", vim.log.levels.WARN)
-      end
-
       local value = args[2]
       if not value or value == "" then
         local current = sub.get()
@@ -568,6 +610,10 @@ local function ensure_commands(api)
       end
       if args[3] then
         core.notify(("TunnelVision: '%s' takes a single value"):format(args[1]), vim.log.levels.ERROR)
+        return
+      end
+      if args[1] ~= "source" and not vim.tbl_contains(sub.values, value) then
+        core.notify(("TunnelVision: invalid %s '%s'"):format(args[1], value), vim.log.levels.ERROR)
         return
       end
       sub.set(value)
@@ -583,7 +629,12 @@ local function ensure_commands(api)
   end
 
   for _, name in ipairs({ "TunnelVision", "Tunnelvision" }) do
-    vim.api.nvim_create_user_command(name, command, {
+    vim.api.nvim_create_user_command(name, function(opts)
+      if name == "Tunnelvision" then
+        core.warn_deprecated("use", ":Tunnelvision; use :TunnelVision")
+      end
+      command(opts)
+    end, {
       complete = complete,
       desc = "Control tunnel vision",
       nargs = "*",
@@ -619,18 +670,16 @@ local function ensure_autocmds()
     end,
   })
 
-  vim.api.nvim_create_autocmd("CursorMoved", {
+  local movement_events = { "CursorMoved" }
+  if vim.fn.exists("##CmdAtom") == 1 then
+    movement_events[#movement_events + 1] = "CmdAtom"
+  end
+  vim.api.nvim_create_autocmd(movement_events, {
     group = state.augroup,
     callback = function(args)
       local bs = core.state.bufs[args.buf]
       if core.get_moving_track(args.buf) and bs and bs.active then
-        local cursor = vim.api.nvim_win_get_cursor(0)
-        local symbol = core.symbol_at(args.buf, cursor)
-        if core.should_dynamic_retarget(args.buf, symbol, cursor) then
-          schedule_dynamic_activate(args.buf, symbol, cursor)
-        else
-          cancel_dynamic_activate(args.buf)
-        end
+        schedule_dynamic_activate(args.buf)
       end
     end,
   })

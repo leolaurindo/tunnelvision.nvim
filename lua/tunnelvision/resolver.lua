@@ -550,22 +550,20 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done, cont
   local done, pending = false, #clients
   local handles, responses, terminal = {}, {}, {}
 
-  local function finish()
+  local function finish(timed_out)
     if done then
       return
     end
     done = true
-    if not vim.api.nvim_buf_is_valid(bufnr) then
-      on_done(M.make_lsp_result("request_failed"))
-      return
+    local result
+    if not vim.api.nvim_buf_is_valid(bufnr) or not has_lsp_results(responses) then
+      result = M.make_lsp_result("request_failed")
+    else
+      local lines, ranges = collect_lsp_result(context, responses, scope)
+      result = M.make_lsp_result("ok", lines, true, ranges)
     end
-    if not has_lsp_results(responses) then
-      on_done(M.make_lsp_result("request_failed"))
-      return
-    end
-
-    local lines, ranges = collect_lsp_result(context, responses, scope)
-    on_done(M.make_lsp_result("ok", lines, true, ranges))
+    result.timed_out = timed_out or false
+    on_done(result)
   end
 
   local function complete(client, encoding, err, result)
@@ -610,7 +608,7 @@ function M.request_lsp_highlight(bufnr, anchor, scope, timeout_ms, on_done, cont
     finish()
   end
   vim.defer_fn(function()
-    finish()
+    finish(true)
     M.cancel_lsp_requests(handles)
   end, timeout_ms)
   return handles

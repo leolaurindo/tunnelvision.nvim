@@ -15,6 +15,7 @@ local resolver = require("tunnelvision.resolver")
 local M = {}
 
 local defaults = {
+  primary_action = "retarget",
   mode = "static",
   direction = "forward",
   scope = "function",
@@ -27,7 +28,7 @@ local defaults = {
   source = "lsp_else_word",
   sources = { "lsp", "treesitter", "word" },
   fallback_warn = "once",
-  highlights = { line = true },
+  highlights = { statement = true, symbol = { bg_group = "Search" } },
   dim = nil,
   dim_hl = "TunnelVisionDim",
   max_dim_lines = 6000,
@@ -76,6 +77,101 @@ M.activation_keys = {
   "highlights",
 }
 
+local deprecated_keys = {
+  source = true,
+  direction = true,
+  extra_keywords = true,
+  dim_hl = true,
+  visible_context = true,
+  preserve_scope_heads = true,
+}
+
+function M.validate_options(opts, activation)
+  if type(opts) ~= "table" then
+    return "options must be a table"
+  end
+  local allowed = {}
+  if activation then
+    for _, key in ipairs(M.activation_keys) do
+      allowed[key] = true
+    end
+    for _, key in ipairs({
+      "symbol",
+      "cursor",
+      "pin",
+      "dim",
+      "silent",
+      "track",
+      "config",
+      "force",
+      "reuse_scope",
+      "defer_render",
+      "cursor_id",
+      "cursor_index",
+    }) do
+      allowed[key] = true
+    end
+  else
+    for key in pairs(defaults) do
+      allowed[key] = true
+    end
+    allowed.dim = true
+  end
+  for key in pairs(opts) do
+    if not allowed[key] and not deprecated_keys[key] and key ~= "max_dim_lines" then
+      return "unknown option '" .. tostring(key) .. "'"
+    end
+  end
+  if activation and (opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil) then
+    return "dim styles, dim_hl and max_dim_lines belong in setup() or buffer dim settings"
+  end
+  if opts.primary_action ~= nil and opts.primary_action ~= "retarget" and opts.primary_action ~= "add" then
+    return "primary_action must be retarget or add"
+  end
+  if opts.flow_settings ~= nil and type(opts.flow_settings) ~= "table" then
+    return "flow_settings must be a table"
+  end
+  if type(opts.highlights) == "table" then
+    for context, rule in pairs(opts.highlights) do
+      if not vim.tbl_contains(highlight_contexts, context) then
+        return "unknown option 'highlights." .. tostring(context) .. "'"
+      end
+      if type(rule) == "table" then
+        for key in pairs(rule) do
+          if
+            not color_style_keys[key]
+            and not boolean_style_keys[key]
+            and key ~= "fg_group"
+            and key ~= "bg_group"
+            and key ~= "bg_opacity"
+          then
+            return "unknown option 'highlights." .. context .. "." .. tostring(key) .. "'"
+          end
+        end
+      end
+    end
+  end
+  if type(opts.flow_settings) == "table" then
+    local fields = { direction = true, extra_keywords = true, analyzers = true, max_depth = true }
+    for key in pairs(opts.flow_settings) do
+      if not fields[key] then
+        return "unknown option 'flow_settings." .. tostring(key) .. "'"
+      end
+    end
+  end
+end
+
+function M.deprecated_inputs(opts)
+  local names = {}
+  for key in pairs(opts) do
+    if deprecated_keys[key] then
+      names[#names + 1] = key
+    end
+  end
+  table.sort(names)
+  return names
+end
+
 -- Source-helpers
 
 local function is_source_name(name, custom_sources)
@@ -104,7 +200,7 @@ local function source_step(step, custom_sources)
 end
 
 -- Legacy source mapping (deprecated, intentionally supports old source values
--- without runtime warnings).
+-- with warnings handled by the runtime).
 function M.sources_from_legacy_source(source)
   if source == "word" or source == "lsp" then
     return { source }
@@ -204,7 +300,7 @@ end
 
 function M.normalize_highlights(highlights)
   if type(highlights) ~= "table" or next(highlights) == nil then
-    return { line = {} }
+    highlights = defaults.highlights
   end
 
   local normalized = {}
@@ -216,6 +312,8 @@ function M.normalize_highlights(highlights)
       local style = {}
       for key, value in pairs(rule) do
         if color_style_keys[key] and (type(value) == "string" or type(value) == "number") then
+          style[key] = value
+        elseif (key == "fg_group" or key == "bg_group") and type(value) == "string" then
           style[key] = value
         elseif boolean_style_keys[key] and type(value) == "boolean" then
           style[key] = value
@@ -257,6 +355,9 @@ function M.normalize_dim(dim)
 end
 
 function M.normalize(cfg, custom_sources)
+  if cfg.primary_action ~= "retarget" and cfg.primary_action ~= "add" then
+    cfg.primary_action = defaults.primary_action
+  end
   if not valid_modes[cfg.mode] then
     cfg.mode = defaults.mode
   end
@@ -287,7 +388,7 @@ function M.normalize(cfg, custom_sources)
   cfg.extra_keywords = resolver.sanitize_keywords(cfg.extra_keywords)
 
   -- Compatibility: deprecated top-level flow options map into missing
-  -- flow_settings fields. New nested fields win. No runtime warnings.
+  -- flow_settings fields. New nested fields win.
   if type(cfg.flow_settings) ~= "table" then
     cfg.flow_settings = {}
   end
@@ -325,7 +426,7 @@ function M.normalize_activation(base_config, opts, custom_sources)
   end
 
   -- Compatibility: deprecated one-shot flow options fill missing
-  -- flow_settings fields. New nested fields win. No runtime warnings.
+  -- flow_settings fields. New nested fields win.
   if opts.direction ~= nil and (opts.flow_settings == nil or opts.flow_settings.direction == nil) then
     if type(cfg.flow_settings) ~= "table" then
       cfg.flow_settings = {}

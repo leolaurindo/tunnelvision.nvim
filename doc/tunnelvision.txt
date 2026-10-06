@@ -85,20 +85,23 @@ Call `require("tunnelvision").setup()` first so `:TunnelVision` is available.
   :TunnelVision prev-track
   :TunnelVision off
 
-Use |:TunnelVision| with subcommands. `on` focuses one symbol and replaces
-existing tracks; `add` keeps them. `mode`, `direction`, `scope`, and `source`
-show their persistent defaults when called without an argument. Use
-`:TunnelVision status` to inspect the active buffer configuration.
+Use |:TunnelVision| with subcommands. `on` uses `primary_action` (replace by
+default); `add` keeps existing tracks. Native cursors activate as a batch. `mode`,
+`direction`, `scope`, and `source` with arguments activate a new track without
+changing setup defaults. Without an argument, they report the active setting
+(or setup default when inactive). Use `:TunnelVision status` to inspect the
+active buffer configuration.
 
 ===============================================================================
 4. Commands                                               *tunnelvision-commands*
                                                         *:TunnelVision*
 
   :TunnelVision on
-      Replace all tracks with the symbol under cursor (the original behavior).
+      Use primary_action: replace tracks by default, or add when set to "add".
+      Activate a track for each native cursor (primary only before Neovim 0.13).
 
   :TunnelVision add
-      Add the symbol under cursor without removing other tracks.
+      Add targets at all native cursors without removing other tracks.
 
   :TunnelVision pin
       Add a fixed track even with a dynamic mode. One-shot highlights apply.
@@ -107,7 +110,8 @@ show their persistent defaults when called without an argument. Use
       Remove the track under cursor, or the most recently added track.
 
   :TunnelVision retarget
-      Compatibility alias for :TunnelVision on.
+      Always replace tracks with targets at all native cursors, independently
+      of primary_action.
 
   :TunnelVision off
       Clear all tracks in the current buffer.
@@ -158,17 +162,21 @@ show their persistent defaults when called without an argument. Use
       Show active-buffer state, mode, source chain, and tracked symbols.
 
   :TunnelVision mode [static|flow|dynamic|dynamic_flow]
-      Query or set the mode default for new tracks. Existing tracks are unchanged.
+      With a value, use the configured on action in that mode. Without a value,
+      show the active mode (or setup default when inactive).
 
   :TunnelVision direction [forward|backward|both]
-      Query or set the persistent flow-direction default.
-      Direction is used in flow and dynamic_flow modes.
+      With a value, use the configured on action with flow in that direction.
+      Preserve dynamic_flow when active.
+      Without a value, show the active direction (or setup default).
 
   :TunnelVision scope [function|buffer]
-      Query or set the persistent search-scope default.
+      With a value, use the configured on action with that search scope.
+      Without a value, show the active scope (or setup default).
 
   :TunnelVision source [value]
-      Query or set the persistent source-chain default.
+      With a value, use the configured on action with that source chain.
+      Without a value, show the active chain (or setup default).
 
       Supported command values include:
         word
@@ -190,6 +198,7 @@ show their persistent defaults when called without an argument. Use
 
 Default shape >lua
   require("tunnelvision").setup({
+    primary_action = "retarget",
     mode = "static",
     scope = "function",
     sources = { "lsp", "treesitter", "word" },
@@ -200,7 +209,7 @@ Default shape >lua
     },
     fallback_warn = "once",
     lsp_timeout_ms = 150,
-    highlights = { line = true },
+    highlights = { statement = true, symbol = { bg_group = "Search" } },
     dim = nil,
     max_dim_lines = 6000,
     notify = true,
@@ -208,6 +217,7 @@ Default shape >lua
 <
 
 Options >
+  primary_action                retarget | add (on action, independent of mode)
   mode                          static | flow | dynamic | dynamic_flow
   scope                         function | buffer
   sources                       ordered source fallback chain
@@ -215,12 +225,12 @@ Options >
   flow_settings.extra_keywords  extra identifiers ignored in flow analysis
   flow_settings.analyzers       ordered treesitter | text fallback chain
   flow_settings.max_depth       positive hop limit capped at 32; nil uses 32
-  fallback_warn                 LSP fallback and structural: once | always | never
+  fallback_warn                 legacy LSP-to-word fallback: once | always | never
   lsp_timeout_ms                timeout for async LSP documentHighlight requests
   highlights                    visual contexts and positive styles
   dim                           nil, "none", highlight group, #RRGGBB, or table
   max_dim_lines                 skip dimming in very large buffers
-  notify                        enable plugin notifications
+  notify                        enable notices; invalid-option errors stay visible
 <
 
 By default, `dim = nil` derives TunnelVision's dim style from your colorscheme's
@@ -228,9 +238,10 @@ By default, `dim = nil` derives TunnelVision's dim style from your colorscheme's
 that highlight group. `dim = "none"` disables dimming but retains positive
 highlight styles.
 
-`fallback_warn` controls legacy LSP-to-word and structural warnings. Strict LSP
-mode warns once per buffer when unavailable regardless of this setting. All
-notifications, including command queries and status output, respect `notify`.
+`fallback_warn` controls legacy LSP-to-word warnings. Structural fallbacks are
+quiet. Strict LSP failures and LSP timeouts warn once per buffer regardless of
+this setting. All notifications, including command queries and status output,
+respect `notify`.
 
 Flow analyzers are separate from sources. Sources choose the initial matching
 path; flow analyzers expand assignments from the active symbol. The default
@@ -292,8 +303,10 @@ From `require("tunnelvision")` >
   get_source() / set_source(source)
 <
 
-`on(opts)` replaces every track in the buffer with the symbol under the cursor.
-`add(opts)` keeps existing tracks and adds one. `pin(opts)` adds a fixed track
+`on(opts)` dispatches through primary_action: "retarget" (default) replaces
+tracks; "add" keeps them. `retarget(opts)` always replaces; `add(opts)` always
+keeps existing tracks. Each activates all native cursors, or only an explicitly
+supplied `cursor`. `pin(opts)` adds fixed tracks
 even when the requested mode is `dynamic` or `dynamic_flow`, converting it to
 `static` or `flow`. All three accept one-shot overrides such as `scope`,
 `sources`, `mode`, `flow_settings`, and `highlights`; a supplied non-empty
@@ -302,17 +315,23 @@ even when the requested mode is `dynamic` or `dynamic_flow`, converting it to
 requests it. One-shot dim colors, `dim_hl`, and `max_dim_lines` are rejected.
 Each track styles its own ranges; newer tracks override conflicting style
 attributes. The focused union shares one buffer-wide dim layer. `next`/`prev`
-navigate the union of all track occurrences. `retarget(opts?)` is retained as a
-compatibility alias for `on(opts?)`.
+navigate the union of all track occurrences.
 `next_track`/`prev_track` select the track at the cursor (the most recently added
 match if tracks overlap), falling back to the latest track when the cursor is
 outside tracked occurrences and path lines. `dynamic_flow` moves and recomputes
 flow; `pin({ mode = "flow" })` and `pin({ mode = "dynamic_flow" })` create
 pinned flow tracks.
-`on_many(positions, opts)` accepts (1,0)-indexed current-buffer positions;
-with dynamic mode, all but the last position are pinned. Neovim 0.13's
-cursor-enumeration behavior must be verified before native multicursor
-activation or cursor creation is wired up.
+`on_many(positions, opts)` is additive and accepts (1,0)-indexed current-buffer
+positions. Every track retains the requested mode; use `pin()` for fixed tracks.
+On Neovim 0.13, native batches enumerate the primary cursor plus extmarks in
+"nvim.multicursor", converting secondary positions from (0,0) indexing.
+Primary-overlapping secondary cursors are counted once. Replacing clears tracks
+once before the batch; adding preserves existing tracks. Moving tracks follow
+secondary extmark IDs, so enumeration reordering does not swap their owners.
+Explicit positions associate with matching native cursors, otherwise with
+cursor enumeration slots (primary first). Without a corresponding cursor, a
+moving track stays at its last target. TunnelVision does not create cursors.
+Native `*`, `n`, and `N` mappings are unchanged.
 
 Example >lua
   local tv = require("tunnelvision")
@@ -418,10 +437,12 @@ language's string or comment syntax.
 8. Visual focus                              *tunnelvision-visual-focus*
 
 `highlights` selects visual contexts and optionally adds positive highlight
-attributes. Omitted or empty, it defaults to `{ line = true }`. A non-empty
-table replaces that default rather than merging with it. In `on(opts)`, omitting
-`highlights` inherits setup rules; an empty table selects the line default, and
-a non-empty table replaces them for that activation.
+attributes. Omitted or empty, it defaults to statement focus with the
+colorscheme's `Search` background on symbols, used as-is without added opacity.
+No bold is applied by default. A non-empty table replaces that default rather
+than merging with it. In `on(opts)`, omitting
+`highlights` inherits setup rules; an empty table selects the plugin default,
+and a non-empty table replaces them for that activation.
 
 Rule values >
   missing or false  disable the context
@@ -446,19 +467,29 @@ Overlapping contexts compose in this order:
 Later contexts override only attributes they specify and inherit the rest.
 Across tracks, newer tracks override only conflicting attributes. Unstyled
 contexts still protect their ranges from the shared dim layer.
-Supported style keys are `fg`, `bg`, `bold`, `italic`, `underline`, `undercurl`,
-and `strikethrough`. `fg` and `bg` accept Neovim color strings or numbers; the
-other standard keys are booleans. Numeric `bg_opacity` is clamped to 0 through 1
-and pre-blends the context's `bg` against `Normal`. This is pseudo-opacity, not
-true alpha blending. Without a usable `bg` or `Normal` background, the
-configured background is used unchanged.
+Supported style keys are `fg`, `bg`, `fg_group`, `bg_group`, `bold`, `italic`,
+`underline`, `undercurl`, and `strikethrough`. `fg` and `bg` accept Neovim color
+strings or numbers; `fg_group` and `bg_group` use the foreground or background
+of a colorscheme highlight group. Explicit `fg` or `bg` takes precedence. If a
+group lacks that color, other styles still apply. A group background is used
+directly unless `bg_opacity` is explicitly set; opacity is never inferred from
+the source group. The other standard keys are booleans. Numeric `bg_opacity` is
+clamped to 0 through 1 and pre-blends the context's background against `Normal`.
+This is pseudo-opacity, not true alpha blending. Without a usable `Normal`
+background, the source background is used unchanged.
 
 Examples >lua
-  -- Default line focus
+  -- Default statement focus and theme-derived symbol emphasis
   {}
+
+  -- Previous line-only focus
+  { highlights = { line = true } }
 
   -- Token-only focus, original colors
   { highlights = { symbol = true } }
+
+  -- Theme-derived Search background, used directly without added opacity
+  { highlights = { symbol = { bg_group = "Search", bold = true } } }
 
   -- Statement focus with composed line and symbol emphasis
   {
@@ -495,9 +526,7 @@ identifiers are added on flow path lines.
 not require the `treesitter` source, and LSP does not resolve them. Lookup starts
 at exact symbol columns, or at the first nonblank column for a custom-source line
 without a range. If structure is unavailable or unsafe, `statement` falls back
-to path lines and `scope_head` is skipped. Warnings obey
-`fallback_warn = "once" | "always" | "never"` (`once` is per buffer) and
-`notify`.
+to path lines and `scope_head` is skipped without a warning.
 
 Structural lines never become navigation targets. `next` and `prev` continue
 through source/flow path lines only.
@@ -505,8 +534,13 @@ through source/flow path lines only.
 ===============================================================================
 9. Migration                                            *tunnelvision-migration*
 
-Deprecated APIs remain supported and do not emit runtime deprecation warnings in
-this release. Prefer the new API for new configuration.
+Deprecated inputs remain supported; modern fields win conflicts. Setup warnings
+are aggregated once per Neovim session; deprecated API/command use warns at most
+once per session. `notify = false` suppresses warnings. Unknown options produce
+a visible error before configuration or tracks change. `get_source()` and
+`set_source()` remain compatibility wrappers; prefer `get_sources()` and
+`set_sources()`. The old `:Tunnelvision` spelling remains deprecated but working.
+`get_direction()`, `set_direction()`, and `add_keywords()` remain supported.
 
 Old to new >
   source = "word"            -> sources = { "word" }
@@ -516,6 +550,27 @@ Old to new >
   direction = "both"         -> flow_settings = { direction = "both" }
   extra_keywords = { ... }    -> flow_settings = { extra_keywords = { ... } }
   dim_hl = "..."             -> dim = ...
+  visible_context = "line"   -> highlights = { line = true }
+  visible_context = "statement" -> highlights = { statement = true }
+  preserve_scope_heads = true -> highlights = { scope_head = true }
+<
+
+`visible_context` and `preserve_scope_heads` are deprecated and ignored. Their
+built-in presentation behavior moves to `highlights`; custom
+`visible_context` functions have no direct replacement. Use custom sources for
+custom path selection, or built-in highlight rules for presentation. Merge the
+new rules with any other configured `highlights` entries when migrating:
+>
+  -- Old
+  require("tunnelvision").setup({
+    visible_context = "statement",
+    preserve_scope_heads = true,
+  })
+
+  -- New
+  require("tunnelvision").setup({
+    highlights = { statement = true, scope_head = true },
+  })
 <
 
 There is intentionally no `treesitter_else_word` value. Use explicit fallback
@@ -523,18 +578,22 @@ chains such as `sources = { "treesitter", "word" }`.
 
 Version 0.4 adds opt-in visual rules and reorganizes rendering internals, but no
 configuration migration is required. `setup()`, `setup({})`, legacy `source`
-values, and modern `sources` chains behave as before without `highlights`: line
-focus with Comment-derived dimming. In particular, `source = "lsp_else_word"`
-maps to `sources = { "lsp", "word" }`.
+values, and modern `sources` chains retained line focus in 0.4. The current
+default instead uses statement focus and theme-derived symbol emphasis with
+Comment-derived dimming. To keep previous line-only focus, configure
+`highlights = { line = true }`; existing setup calls otherwise use the new
+visual defaults. In particular, `source = "lsp_else_word"` maps to
+`sources = { "lsp", "word" }`.
 
 Breaking change after 0.4: one-shot dim colors must move to
 `set_buffer_dim(style)` or `setup({ dim = style })`; only `on({ dim = "none" })`
 remains valid. One-shot `dim_hl` and `max_dim_lines` must move to `setup()`.
 
-`on()` intentionally keeps its original replace-one-target behavior, so existing
-mappings do not start accumulating tracks. Use `add()`, `pin()`, or `on_many()`
-when multiple tracks are wanted; `:TunnelVision retarget` still behaves like
-`:TunnelVision on`. The `dim`-related breaks above apply to the same release.
+`on()` keeps replace behavior by default; `primary_action = "add"` opts into
+accumulation. `retarget()` and `:TunnelVision retarget` always replace tracks.
+Use `add()`, `pin()`, or additive `on_many()` for multiple tracks. Dynamic batches
+now keep one moving track per cursor rather than pinning all but the last.
+The `dim`-related breaks above apply to the same release.
 
 ===============================================================================
 10. Health                                                  *tunnelvision-health*
@@ -554,8 +613,14 @@ Checks >
 11. Troubleshooting                         *tunnelvision-troubleshooting*
 
 - No symbol under cursor: move to a word identifier before `:TunnelVision on`.
+- LSP documentHighlight timeout: TunnelVision warns once per buffer when a
+  request reaches `lsp_timeout_ms` (150 ms by default). Later activations still
+  retry LSP. To prioritize local matches, use
+  `setup({ sources = { "treesitter", "word", "lsp" } })`.
 - Slow or empty LSP mode: try `:TunnelVision source word` to compare.
-- No LSP highlights: use `sources = { "lsp", "word" }` for word fallback.
+- No LSP highlights: the default already falls back to Tree-sitter, then word.
+  Run `:TunnelVision status` to inspect the configured source chain and
+  `:checkhealth tunnelvision` to check LSP documentHighlight support.
 - Too many word matches: try `sources = { "treesitter", "word" }`.
 - Function scope behaving like buffer: check Tree-sitter health/status.
 - Flow mode is heuristic, not full dataflow analysis.

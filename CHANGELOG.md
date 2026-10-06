@@ -8,13 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased (breaking API change; next major release)
 
 ### Added
+- Theme-derived `fg_group` and `bg_group` highlight styles; group backgrounds can
+  use `bg_opacity` to blend against `Normal` and refresh with colorscheme changes.
 - `:TunnelVision quickfix` / `set_quickfix(bufnr?)` export positions from all
   active tracks (deduplicated, sorted) to a new quickfix list for `:cnext` and
   `:cdo`. Line-changing `next`/`prev` moves now enter the jumplist, so `<C-o>`
   returns to the previous position, like `n`/`N`.
-- `add(opts?)` adds a track while keeping existing ones; `on(opts?)` keeps its
-  original replace-all behavior, so existing mappings do not accumulate tracks.
-  `retarget()` remains an alias for `on()`, and `:TunnelVision add` is available.
+- `primary_action = "retarget" | "add"` controls `on()` independently of track
+  mode, defaulting to replace-all. Explicit `retarget()` always replaces;
+  `add()` always keeps existing tracks. One-shot commands use the configured action.
+- Native Neovim 0.13 multicursor activation through `nvim.multicursor` extmarks.
+  Every dynamic cursor owns a moving track, including in `on_many()`; stable
+  secondary cursor IDs survive enumeration reordering and refresh. `pin()`
+  creates fixed batches. Native `*`, `n`, and `N` mappings remain unchanged.
+- Session-scoped deprecation warnings: aggregate setup inputs once, and warn once
+  for deprecated API/command use. Known mappings remain supported and modern
+  fields win conflicts; `notify = false` suppresses warnings.
+- Unknown options are rejected with visible errors before configuration or tracks
+  change, including before a replacing activation clears tracks.
 - Tracks now apply their own positive highlight styles; on overlaps, newer tracks
   override conflicting attributes.
 - `set_buffer_dim(style, bufnr?)` overrides the setup dim style for a buffer;
@@ -23,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `:TunnelVision dim <#RRGGBB|group|none|reset>` sets or resets buffer dimming.
 
 ### Changed
+- Default visual focus now keeps recognized Tree-sitter statements (falling
+  back to path lines) and emphasizes source-owned symbols with the colorscheme's
+  `Search` background without bold. The group background is used without added
+  opacity; `highlights = { line = true }` restores line-only focus.
+- `:TunnelVision mode`, `direction`, `scope`, and `source` with values now
+  activate cursor batches without changing setup defaults. Expected Tree-sitter
+  structural fallbacks no longer warn. LSP documentHighlight timeouts warn once
+  per buffer and suggest a local-first source order.
 - Dimming is a shared buffer layer, enabled by any requesting track or a
   buffer's force setting. `on({ dim = "none" })` opts out only that track.
 - One-shot dim colors, `dim_hl`, and `max_dim_lines` are no longer accepted;

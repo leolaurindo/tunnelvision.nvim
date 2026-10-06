@@ -1,5 +1,6 @@
 -- Rendering, highlight, dim, and lifecycle coverage.
 return function(helpers)
+  local assert_equal = helpers.assert_equal
   local assert_true = helpers.assert_true
   local new_buffer = helpers.new_buffer
   local marks = helpers.marks
@@ -94,49 +95,28 @@ return function(helpers)
     vim.defer_fn = orig_defer_fn
   end
 
-  -- === Dim API cleanup tests ===
-
-  -- Restore to baseline before dim form tests
-  tunnelvision.setup({ notify = false })
-
-  -- dim = nil uses Comment-derived default
-  tunnelvision.setup({ notify = false, dim = nil })
-  local nil_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
+  -- Dim forms share one highlight contract; compatibility targets remain supported.
   local comment_hl = vim.api.nvim_get_hl(0, { name = "Comment", link = false })
-  assert_true(nil_hl and comment_hl and nil_hl.fg == comment_hl.fg, "dim = nil should derive from Comment fg")
-
-  -- dim = "#445566" sets foreground color
-  tunnelvision.setup({ notify = false, dim = "#445566" })
-  local hex_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
-  assert_true(hex_hl and hex_hl.fg == 0x445566, "dim = '#445566' should set fg")
-
-  -- dim = { fg = "#667788", italic = false } works
-  tunnelvision.setup({ notify = false, dim = { fg = "#667788", italic = false } })
-  local table_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
-  assert_true(table_hl and table_hl.fg == 0x667788, "dim = { fg = ... } table form should set fg")
-  assert_true(
-    table_hl and (table_hl.italic == nil or table_hl.italic == false),
-    "dim = { italic = false } should not be italic"
-  )
-
   vim.api.nvim_set_hl(0, "CompatDim", { fg = 0x998877 })
-  tunnelvision.setup({ notify = false, dim = "CompatDim" })
-  local copied_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
-  assert_true(copied_hl.fg == 0x998877 and copied_hl.link == nil, "dim groups should be copied, not linked")
-
-  tunnelvision.setup({ notify = false, dim_hl = "CompatDim" })
-  assert_true(core.state.config.dim_hl == "CompatDim", "deprecated setup dim_hl should remain public")
-  tunnelvision.setup({ notify = false, dim = "#AABBCC", dim_hl = "CompatDim" })
-  assert_true(
-    vim.api.nvim_get_hl(0, { name = "CompatDim", link = false }).fg == 0xAABBCC,
-    "dim should apply to the deprecated dim_hl target"
-  )
-
-  tunnelvision.setup({ notify = false, dim = "DefinitelyMissingTunnelVisionDimGroup" })
-  assert_true(
-    vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false }).fg == comment_hl.fg,
-    "missing dim groups should use the Comment fallback"
-  )
+  for _, case in ipairs({
+    { "default", {}, comment_hl.fg },
+    { "hex", { dim = "#445566" }, 0x445566 },
+    { "table", { dim = { fg = "#667788", italic = false } }, 0x667788 },
+    { "group copy", { dim = "CompatDim" }, 0x998877 },
+    { "compatibility group", { dim_hl = "CompatDim" }, comment_hl.fg },
+    { "compatibility color", { dim = "#AABBCC", dim_hl = "CompatDim" }, 0xAABBCC },
+    { "missing group", { dim = "DefinitelyMissingTunnelVisionDimGroup" }, comment_hl.fg },
+    { "invalid dim", { dim = 42 }, comment_hl.fg },
+  }) do
+    tunnelvision.setup(vim.tbl_extend("force", { notify = false }, case[2]))
+    local group = case[2].dim_hl or "TunnelVisionDim"
+    local hl = vim.api.nvim_get_hl(0, { name = group, link = true })
+    assert_true(hl.fg == case[3] and not hl.link, case[1] .. " should resolve the dim foreground without linking")
+    if case[1] == "table" then
+      assert_true(not hl.italic, "explicit false italic should stay disabled")
+    end
+    assert_true(core.state.config.dim_hl == group, "dim_hl should retain its configured target")
+  end
 
   -- Per-buffer styles are independent of activation and setup styles.
   local oneshot_hex_buf = new_buffer({ "local alpha = 1", "print(alpha)" })
@@ -159,31 +139,17 @@ return function(helpers)
     "buffer overrides should not affect the global style"
   )
 
-  -- invalid dim falls back to Comment-derived behavior
-  tunnelvision.setup({ notify = false, dim = 42 })
-  local invalid_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
-  assert_true(invalid_hl and invalid_hl.fg == comment_hl.fg, "invalid dim = 42 should fall back to Comment-derived fg")
-
-  tunnelvision.setup({ notify = false }) -- restore
-
-  -- colorscheme refresh preserves configured dim behavior
-  tunnelvision.setup({ notify = false, dim = "Comment" })
-  vim.cmd("colorscheme default")
-  local cs_copy_hl = vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false })
-  local cs_comment_hl = vim.api.nvim_get_hl(0, { name = "Comment", link = false })
-  assert_true(
-    cs_copy_hl and cs_comment_hl and cs_copy_hl.fg == cs_comment_hl.fg,
-    "colorscheme refresh should re-copy from Comment group for dim = 'Comment'"
-  )
-
-  tunnelvision.setup({ notify = false, dim = "#778899" })
-  vim.cmd("colorscheme default")
-  assert_true(
-    vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false }).fg == 0x778899,
-    "colorscheme refresh should preserve hex dim colors"
-  )
-
-  tunnelvision.setup({ notify = false }) -- restore
+  -- ColorScheme recopies group colors and preserves explicit colors.
+  for _, case in ipairs({ { "Comment" }, { "#778899", 0x778899 } }) do
+    tunnelvision.setup({ notify = false, dim = case[1] })
+    vim.cmd("colorscheme default")
+    local expected = case[2] or vim.api.nvim_get_hl(0, { name = "Comment", link = false }).fg
+    assert_true(
+      vim.api.nvim_get_hl(0, { name = "TunnelVisionDim", link = false }).fg == expected,
+      "ColorScheme should restore dim = " .. case[1]
+    )
+  end
+  tunnelvision.setup({ notify = false })
   vim.cmd("TunnelVision off")
   assert_true(not core.is_active(0), "deactivation failed")
 
@@ -199,48 +165,19 @@ return function(helpers)
 
     tunnelvision.on()
     local bs = core.get_buf_state(highlight_buf)
-    assert_true(vim.deep_equal(bs.config.highlights, { symbol = {} }), "missing one-shot highlights should inherit")
+    assert_equal(bs.config.highlights, { symbol = {} }, "missing one-shot highlights should inherit")
 
-    assert_true(
-      core.activate(highlight_buf, {
-        source = "word",
-        scope = "buffer",
-        highlights = { statement = true },
-        symbol = "alpha",
-        cursor = { 1, 7 },
-      }),
-      "changed one-shot highlights should invalidate config equality"
-    )
-    bs = core.get_buf_state(highlight_buf)
-    assert_true(
-      vim.deep_equal(bs.config.highlights, { statement = {} }),
-      "non-empty one-shot highlights should replace setup rules"
-    )
-
-    core.activate(highlight_buf, {
-      source = "word",
-      scope = "buffer",
-      highlights = {},
-      symbol = "alpha",
-      cursor = { 1, 7 },
-      force = true,
-    })
-    assert_true(
-      vim.deep_equal(core.get_buf_state(highlight_buf).config.highlights, { line = {} }),
-      "empty one-shot highlights should use line default"
-    )
-
-    core.activate(highlight_buf, {
-      source = "word",
-      highlights = { unknown = true, symbol = 42, line = { bold = "yes" } },
-      symbol = "alpha",
-      cursor = { 1, 7 },
-      force = true,
-    })
-    assert_true(
-      vim.deep_equal(core.get_buf_state(highlight_buf).config.highlights, { line = {} }),
-      "invalid one-shot highlight rules should normalize safely"
-    )
+    for _, case in ipairs({
+      { { statement = true }, { statement = {} }, "replacement" },
+      { {}, { statement = {}, symbol = { bg_group = "Search" } }, "empty defaults" },
+      { { symbol = 42, line = { bold = "yes" } }, { line = {} }, "invalid style normalization" },
+    }) do
+      assert_true(
+        core.activate(highlight_buf, { highlights = case[1], symbol = "alpha", cursor = { 1, 7 } }),
+        "changed highlights should invalidate config equality: " .. case[3]
+      )
+      assert_equal(bs.config.highlights, case[2], "one-shot highlights: " .. case[3])
+    end
     vim.cmd("TunnelVision off")
   end
 
@@ -292,22 +229,51 @@ return function(helpers)
     end
 
     local render_buf = new_buffer({ "xx alpha yy alpha zz", "local beta = 1" })
+    local function focus(highlights, opts)
+      tunnelvision.setup(vim.tbl_extend("force", {
+        notify = false,
+        sources = { "word" },
+        scope = "buffer",
+        highlights = highlights,
+      }, opts or {}))
+      vim.api.nvim_win_set_cursor(0, { 1, 4 })
+      reset_highlight_calls()
+      tunnelvision.on()
+      return core.get_buf_state(render_buf)
+    end
     vim.api.nvim_win_set_cursor(0, { 1, 4 })
 
+    local original_search = orig_get_hl(0, { name = "Search", link = true })
+    orig_set_hl(0, "Search", { bg = 0x55AA77 })
     tunnelvision.setup()
     reset_highlight_calls()
     tunnelvision.on({ scope = "buffer", silent = true })
-    local default_snapshot = mark_snapshot(render_buf)
-    assert_true(#default_snapshot == 1, "default renderer should add only the unrelated-line dim mark")
-    assert_true(default_snapshot[1][5] == "TunnelVisionDim", "default renderer should use line dimming")
+    local default_marks = marks(render_buf)
+    assert_true(#default_marks == 3, "default renderer should emphasize two symbols and dim the unrelated line")
+    local default_group = default_marks[1][4].hl_group
+    local default_hl = orig_get_hl(0, { name = default_group, link = false })
+    assert_true(
+      default_hl.bg == 0x55AA77 and not default_hl.bold,
+      "default symbol should use Search background without bold"
+    )
+    assert_true(default_marks[3][4].line_hl_group == "TunnelVisionDim", "unrelated line should stay dim")
+    orig_set_hl(0, "Search", { bg = 0xAA7755 })
+    vim.api.nvim_exec_autocmds("ColorScheme", {})
+    local updated_group = marks(render_buf)[1][4].hl_group
+    assert_true(
+      orig_get_hl(0, { name = updated_group, link = false }).bg == 0xAA7755,
+      "active symbol should adopt the updated Search background"
+    )
+    orig_set_hl(0, "Search", {})
+    vim.api.nvim_exec_autocmds("ColorScheme", {})
+    local plain_group = marks(render_buf)[1][4].hl_group
+    local plain_hl = orig_get_hl(0, { name = plain_group, link = false })
+    assert_true(plain_hl.bg == nil and not plain_hl.bold, "missing Search background should not add a style")
+    orig_set_hl(0, "Search", original_search)
     vim.cmd("TunnelVision off")
 
-    tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { symbol = true } })
-    vim.api.nvim_win_set_cursor(0, { 1, 4 })
+    local bs = focus({ symbol = true })
     reset_highlight_calls()
-    tunnelvision.on()
-    reset_highlight_calls()
-    local bs = core.get_buf_state(render_buf)
     local setups = capture_setups(function()
       ui.render(render_buf)
     end)
@@ -315,33 +281,12 @@ return function(helpers)
       setups[core.state.config] == 1 and vim.tbl_count(setups) == 1,
       "each render should setup only its effective highlights once"
     )
-    local symbol_marks = marks(render_buf)
-    assert_true(#symbol_marks == 4, "empty symbol style should create three complement dims and one line dim")
-    assert_true(
-      symbol_marks[1][3] == 0 and symbol_marks[1][4].end_col == 3 and symbol_marks[1][4].hl_group == "TunnelVisionDim",
-      "symbol renderer should dim bytes before the first range"
-    )
-    assert_true(
-      symbol_marks[2][3] == 8 and symbol_marks[2][4].end_col == 12,
-      "symbol renderer should dim bytes between ranges"
-    )
-    assert_true(
-      symbol_marks[3][3] == 17 and symbol_marks[3][4].end_col == 20,
-      "symbol renderer should dim bytes after the last range"
-    )
-    assert_true(
-      symbol_marks[4][4].line_hl_group == "TunnelVisionDim",
-      "unrelated lines should retain whole-line dimming"
-    )
-    assert_true(
-      vim.deep_equal(mark_snapshot(render_buf), {
-        { 0, 0, 3, "TunnelVisionDim", nil, 1000 },
-        { 0, 8, 12, "TunnelVisionDim", nil, 1000 },
-        { 0, 17, 20, "TunnelVisionDim", nil, 1000 },
-        { 1, 0, nil, nil, "TunnelVisionDim", 1000 },
-      }),
-      "empty styles should preserve exact visible geometry: " .. vim.inspect(mark_snapshot(render_buf))
-    )
+    assert_equal(mark_snapshot(render_buf), {
+      { 0, 0, 3, "TunnelVisionDim", nil, 1000 },
+      { 0, 8, 12, "TunnelVisionDim", nil, 1000 },
+      { 0, 17, 20, "TunnelVisionDim", nil, 1000 },
+      { 1, 0, nil, nil, "TunnelVisionDim", 1000 },
+    }, "empty styles should preserve exact visible geometry: " .. vim.inspect(mark_snapshot(render_buf)))
 
     bs.tracks[1].symbol_ranges = {
       { line = 1, start_col = 3, end_col = 8 },
@@ -349,7 +294,7 @@ return function(helpers)
       { line = 1, start_col = 12, end_col = 17 },
     }
     require("tunnelvision.ui").render(render_buf)
-    symbol_marks = marks(render_buf)
+    local symbol_marks = marks(render_buf)
     assert_true(#symbol_marks == 4, "overlapping symbol ranges should render as one visible interval")
     assert_true(
       symbol_marks[2][3] == 8 and symbol_marks[2][4].end_col == 12,
@@ -357,28 +302,18 @@ return function(helpers)
     )
     vim.cmd("TunnelVision off")
 
-    tunnelvision.setup({
-      notify = false,
-      source = "word",
-      scope = "buffer",
-      highlights = {
-        scope_head = { fg = 0x111111, bold = true },
-        statement = { fg = 0x222222, italic = true },
-        line = { fg = 0x333333, bold = false, underline = true },
-        symbol = { fg = 0x444444, italic = false, strikethrough = true },
-      },
+    bs = focus({
+      scope_head = { fg = 0x111111, bold = true },
+      statement = { fg = 0x222222, italic = true },
+      line = { fg = 0x333333, bold = false, underline = true },
+      symbol = { fg = 0x444444, italic = false, strikethrough = true },
     })
-    vim.api.nvim_win_set_cursor(0, { 1, 4 })
-    reset_highlight_calls()
-    tunnelvision.on()
-    bs = core.get_buf_state(render_buf)
     bs.tracks[1].scope_head_set = { [1] = true }
     bs.tracks[1].statement_set = { [1] = true }
     ui.clear_render_groups(bs)
     reset_highlight_calls()
     ui.render(render_buf)
     local composed_marks = marks(render_buf)
-    assert_true(#composed_marks == 6, "composed whole-line styles should split around two symbol ranges")
     local line_group = composed_marks[1][4].hl_group
     local symbol_group = composed_marks[2][4].hl_group
     local line_hl = vim.api.nvim_get_hl(0, { name = line_group, link = false })
@@ -393,24 +328,19 @@ return function(helpers)
       "symbol attributes should override conflicts and inherit other attributes"
     )
     assert_true(composed_marks[4][4].hl_group == symbol_group, "equal effective symbol styles should reuse a group")
-    assert_true(mark_priority(composed_marks[1][4]) == 1100, "positive styles should use positive priority")
     assert_true(
       line_group:match("^TunnelVisionHighlight" .. render_buf .. "_"),
       "positive groups should be buffer-specific"
     )
-    assert_true(mark_priority(composed_marks[6][4]) == 1000, "dim priority should remain below positive styles")
     local composed_snapshot = mark_snapshot(render_buf)
-    assert_true(
-      vim.deep_equal(composed_snapshot, {
-        { 0, 0, 3, line_group, nil, 1100 },
-        { 0, 3, 8, symbol_group, nil, 1100 },
-        { 0, 8, 12, line_group, nil, 1100 },
-        { 0, 12, 17, symbol_group, nil, 1100 },
-        { 0, 17, 20, line_group, nil, 1100 },
-        { 1, 0, nil, nil, "TunnelVisionDim", 1000 },
-      }),
-      "composed styles should preserve exact extmark geometry and order"
-    )
+    assert_equal(composed_snapshot, {
+      { 0, 0, 3, line_group, nil, 1100 },
+      { 0, 3, 8, symbol_group, nil, 1100 },
+      { 0, 8, 12, line_group, nil, 1100 },
+      { 0, 12, 17, symbol_group, nil, 1100 },
+      { 0, 17, 20, line_group, nil, 1100 },
+      { 1, 0, nil, nil, "TunnelVisionDim", 1000 },
+    }, "composed styles should preserve exact extmark geometry and order")
     reset_highlight_calls()
     local redefined = false
     vim.api.nvim_set_hl = function(namespace, group, attrs)
@@ -419,10 +349,7 @@ return function(helpers)
     end
     ui.render(render_buf)
     vim.api.nvim_set_hl = orig_set_hl
-    assert_true(
-      vim.deep_equal(mark_snapshot(render_buf), composed_snapshot),
-      "composed rerender should preserve extmarks"
-    )
+    assert_equal(mark_snapshot(render_buf), composed_snapshot, "composed rerender should preserve extmarks")
     assert_true(not redefined, "rerender should not redefine equal existing highlight groups")
     vim.cmd("TunnelVision off")
 
@@ -449,8 +376,9 @@ return function(helpers)
       local collision_marks = marks(collision_buf)
       assert_true(#collision_marks == 1, "invalid colliding style should not suppress or reuse the valid group")
       local group = collision_marks[1][4].hl_group
-      assert_true(
-        vim.deep_equal(mark_snapshot(collision_buf), { { valid_line - 1, 0, 5, group, nil, 1100 } }),
+      assert_equal(
+        mark_snapshot(collision_buf),
+        { { valid_line - 1, 0, 5, group, nil, 1100 } },
         "colliding styles should preserve the valid extmark in either resolution order: "
           .. vim.inspect(mark_snapshot(collision_buf))
       )
@@ -468,17 +396,7 @@ return function(helpers)
     vim.api.nvim_set_current_buf(render_buf)
 
     vim.api.nvim_set_hl(0, "Normal", { bg = 0x0000FF })
-    tunnelvision.setup({
-      notify = false,
-      source = "word",
-      scope = "buffer",
-      dim = "none",
-      highlights = { symbol = { bg = 0xFF0000, bg_opacity = 0.5, bold = true } },
-    })
-    vim.api.nvim_win_set_cursor(0, { 1, 4 })
-    reset_highlight_calls()
-    tunnelvision.on()
-    bs = core.get_buf_state(render_buf)
+    bs = focus({ symbol = { bg = 0xFF0000, bg_opacity = 0.5, bold = true } }, { dim = "none" })
     local opacity_marks = marks(render_buf)
     assert_true(#opacity_marks == 2, "dim none should retain positive symbol marks")
     local opacity_group = opacity_marks[1][4].hl_group
@@ -489,10 +407,7 @@ return function(helpers)
     local opacity_snapshot = mark_snapshot(render_buf)
     reset_highlight_calls()
     ui.render(render_buf)
-    assert_true(
-      vim.deep_equal(mark_snapshot(render_buf), opacity_snapshot),
-      "repeated opacity style should preserve extmarks"
-    )
+    assert_equal(mark_snapshot(render_buf), opacity_snapshot, "repeated opacity style should preserve extmarks")
     assert_true(normal_bg_calls == 1, "opacity styles should share one Normal background lookup per render")
 
     local opacity_config = bs.config
@@ -530,10 +445,7 @@ return function(helpers)
       bs.config == opacity_config and second_bs.config == second_config,
       "ColorScheme should preserve each active buffer config"
     )
-    assert_true(
-      vim.deep_equal(setups, expected_setups),
-      "ColorScheme should setup global and active configs without extras"
-    )
+    assert_equal(setups, expected_setups, "ColorScheme should setup global and active configs without extras")
     assert_true(normal_bg_calls == 1, "ColorScheme rerenders should perform one fresh Normal lookup for opacity")
     assert_true(
       vim.api.nvim_get_hl(0, { name = opacity_group, link = false }).bg == 0x808000,
@@ -565,44 +477,42 @@ return function(helpers)
     )
     vim.cmd("colorscheme default")
 
-    tunnelvision.setup({
-      notify = false,
-      source = "word",
-      scope = "buffer",
-      dim = "none",
-      highlights = { symbol = { bg = "DefinitelyNotAColor", bg_opacity = 0.5 } },
-    })
-    vim.api.nvim_win_set_cursor(0, { 1, 4 })
-    assert_true(pcall(tunnelvision.on), "invalid positive colors should not abort activation")
+    assert_true(
+      pcall(focus, { symbol = { bg = "DefinitelyNotAColor", bg_opacity = 0.5 } }, { dim = "none" }),
+      "invalid positive colors should not abort activation"
+    )
     assert_true(#marks(render_buf) == 0, "invalid positive colors should preserve visibility without style marks")
     vim.cmd("TunnelVision off")
 
     vim.api.nvim_set_hl(0, "Normal", { bg = 0x0000FF })
-    tunnelvision.setup({
-      notify = false,
-      source = "word",
-      scope = "buffer",
-      dim = "none",
-      highlights = { symbol = { bg = "red", bg_opacity = 0.5 } },
-    })
-    tunnelvision.on()
+    focus({ symbol = { bg = "red", bg_opacity = 0.5 } }, { dim = "none" })
     local named_group = marks(render_buf)[1][4].hl_group
     assert_true(
       vim.api.nvim_get_hl(0, { name = named_group, link = false }).bg == 0x800080,
       "named background colors should support pseudo-opacity"
     )
     vim.cmd("TunnelVision off")
+
+    vim.api.nvim_set_hl(0, "Normal", { bg = 0x0000FF })
+    vim.api.nvim_set_hl(0, "Search", { bg = 0xFF0000 })
+    focus({ symbol = { bg_group = "Search", bold = true } }, { dim = "none" })
+    local group_bg = marks(render_buf)[1][4].hl_group
+    local search_hl = vim.api.nvim_get_hl(0, { name = group_bg, link = false })
+    assert_true(
+      search_hl.bg == 0xFF0000 and search_hl.bold,
+      "theme group background should be used without added opacity"
+    )
+
+    vim.api.nvim_set_hl(0, "Normal", { bg = 0xFFFFFF })
+    vim.api.nvim_set_hl(0, "Search", { bg = 0x00FF00 })
+    vim.api.nvim_exec_autocmds("ColorScheme", {})
+    group_bg = marks(render_buf)[1][4].hl_group
+    search_hl = vim.api.nvim_get_hl(0, { name = group_bg, link = false })
+    assert_true(search_hl.bg == 0x00FF00, "active style should refresh to the new theme group background")
+    vim.cmd("TunnelVision off")
     vim.cmd("colorscheme default")
 
-    tunnelvision.setup({
-      notify = false,
-      source = "word",
-      scope = "buffer",
-      max_dim_lines = 2,
-      highlights = { line = { bold = true } },
-    })
-    vim.api.nvim_win_set_cursor(0, { 1, 4 })
-    tunnelvision.on()
+    focus({ line = { bold = true } }, { max_dim_lines = 2 })
     reset_highlight_calls()
     assert_true(
       not core.activate(render_buf, { max_dim_lines = 1, symbol = "alpha", cursor = { 1, 4 } }),
@@ -614,14 +524,7 @@ return function(helpers)
     assert_true(large_marks[1][4].hl_group ~= nil, "large-buffer positive style should use a range highlight")
     vim.cmd("TunnelVision off")
 
-    tunnelvision.setup({
-      notify = false,
-      source = "word",
-      scope = "buffer",
-      dim = "none",
-      highlights = { line = { bold = true } },
-    })
-    tunnelvision.on()
+    focus({ line = { bold = true } }, { dim = "none" })
     local deleted_buf = render_buf
     new_buffer({ "local alpha = 1", "print(alpha)", "local beta = 2" })
     reset_highlight_calls()
@@ -634,7 +537,7 @@ return function(helpers)
 
   -- dim = "none" clears existing marks and skips dim rendering.
   do
-    tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+    tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { line = true } })
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
     tunnelvision.on()
     assert_true(#vim.api.nvim_buf_get_extmarks(0, core.state.ns, 0, -1, {}) > 0, "default dim should create extmarks")
@@ -646,7 +549,13 @@ return function(helpers)
     )
     vim.cmd("TunnelVision off")
 
-    tunnelvision.setup({ notify = false, source = "word", scope = "buffer", dim = "none" })
+    tunnelvision.setup({
+      notify = false,
+      source = "word",
+      scope = "buffer",
+      dim = "none",
+      highlights = { line = true },
+    })
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
     tunnelvision.on()
     assert_true(
@@ -658,12 +567,12 @@ return function(helpers)
 
   -- Buffer dim commands change style without changing tracks; reset also clears force.
   do
-    tunnelvision.setup({ notify = false, source = "word", scope = "buffer" })
+    tunnelvision.setup({ notify = false, source = "word", scope = "buffer", highlights = { line = true } })
     local dim_buf = new_buffer({ "alpha", "outside" })
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
     vim.cmd("TunnelVision dim #123456")
     local bs = core.get_buf_state(dim_buf)
-    assert_true(vim.deep_equal(bs.dim_override, { fg = "#123456" }), "dim command should set a buffer color")
+    assert_equal(bs.dim_override, { fg = "#123456" }, "dim command should set a buffer color")
     tunnelvision.on()
     assert_true(
       vim.api.nvim_get_hl(0, { name = ("TunnelVisionDimBuffer%d"):format(dim_buf), link = false }).fg == 0x123456,

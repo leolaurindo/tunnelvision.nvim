@@ -42,6 +42,28 @@ function M.notify(msg, level)
   end
 end
 
+local warned_deprecated = {}
+
+function M.warn_deprecated(category, message, enabled)
+  if enabled == nil then
+    enabled = state.config.notify
+  end
+  if enabled and not warned_deprecated[category] then
+    warned_deprecated[category] = true
+    vim.notify("TunnelVision: deprecated " .. message, vim.log.levels.WARN)
+  end
+end
+
+function M.validate_options(opts, activation)
+  local err = config.validate_options(opts, activation)
+  if err then
+    -- Invalid inputs must stay visible even when informational notices are disabled.
+    vim.notify("TunnelVision: " .. err, vim.log.levels.ERROR)
+    return false
+  end
+  return true
+end
+
 function M.get_buf_state(bufnr)
   local s = state.bufs[bufnr]
   if s then
@@ -62,8 +84,7 @@ function M.get_buf_state(bufnr)
     scope_head_set = {},
     warned_lsp_fallback = false,
     warned_lsp_strict = false,
-    warned_statement_fallback = false,
-    warned_scope_head_fallback = false,
+    warned_lsp_timeout = false,
     warned_large_buffer = false,
     last_compute_meta = nil,
     pending = false,
@@ -110,23 +131,36 @@ M.combine = config.combine
 
 function M.configure(opts)
   opts = opts or {}
-  state.config = vim.tbl_deep_extend("force", vim.deepcopy(config.defaults), opts)
+  if not M.validate_options(opts, false) then
+    return false
+  end
+  local cfg = vim.tbl_deep_extend("force", vim.deepcopy(config.defaults), opts)
   if opts.source ~= nil and opts.sources == nil then
-    state.config.sources = nil
+    cfg.sources = nil
   end
   if opts.highlights ~= nil then
-    state.config.highlights = opts.highlights
+    cfg.highlights = opts.highlights
   end
 
   -- Compatibility: deprecated top-level flow options fill missing
-  -- flow_settings fields. New nested fields win. No runtime warnings.
+  -- flow_settings fields. New nested fields win.
   if opts.direction ~= nil and (opts.flow_settings == nil or opts.flow_settings.direction == nil) then
-    state.config.flow_settings.direction = state.config.direction
+    cfg.flow_settings.direction = cfg.direction
   end
   if opts.extra_keywords ~= nil and (opts.flow_settings == nil or opts.flow_settings.extra_keywords == nil) then
-    state.config.flow_settings.extra_keywords = state.config.extra_keywords
+    cfg.flow_settings.extra_keywords = cfg.extra_keywords
   end
-  config.normalize(state.config, state.custom_sources)
+  config.normalize(cfg, state.custom_sources)
+  state.config = cfg
+  local deprecated = config.deprecated_inputs(opts)
+  if #deprecated > 0 then
+    M.warn_deprecated(
+      "setup",
+      "setup options: " .. table.concat(deprecated, ", ") .. "; see :help tunnelvision-migration",
+      cfg.notify
+    )
+  end
+  return true
 end
 
 local function activation_config(opts)
@@ -302,36 +336,18 @@ local function maybe_warn_strict_lsp(bs, silent, cfg)
   bs.warned_lsp_strict = true
 end
 
-local function maybe_warn_structural_fallback(bs, silent, cfg, fallback)
-  if silent or not state.config.notify or cfg.fallback_warn == "never" then
-    return
-  end
-
-  local always = cfg.fallback_warn == "always"
-  if fallback.statement and (always or not bs.warned_statement_fallback) then
-    M.notify("TunnelVision: statement structure unavailable; using matched lines", vim.log.levels.WARN)
-    bs.warned_statement_fallback = true
-  end
-  if fallback.scope_head and (always or not bs.warned_scope_head_fallback) then
-    M.notify("TunnelVision: structure unavailable; skipping scope heads", vim.log.levels.WARN)
-    bs.warned_scope_head_fallback = true
-  end
-end
-
 local function apply_path(bufnr, bs, track, opts, cfg, path_set, path_order, meta, ranges, context)
   track.pending = false
   track.request_id = nil
   track.request_handles = {}
   track.path_set, track.path_order, track.last_compute_meta, track.symbol_ranges = path_set, path_order, meta, ranges
-  local structural_fallback
-  track.statement_set, track.scope_head_set, structural_fallback =
+  track.statement_set, track.scope_head_set =
     require("tunnelvision.context").evaluate(cfg, track.path_set, track.symbol_ranges, bufnr, track.scope, context)
   -- Retain the rendered policy while a later asynchronous retarget is pending.
   track.rendered_highlights = cfg.highlights
   track.rendered_request_dim = cfg.request_dim
   maybe_warn_fallback(track, opts.silent, cfg)
   maybe_warn_strict_lsp(track, opts.silent, cfg)
-  maybe_warn_structural_fallback(track, opts.silent, cfg, structural_fallback)
   sync_buffer(bufnr, bs, opts.defer_render, true)
 end
 
@@ -382,6 +398,15 @@ local function resolve_path(bufnr, bs, track, symbol, anchor, scope, opts, cfg, 
         return
       end
 
+      if result.timed_out and state.config.notify and not bs.warned_lsp_timeout then
+        bs.warned_lsp_timeout = true
+        M.notify(
+          "TunnelVision: LSP documentHighlight timed out; future activations will retry LSP. "
+            .. 'To prioritize local matches, use setup({ sources = { "treesitter", "word", "lsp" } }). '
+            .. "See :help tunnelvision-troubleshooting",
+          vim.log.levels.WARN
+        )
+      end
       resolve(result)
     end, pending)
     if track.request_id == request_id then
@@ -439,12 +464,15 @@ end
 
 function M.activate(bufnr, opts)
   opts = opts or {}
-  if opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil then
-    M.notify(
-      "TunnelVision: dim styles, dim_hl and max_dim_lines belong in setup() or buffer dim settings",
-      vim.log.levels.WARN
-    )
+  if not M.validate_options(opts, true) then
     return false
+  end
+  local deprecated = config.deprecated_inputs(opts)
+  if #deprecated > 0 then
+    M.warn_deprecated(
+      "use",
+      "activation options: " .. table.concat(deprecated, ", ") .. "; see :help tunnelvision-migration"
+    )
   end
   if not M.valid_target(bufnr, opts) then
     M.notify("TunnelVision: invalid symbol or cursor", vim.log.levels.WARN)
@@ -487,6 +515,9 @@ function M.activate(bufnr, opts)
     moving = false
     cfg.mode = (cfg.mode == "dynamic_flow" or cfg.mode == "flow") and "flow" or "static"
   end
+  local cursor_id = opts.cursor_id
+    or opts.track and opts.track.cursor_id
+    or ("primary:" .. vim.api.nvim_get_current_win())
   local track = opts.track
   local scope = resolver.resolve_scope(
     bufnr,
@@ -507,6 +538,7 @@ function M.activate(bufnr, opts)
       if
         candidate.symbol == symbol
         and candidate.moving == moving
+        and (not moving or candidate.cursor_id == cursor_id)
         and resolver.scopes_equal(candidate.scope, scope)
         and (same_occurrence or opts.force)
       then
@@ -519,15 +551,6 @@ function M.activate(bufnr, opts)
     end
   end
   if not track then
-    if moving then
-      for i = #bs.tracks, 1, -1 do
-        if bs.tracks[i].moving then
-          bs.tracks[i].request_id = nil
-          cancel_requests(bs.tracks[i])
-          table.remove(bs.tracks, i)
-        end
-      end
-    end
     track = {
       path_set = {},
       path_order = {},
@@ -543,16 +566,35 @@ function M.activate(bufnr, opts)
   cancel_requests(track)
   track.symbol, track.anchor, track.scope, track.config = symbol, anchor, scope, cfg
   track.moving = moving
+  track.cursor_id = cursor_id
+  track.cursor_index = opts.cursor_index or track.cursor_index or 1
   sync_buffer(bufnr, bs, true)
   resolve_path(bufnr, bs, track, symbol, anchor, scope, opts, cfg, keywords, context)
   return true
 end
 
-function M.activate_many(bufnr, positions, opts)
+-- Native secondary cursors are zero-indexed extmarks; the primary is separate.
+function M.cursor_positions(bufnr)
+  local positions = { vim.api.nvim_win_get_cursor(0) }
+  local ids = { "primary:" .. vim.api.nvim_get_current_win() }
+  local ns = vim.api.nvim_get_namespaces()["nvim.multicursor"]
+  if ns then
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {})) do
+      local cursor = { mark[2] + 1, mark[3] }
+      if not vim.deep_equal(cursor, positions[1]) then
+        positions[#positions + 1] = cursor
+        ids[#ids + 1] = mark[1]
+      end
+    end
+  end
+  return positions, ids
+end
+
+function M.activate_many(bufnr, positions, opts, cursor_ids)
   if type(positions) ~= "table" or type(opts or {}) ~= "table" then
     return false
   end
-  if opts and (opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil) then
+  if not M.validate_options(opts or {}, true) then
     return false
   end
   for _, cursor in ipairs(positions) do
@@ -561,11 +603,17 @@ function M.activate_many(bufnr, positions, opts)
     end
   end
   local changed, calls = false, {}
+  local native_positions, native_ids = M.cursor_positions(bufnr)
   for index, cursor in ipairs(positions) do
     local call = vim.tbl_extend("force", opts or {}, { cursor = cursor, defer_render = true })
-    if #positions > 1 and index < #positions and call.pin == nil then
-      call.pin = true
+    call.cursor_id = cursor_ids and cursor_ids[index] or native_ids[index] or ("batch:" .. index)
+    for native_index, native_cursor in ipairs(native_positions) do
+      if vim.deep_equal(cursor, native_cursor) then
+        call.cursor_id = native_ids[native_index]
+        break
+      end
     end
+    call.cursor_index = index
     calls[#calls + 1] = call
     changed = M.activate(bufnr, call) or changed
   end
@@ -894,8 +942,8 @@ function M.refresh(bufnr)
   end
 end
 
-function M.should_dynamic_retarget(bufnr, symbol, cursor)
-  local track = M.get_moving_track(bufnr)
+function M.should_dynamic_retarget(bufnr, symbol, cursor, track)
+  track = track or M.get_moving_track(bufnr)
   if not track or not symbol or symbol == "" then
     return false
   end
@@ -988,8 +1036,9 @@ end
 
 -- Compatibility API (deprecated). Returns the legacy source string when the
 -- current normalized sources can be represented by a single legacy value,
--- otherwise returns nil. No runtime deprecation warnings.
+-- otherwise returns nil.
 function M.get_source()
+  M.warn_deprecated("use", "get_source(); use get_sources()")
   return config.legacy_source_from_sources(state.config.sources)
 end
 
@@ -997,19 +1046,16 @@ function M.get_sources_label()
   return config.format_sources(state.config.sources)
 end
 
--- UI-facing source setter that accepts both legacy values and
--- comma-separated fallback chains (e.g. "lsp,word").
--- Invalid values produce a notify error and leave config unchanged.
-function M.set_source_command(value)
+-- Parse a command source without changing setup defaults.
+function M.parse_source_command(value)
   if config.valid_sources[value] then
-    M.set_source(value)
-    return
+    if value == "lsp_else_word" or value == "lsp_and_word" then
+      M.warn_deprecated("use", "source value " .. value .. "; use a source chain")
+    end
+    return config.sources_from_legacy_source(value)
   end
-
-  -- Single non-legacy source name (e.g. "treesitter")
   if config.valid_source_names[value] then
-    M.set_sources({ value })
-    return
+    return { value }
   end
 
   local parts = vim.split(value, ",")
@@ -1023,8 +1069,7 @@ function M.set_source_command(value)
       end
       names[#names + 1] = name
     end
-    M.set_sources(names)
-    return
+    return names
   end
 
   M.notify(
@@ -1035,8 +1080,9 @@ function M.set_source_command(value)
 end
 
 -- Compatibility API (deprecated). Maps legacy source values to normalized
--- sources. No runtime deprecation warnings.
+-- sources.
 function M.set_source(source)
+  M.warn_deprecated("use", "set_source(); use set_sources()")
   if not config.valid_sources[source] then
     M.notify("TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, or word", vim.log.levels.ERROR)
     return

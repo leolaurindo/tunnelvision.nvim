@@ -1,7 +1,7 @@
 -- Source chain, LSP, Tree-sitter, and fallback coverage.
 return function(helpers)
   local assert_true = helpers.assert_true
-  local assert_ranges = helpers.assert_ranges
+  local assert_equal = helpers.assert_equal
   local assert_sources = helpers.assert_sources
   local new_buffer = helpers.new_buffer
   local marks = helpers.marks
@@ -9,6 +9,17 @@ return function(helpers)
 
   local tunnelvision = require("tunnelvision")
   local core = require("tunnelvision.core")
+
+  local function highlight(row, first, last)
+    return {
+      {
+        range = {
+          start = { line = row, character = first },
+          ["end"] = { line = row, character = last },
+        },
+      },
+    }
+  end
 
   -- Custom synchronous sources participate in source chains
   do
@@ -139,7 +150,7 @@ return function(helpers)
     })
     vim.api.nvim_win_set_cursor(0, { 1, 1 })
     tunnelvision.on()
-    assert_ranges(core.get_buf_state(range_buf).symbol_ranges, {
+    assert_equal(core.get_buf_state(range_buf).symbol_ranges, {
       { line = 1, start_col = 0, end_col = 5 },
       { line = 1, start_col = 17, end_col = 22 },
       { line = 2, start_col = 11, end_col = 16 },
@@ -147,7 +158,7 @@ return function(helpers)
       { line = 3, start_col = 9, end_col = 14 },
     }, "word ranges should retain exact byte positions and all valid occurrences")
     vim.cmd("TunnelVision off")
-    assert_ranges(core.get_buf_state(range_buf).symbol_ranges, {}, "deactivation should clear symbol ranges")
+    assert_equal(core.get_buf_state(range_buf).symbol_ranges, {}, "deactivation should clear symbol ranges")
 
     local resolver = require("tunnelvision.resolver")
     local _, _, _, normalized = resolver.compute_path(range_buf, "alpha", { row = 0, col = 0 }, {
@@ -165,7 +176,7 @@ return function(helpers)
       mode = "static",
       sources = { { kind = "single", name = "lsp" } },
     })
-    assert_ranges(normalized, {
+    assert_equal(normalized, {
       { line = 1, start_col = 0, end_col = 5 },
       { line = 1, start_col = 17, end_col = 31 },
     }, "computed ranges should clamp, deduplicate, discard empties, and sort")
@@ -235,9 +246,7 @@ return function(helpers)
       client.cancel_request = client_method(client, function(handle)
         cancellations[("%d:%d"):format(cancel_client.id, handle)] = true
         if sync_cancel_callbacks then
-          requests[handle - 100].callback(nil, {
-            { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
-          })
+          requests[handle - 100].callback(nil, highlight(0, 5, 10))
         end
       end)
     end
@@ -303,6 +312,14 @@ return function(helpers)
       return batch, timers[timer_cursor]
     end
 
+    local function activate_lsp(opts, cursor)
+      if opts then
+        tunnelvision.setup(vim.tbl_extend("force", { notify = false, scope = "buffer" }, opts))
+      end
+      core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = cursor or { 2, 6 } })
+      return take_batch()
+    end
+
     lsp_buf = new_buffer({ "😀 alpha alpha", "plain alpha", "alpha", "beta" })
     local direct_result
     require("tunnelvision.resolver").request_lsp_highlight(
@@ -315,13 +332,11 @@ return function(helpers)
       end
     )
     local direct_batch = take_batch()
-    respond(direct_batch[1], {
-      { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } },
-    })
+    respond(direct_batch[1], highlight(2, 0, 5))
     respond(direct_batch[2], {})
     respond(direct_batch[4], {})
     assert_true(direct_result and direct_result.used, "five-argument LSP request callback should remain compatible")
-    assert_ranges(direct_result.ranges, {
+    assert_equal(direct_result.ranges, {
       { line = 3, start_col = 0, end_col = 5 },
     }, "direct LSP request ranges")
 
@@ -366,13 +381,9 @@ return function(helpers)
       end),
       "resumable custom source registers"
     )
-    tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("custom_resume", "lsp") }, scope = "buffer" })
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    local resume_batch = take_batch()
+    local resume_batch = activate_lsp({ sources = { tunnelvision.combine("custom_resume", "lsp") } })
     assert_true(bs.pending and custom_resume_calls == 1, "strict combine should pause when it reaches LSP")
-    respond(resume_batch[1], {
-      { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } },
-    })
+    respond(resume_batch[1], highlight(1, 6, 11))
     respond(resume_batch[2], {})
     respond(resume_batch[4], {})
     assert_true(custom_resume_calls == 1, "resume should not rerun a completed custom source")
@@ -384,13 +395,9 @@ return function(helpers)
       "resumed strict combine should merge cached custom and LSP results"
     )
 
-    tunnelvision.setup({ notify = false, sources = { "custom_empty", "lsp" }, scope = "buffer" })
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    local fallback_batch = take_batch()
+    local fallback_batch = activate_lsp({ sources = { "custom_empty", "lsp" } })
     assert_true(bs.pending, "failed earlier source should continue to LSP")
-    respond(fallback_batch[1], {
-      { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } },
-    })
+    respond(fallback_batch[1], highlight(2, 0, 5))
     respond(fallback_batch[2], {})
     respond(fallback_batch[4], {})
     assert_true(
@@ -447,8 +454,9 @@ return function(helpers)
     )
     -- Extmark ids are a per-render counter and differ across versions, so compare
     -- the rendered geometry instead (0.9 does not reuse ids after a clear).
-    assert_true(
-      vim.deep_equal(mark_geometry(marks(lsp_buf)), mark_geometry(old_marks)),
+    assert_equal(
+      mark_geometry(marks(lsp_buf)),
+      mark_geometry(old_marks),
       "pending LSP request should retain the previous render"
     )
     local ui = require("tunnelvision.ui")
@@ -478,8 +486,9 @@ return function(helpers)
     ui.ensure_highlights = orig_ensure_highlights
     resolver.compute_path = orig_compute_path
     local recreated_marks = marks(lsp_buf)
-    assert_true(
-      vim.deep_equal(mark_geometry(recreated_marks), mark_geometry(old_marks)),
+    assert_equal(
+      mark_geometry(recreated_marks),
+      mark_geometry(old_marks),
       "ColorScheme should preserve retained extmarks while LSP is pending"
     )
     local recreated_group = recreated_marks[1][4].hl_group
@@ -497,13 +506,9 @@ return function(helpers)
     )
 
     fake_clients[1].offset_encoding = "utf-16"
-    respond(batch[1], {
-      { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } },
-    })
+    respond(batch[1], highlight(0, 5, 10))
     assert_true(bs.pending, "partial LSP results should wait for remaining clients")
-    respond(batch[4], {
-      { range = { start = { line = 0, character = 2 }, ["end"] = { line = 0, character = 7 } } },
-    })
+    respond(batch[4], highlight(0, 2, 7))
     respond(batch[2], {
       { range = { start = { line = 0, character = 3 }, ["end"] = { line = 0, character = 8 } } },
       { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } },
@@ -515,34 +520,41 @@ return function(helpers)
       bs.config == pending_config and vim.api.nvim_get_hl(0, { name = completed_group, link = false }).fg == 0xAABBCC,
       "completed request should apply the pending style"
     )
-    assert_ranges(bs.symbol_ranges, {
+    assert_equal(bs.symbol_ranges, {
       { line = 1, start_col = 5, end_col = 10 },
       { line = 2, start_col = 6, end_col = 11 },
     }, "mixed response encodings should normalize and deduplicate byte ranges")
 
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch = take_batch()
+    batch = activate_lsp()
     assert_true(batch[1].params.position.character == 6, "ASCII UTF-8 offset should remain unchanged")
     assert_true(batch[2].params.position.character == 6, "ASCII UTF-16 offset should remain unchanged")
     assert_true(batch[4].params.position.character == 6, "ASCII UTF-32 offset should remain unchanged")
-    respond(batch[1], { { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } } })
+    respond(batch[1], highlight(1, 6, 11))
     respond(batch[2], nil, { code = -1, message = "boom" })
     respond(batch[4], nil, { code = -1, message = "boom" })
     assert_true(not bs.pending and bs.path_set[2], "valid partial results should survive another client error")
 
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 3, 0 } })
-    batch, timeout = take_batch()
-    respond(batch[1], { { range = { start = { line = 2, character = 0 }, ["end"] = { line = 2, character = 5 } } } })
+    local timeout_messages = {}
+    local original_notify = vim.notify
+    vim.notify = function(message)
+      timeout_messages[#timeout_messages + 1] = message
+    end
+    core.state.config.notify = true
+    batch, timeout = activate_lsp(nil, { 3, 0 })
+    respond(batch[1], highlight(2, 0, 5))
     timeout()
+    assert_true(
+      #timeout_messages == 1 and timeout_messages[1]:find("LSP documentHighlight timed out"),
+      "partial LSP timeout should warn"
+    )
     assert_true(was_canceled(batch[2]) and not was_canceled(batch[1]), "timeout should cancel only unresolved clients")
     assert_true(not bs.pending, "partial result should complete at the global timeout")
     assert_true(bs.path_set[3], "timed-out clients should not discard valid partial results")
     local timeout_ranges = vim.deepcopy(bs.symbol_ranges)
-    respond(batch[2], { { range = { start = { line = 1, character = 0 }, ["end"] = { line = 1, character = 5 } } } })
-    assert_ranges(bs.symbol_ranges, timeout_ranges, "late responses after timeout should be ignored")
+    respond(batch[2], highlight(1, 0, 5))
+    assert_equal(bs.symbol_ranges, timeout_ranges, "late responses after timeout should be ignored")
 
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch = take_batch()
+    batch = activate_lsp()
     for _, request in pairs(batch) do
       respond(request, nil, { code = -1, message = "boom" })
     end
@@ -556,8 +568,7 @@ return function(helpers)
       "total errors should preserve fallback metadata"
     )
 
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch, timeout = take_batch()
+    batch, timeout = activate_lsp()
     sync_cancel_callbacks = true
     timeout()
     sync_cancel_callbacks = false
@@ -565,43 +576,33 @@ return function(helpers)
       was_canceled(batch[1]) and was_canceled(batch[2]) and bs.last_compute_meta.used_source == "treesitter",
       "reentrant total timeout should cancel its owned requests and fall back"
     )
+    assert_true(#timeout_messages == 1, "repeated LSP timeouts should warn once per buffer")
+    vim.notify = original_notify
 
-    tunnelvision.setup({ notify = false, sources = { "lsp" }, scope = "buffer", lsp_timeout_ms = 1000 })
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch = take_batch()
+    batch = activate_lsp({ sources = { "lsp" }, lsp_timeout_ms = 1000 })
     for _, request in pairs(batch) do
       respond(request, nil, { code = -1, message = "boom" })
     end
     assert_true(bs.last_compute_meta.used_source == nil, "strict LSP total failure should not select a fallback")
     assert_true(not bs.path_set[1] and not bs.path_set[3], "strict LSP total failure should keep only the anchor")
 
-    tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") }, scope = "buffer" })
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch = take_batch()
-    respond(batch[1], { { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } } })
+    batch = activate_lsp({ sources = { tunnelvision.combine("lsp", "word") } })
+    respond(batch[1], highlight(0, 5, 10))
     respond(batch[2], {})
     respond(batch[4], {})
     assert_true(bs.last_compute_meta.used_source == "combine(lsp,word)", "combined source should succeed")
     assert_true(bs.path_set[1] and bs.path_set[3], "combined source should include LSP and word lines")
 
-    tunnelvision.setup({ notify = false, sources = { tunnelvision.combine("lsp", "word") }, scope = "buffer" })
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch = take_batch()
+    batch = activate_lsp({ sources = { tunnelvision.combine("lsp", "word") } })
     for _, request in pairs(batch) do
       respond(request, {})
     end
     assert_true(bs.last_compute_meta.used_source == nil, "empty LSP should fail an all-or-nothing combined source")
     assert_true(bs.last_compute_meta.fallback_source == "lsp", "empty combined source should record its failed member")
 
-    tunnelvision.setup({
-      notify = false,
-      sources = { tunnelvision.combine("lsp", "treesitter"), "word" },
-      scope = "buffer",
-    })
     vim.bo[lsp_buf].filetype = "plaintext"
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch = take_batch()
-    respond(batch[1], { { range = { start = { line = 0, character = 5 }, ["end"] = { line = 0, character = 10 } } } })
+    batch = activate_lsp({ sources = { tunnelvision.combine("lsp", "treesitter"), "word" } })
+    respond(batch[1], highlight(0, 5, 10))
     respond(batch[2], {})
     respond(batch[4], {})
     assert_true(bs.last_compute_meta.used_source == "word", "later combined member failure should use next source")
@@ -611,10 +612,8 @@ return function(helpers)
       "combined failure should record the failed step"
     )
 
-    tunnelvision.setup({ notify = false, sources = { "lsp", "word" }, scope = "buffer" })
     fake_clients[4].sync_result = {}
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch = take_batch()
+    batch = activate_lsp({ sources = { "lsp", "word" } })
     respond(batch[1], {})
     respond(batch[2], {})
     fake_clients[4].sync_result = nil
@@ -624,16 +623,14 @@ return function(helpers)
       "empty successful response should report no_matches"
     )
 
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 1, 5 } })
-    local stale_batch = take_batch()
+    local stale_batch = activate_lsp(nil, { 1, 5 })
     local stale_request_id = bs.request_id
     respond(stale_batch[1], {})
     respond(stale_batch[4], {})
     local retained_marks = marks(lsp_buf)
     sync_cancel_callbacks = true
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
+    local current_batch = activate_lsp()
     sync_cancel_callbacks = false
-    local current_batch = take_batch()
     local current_request_id = bs.request_id
     assert_true(current_request_id ~= stale_request_id, "supersession should replace the request ID")
     assert_true(
@@ -644,8 +641,9 @@ return function(helpers)
       bs.pending and bs.anchor.row == 1,
       "synchronous cancellation callbacks should leave replacement pending"
     )
-    assert_true(
-      vim.deep_equal(mark_geometry(marks(lsp_buf)), mark_geometry(retained_marks)),
+    assert_equal(
+      mark_geometry(marks(lsp_buf)),
+      mark_geometry(retained_marks),
       "synchronous cancellation callbacks should preserve the pending render"
     )
     respond(stale_batch[1], {})
@@ -655,10 +653,7 @@ return function(helpers)
       bs.pending and bs.anchor.row == 1 and bs.request_id == current_request_id,
       "older completed requests should remain stale"
     )
-    respond(
-      current_batch[1],
-      { { range = { start = { line = 1, character = 6 }, ["end"] = { line = 1, character = 11 } } } }
-    )
+    respond(current_batch[1], highlight(1, 6, 11))
     respond(current_batch[2], {})
     respond(current_batch[4], {})
     assert_true(
@@ -666,8 +661,7 @@ return function(helpers)
       "current request should apply after stale response"
     )
 
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    local pre_edit_batch = take_batch()
+    local pre_edit_batch = activate_lsp()
     vim.api.nvim_buf_set_lines(lsp_buf, 1, 2, false, { "edited alpha" })
     vim.api.nvim_exec_autocmds("TextChanged", { buffer = lsp_buf })
     local edit_refresh = timers[#timers]
@@ -686,8 +680,7 @@ return function(helpers)
     respond(batch[2], {})
     respond(batch[4], {})
 
-    core.activate(lsp_buf, { force = true, silent = true, symbol = "alpha", cursor = { 2, 6 } })
-    batch = take_batch()
+    batch = activate_lsp()
     respond(batch[4], {})
     sync_cancel_callbacks = true
     vim.cmd("TunnelVision off")
@@ -732,7 +725,7 @@ return function(helpers)
       messages = {}
       tunnelvision.setup({
         notify = notify,
-        source = source or "lsp_else_word",
+        sources = source and { source } or { "lsp", "word" },
         fallback_warn = policy,
         scope = "buffer",
       })
@@ -769,7 +762,6 @@ return function(helpers)
 
   -- sources = { "treesitter" } should only keep the anchor line
   tunnelvision.on({ sources = { "treesitter" } })
-  assert_true(next(core.get_buf_state(ts_fb_buf).path_set) ~= nil, "treesitter-only should keep anchor")
   assert_true(core.get_buf_state(ts_fb_buf).path_set[1], "treesitter-only anchor at line 1")
   assert_true(not core.get_buf_state(ts_fb_buf).path_set[3], "treesitter-only should not match line 3")
   local ts_meta = core.get_buf_state(ts_fb_buf).last_compute_meta
@@ -804,27 +796,44 @@ return function(helpers)
   do
     tunnelvision.setup({ notify = false })
     local ts_buf = new_buffer({
-      "local alpha = 1",
-      "local beta = 2",
-      "print(alpha)",
+      "local function foo()",
+      "  local alpha = 1",
+      "  print(alpha)",
+      '  local msg = "alpha is here"',
+      "  -- alpha in a comment",
+      "  local beta = 2",
+      "end",
+      "local alpha = 2",
     })
 
     if parser_or_skip(0, "lua", "real Lua Tree-sitter source and flow") then
-      -- sources = { "treesitter" } returns identifier lines
-      vim.api.nvim_win_set_cursor(0, { 1, 7 })
-      tunnelvision.on({ sources = { "treesitter" } })
-      assert_true(core.get_buf_state(ts_buf).path_set[1], "treesitter should match line 1 (declaration)")
-      assert_true(core.get_buf_state(ts_buf).path_set[3], "treesitter should match line 3 (usage)")
-      assert_true(not core.get_buf_state(ts_buf).path_set[2], "treesitter should not match line 2 (different symbol)")
-      assert_ranges(core.get_buf_state(ts_buf).symbol_ranges, {
-        { line = 1, start_col = 6, end_col = 11 },
-        { line = 3, start_col = 6, end_col = 11 },
-      }, "treesitter should retain exact identifier node ranges")
-      assert_true(
-        core.get_buf_state(ts_buf).last_compute_meta.fallback_reason == nil,
-        "treesitter should not set fallback_reason on success"
-      )
-      vim.cmd("TunnelVision off")
+      vim.api.nvim_win_set_cursor(0, { 2, 10 })
+      for _, case in ipairs({
+        {
+          "function",
+          { [2] = true, [3] = true },
+          {
+            { line = 2, start_col = 8, end_col = 13 },
+            { line = 3, start_col = 8, end_col = 13 },
+          },
+        },
+        {
+          "buffer",
+          { [2] = true, [3] = true, [8] = true },
+          {
+            { line = 2, start_col = 8, end_col = 13 },
+            { line = 3, start_col = 8, end_col = 13 },
+            { line = 8, start_col = 6, end_col = 11 },
+          },
+        },
+      }) do
+        tunnelvision.on({ sources = { "treesitter" }, scope = case[1] })
+        local bs = core.get_buf_state(ts_buf)
+        assert_equal(bs.path_set, case[2], "Tree-sitter scope should exclude strings, comments and other symbols")
+        assert_equal(bs.symbol_ranges, case[3], "Tree-sitter exact ranges in " .. case[1] .. " scope")
+        assert_true(bs.last_compute_meta.fallback_reason == nil, "successful Tree-sitter should not report fallback")
+        tunnelvision.off()
+      end
 
       local ts_flow_buf = new_buffer({
         "local alpha = 1",
@@ -834,7 +843,7 @@ return function(helpers)
       vim.api.nvim_win_set_cursor(0, { 1, 7 })
       tunnelvision.on({ sources = { "treesitter" }, scope = "buffer", mode = "flow" })
       assert_true(core.get_buf_state(ts_flow_buf).path_set[3], "treesitter-only source should enable flow expansion")
-      assert_ranges(core.get_buf_state(ts_flow_buf).symbol_ranges, {
+      assert_equal(core.get_buf_state(ts_flow_buf).symbol_ranges, {
         { line = 1, start_col = 6, end_col = 11 },
         { line = 2, start_col = 6, end_col = 10 },
         { line = 2, start_col = 13, end_col = 18 },
@@ -850,7 +859,7 @@ return function(helpers)
         symbol = "alpha",
       })
       assert_true(ts_analysis and #ts_analysis.assignments >= 2, "treesitter analyzer should extract assignments")
-      assert_ranges(ts_analysis.assignments[2].lhs, {
+      assert_equal(ts_analysis.assignments[2].lhs, {
         { name = "beta", line = 2, start_col = 6, end_col = 10 },
       }, "treesitter analyzer should retain exact LHS ranges")
 
@@ -876,69 +885,16 @@ return function(helpers)
       assert_true(not nested_analysis.occurrences.leaked, "treesitter analyzer should skip function expressions")
       assert_true(#nested_analysis.occurrences.alpha == 2, "nested functions should not leak identifier occurrences")
 
-      -- Treesitter excludes string-only occurrences
-      local str_buf = new_buffer({
-        'local msg = "alpha is here"',
-        "-- alpha in a comment",
-        "local copy = alpha",
-      })
-      vim.api.nvim_win_set_cursor(0, { 3, 13 })
-      tunnelvision.on({ sources = { "treesitter" } })
-      -- alpha on line 3 is an identifier reference
-      assert_true(core.get_buf_state(str_buf).path_set[3], "treesitter should match identifier alpha on line 3")
-      -- alpha on line 1 is inside a string literal, not an identifier node
-      assert_true(
-        not core.get_buf_state(str_buf).path_set[1],
-        "treesitter should not match alpha inside string on line 1"
-      )
-      assert_true(
-        not core.get_buf_state(str_buf).path_set[2],
-        "treesitter should not match alpha inside comment on line 2"
-      )
-      vim.cmd("TunnelVision off")
-
-      -- Treesitter respects scope = "function" vs scope = "buffer"
-      local scope_buf = new_buffer({
-        "local function foo()",
-        "  local alpha = 1",
-        "  print(alpha)",
-        "end",
-        "local alpha = 2",
-      })
-      -- scope = "function" with cursor inside foo() should only find alpha inside the function
+      -- A working Tree-sitter member must not rescue a strict combine whose LSP member failed.
+      vim.api.nvim_set_current_buf(ts_buf)
       vim.api.nvim_win_set_cursor(0, { 2, 10 })
-      tunnelvision.on({ sources = { "treesitter" }, scope = "function" })
-      assert_true(core.get_buf_state(scope_buf).path_set[2], "treesitter function scope should match alpha on line 2")
-      assert_true(core.get_buf_state(scope_buf).path_set[3], "treesitter function scope should match alpha on line 3")
-      -- line 5 (outside function) may or may not be included depending on scope resolution;
-      -- we just verify function scope is narrower than buffer scope
-      local function_scope_matches = vim.tbl_count(core.get_buf_state(scope_buf).path_set)
-      vim.cmd("TunnelVision off")
-
-      -- scope = "buffer" should find alpha everywhere
-      vim.api.nvim_win_set_cursor(0, { 2, 10 })
-      tunnelvision.on({ sources = { "treesitter" }, scope = "buffer" })
-      assert_true(core.get_buf_state(scope_buf).path_set[5], "treesitter buffer scope should match alpha on line 5")
-      local buffer_scope_matches = vim.tbl_count(core.get_buf_state(scope_buf).path_set)
-      assert_true(
-        buffer_scope_matches >= function_scope_matches,
-        "buffer scope should match at least as many lines as function scope"
-      )
-      vim.cmd("TunnelVision off")
-
-      -- combine(lsp, treesitter) fails the combined step when LSP is unavailable
-      local combine_buf = new_buffer({
-        "local alpha = 1",
-      })
-      vim.api.nvim_win_set_cursor(0, { 1, 7 })
       tunnelvision.on({ sources = { tunnelvision.combine("lsp", "treesitter"), "word" } })
-      -- LSP is unavailable, so combine fails, falls back to word
-      assert_true(core.get_buf_state(combine_buf).path_set[1], "combine(lsp,treesitter) fallback should keep anchor")
+      local combined = core.get_buf_state(ts_buf)
       assert_true(
-        core.get_buf_state(combine_buf).last_compute_meta.used_fallback,
-        "combine(lsp,treesitter) should trigger fallback when LSP unavailable"
+        combined.path_set[2] and combined.last_compute_meta.used_fallback,
+        "combine(lsp,treesitter) should fall back when LSP is unavailable"
       )
-      vim.cmd("TunnelVision off")
+      tunnelvision.off()
     end
   end
 
@@ -947,33 +903,17 @@ return function(helpers)
     local resolver = require("tunnelvision.resolver")
     local orig_get_parser = vim.treesitter.get_parser
     local orig_get_node_text = vim.treesitter.get_node_text
-    local calls
-
-    local function node(name, node_type, range, text, children)
-      local result = {
-        type = function()
-          calls.types[name] = (calls.types[name] or 0) + 1
-          return node_type
-        end,
-        iter_children = function()
-          calls.children[name] = (calls.children[name] or 0) + 1
-          local index = 0
-          return function()
-            index = index + 1
-            return (children or {})[index]
-          end
-        end,
-        text = text,
-      }
-      result.range = function()
-        calls.ranges[name] = (calls.ranges[name] or 0) + 1
-        return unpack(range)
-      end
-      return result
-    end
-
+    local entered = {}
     local function ranged(name, node_type, start_row, start_col, end_row, end_col, text, children)
-      return node(name, node_type, { start_row, start_col, end_row, end_col }, text, children)
+      local node = helpers.ts_node(node_type, { start_row, start_col, end_row, end_col }, nil, children, text)
+      for _, method in ipairs({ "type", "range", "iter_children" }) do
+        local original = node[method]
+        node[method] = function(self)
+          entered[name] = true
+          return original(self)
+        end
+      end
+      return node
     end
 
     local before_id = ranged("before_id", "identifier", 0, 0, 0, 5, "alpha")
@@ -1008,7 +948,6 @@ return function(helpers)
     local prune_buf = new_buffer(vim.fn["repeat"]({ (" "):rep(30) }, 8), "prune-ts")
     local source = { { kind = "single", name = "treesitter" } }
     local function compute(scope)
-      calls = { types = {}, ranges = {}, children = {} }
       return resolver.compute_path(prune_buf, "alpha", { row = 2, col = 6 }, scope, {
         direction = "forward",
         keywords = {},
@@ -1018,17 +957,14 @@ return function(helpers)
     end
 
     local path, _, _, ranges = compute({ start_line = 3, end_line = 5 })
-    assert_true(vim.deep_equal(path, { [3] = true, [5] = true }), "pruned path: " .. vim.inspect(path))
-    assert_ranges(ranges, {
+    assert_equal(path, { [3] = true, [5] = true }, "pruned path: " .. vim.inspect(path))
+    assert_equal(ranges, {
       { line = 3, start_col = 6, end_col = 11 },
       { line = 5, start_col = 6, end_col = 11 },
       { line = 5, start_col = 13, end_col = 18 },
     }, "pruned ranges")
     for _, name in ipairs({ "before_id", "exclusive_id", "zero_id", "after_id" }) do
-      assert_true(
-        not calls.ranges[name] and not calls.types[name] and not calls.children[name],
-        name .. " should not be entered"
-      )
+      assert_true(not entered[name], name .. " should not be entered")
     end
     vim.treesitter.get_parser = orig_get_parser
     vim.treesitter.get_node_text = orig_get_node_text

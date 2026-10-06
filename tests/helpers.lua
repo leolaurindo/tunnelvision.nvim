@@ -31,7 +31,7 @@ function helpers.parser_or_skip(bufnr, language, coverage)
   helpers.fail(("required %s parser unavailable for %s: %s"):format(language, coverage, parser))
 end
 
-function helpers.assert_ranges(actual, expected, msg)
+function helpers.assert_equal(actual, expected, msg)
   helpers.assert_true(vim.deep_equal(actual, expected), msg .. ": " .. vim.inspect(actual))
 end
 
@@ -56,8 +56,38 @@ end
 
 function helpers.assert_default_visual_config(msg)
   helpers.assert_true(config.format_sources(core.state.config.sources) == "lsp,treesitter,word", msg .. " sources")
-  helpers.assert_true(vim.deep_equal(core.state.config.highlights, { line = {} }), msg .. " highlights")
+  helpers.assert_true(
+    vim.deep_equal(core.state.config.highlights, { statement = {}, symbol = { bg_group = "Search" } }),
+    msg .. " highlights"
+  )
   helpers.assert_true(core.state.config.dim == nil, msg .. " dim")
+end
+
+function helpers.ts_node(node_type, range, parent, children, text)
+  local node = { text = text }
+  function node:id()
+    return self
+  end
+  function node.type()
+    return node_type
+  end
+  function node.range()
+    return unpack(range)
+  end
+  function node.start()
+    return range[1], range[2]
+  end
+  function node.parent()
+    return parent
+  end
+  function node.iter_children()
+    local index = 0
+    return function()
+      index = index + 1
+      return (children or {})[index]
+    end
+  end
+  return node
 end
 
 function helpers.marks(bufnr)
