@@ -331,6 +331,7 @@ secondary extmark IDs, so enumeration reordering does not swap their owners.
 Explicit positions associate with matching native cursors, otherwise with
 cursor enumeration slots (primary first). Without a corresponding cursor, a
 moving track stays at its last target. TunnelVision does not create cursors.
+Final stable Neovim 0.13 verification remains pending (GitHub issue #7).
 Native `*`, `n`, and `N` mappings are unchanged.
 
 Example >lua
@@ -534,10 +535,13 @@ through source/flow path lines only.
 ===============================================================================
 9. Migration                                            *tunnelvision-migration*
 
-Deprecated inputs remain supported; modern fields win conflicts. Setup warnings
-are aggregated once per Neovim session; deprecated API/command use warns at most
-once per session. `notify = false` suppresses warnings. Unknown options produce
-a visible error before configuration or tracks change. `get_source()` and
+Version 0.5 includes breaking changes. Legacy source and flow aliases remain
+supported, but `visible_context` and `preserve_scope_heads` are ignored, and
+one-shot dim styles are rejected; see the replacements below. Modern fields win
+conflicts. Setup warnings are aggregated once per Neovim session; deprecated
+API/command use warns at most once per session. `notify = false` suppresses
+warnings. Unknown options produce a visible error before configuration or tracks
+change. `get_source()` and
 `set_source()` remain compatibility wrappers; prefer `get_sources()` and
 `set_sources()`. The old `:Tunnelvision` spelling remains deprecated but working.
 `get_direction()`, `set_direction()`, and `add_keywords()` remain supported.
@@ -585,7 +589,7 @@ Comment-derived dimming. To keep previous line-only focus, configure
 visual defaults. In particular, `source = "lsp_else_word"` maps to
 `sources = { "lsp", "word" }`.
 
-Breaking change after 0.4: one-shot dim colors must move to
+Breaking change in 0.5: one-shot dim colors must move to
 `set_buffer_dim(style)` or `setup({ dim = style })`; only `on({ dim = "none" })`
 remains valid. One-shot `dim_hl` and `max_dim_lines` must move to `setup()`.
 
@@ -593,7 +597,8 @@ remains valid. One-shot `dim_hl` and `max_dim_lines` must move to `setup()`.
 accumulation. `retarget()` and `:TunnelVision retarget` always replace tracks.
 Use `add()`, `pin()`, or additive `on_many()` for multiple tracks. Dynamic batches
 now keep one moving track per cursor rather than pinning all but the last.
-The `dim`-related breaks above apply to the same release.
+Commands with mode, direction, scope, or source values activate one-shot tracks
+instead of changing setup defaults. These changes all apply to version 0.5.
 
 ===============================================================================
 10. Health                                                  *tunnelvision-health*

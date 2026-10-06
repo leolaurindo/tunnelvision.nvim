@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased (breaking API change; next major release)
+## [0.5.0] - 2026-10-06
+
+This pre-1.0 release includes breaking API changes. See
+`:help tunnelvision-migration` or the README migration section before upgrading.
 
 ### Added
 - Theme-derived `fg_group` and `bg_group` highlight styles; group backgrounds can
@@ -21,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Every dynamic cursor owns a moving track, including in `on_many()`; stable
   secondary cursor IDs survive enumeration reordering and refresh. `pin()`
   creates fixed batches. Native `*`, `n`, and `N` mappings remain unchanged.
+  Stable Neovim 0.13 verification remains pending (issue #7).
 - Session-scoped deprecation warnings: aggregate setup inputs once, and warn once
   for deprecated API/command use. Known mappings remain supported and modern
   fields win conflicts; `notify = false` suppresses warnings.
@@ -34,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `:TunnelVision dim <#RRGGBB|group|none|reset>` sets or resets buffer dimming.
 
 ### Changed
+- Refreshed the README demo with default focus, same-style and explicitly styled
+  additive tracks, dynamic focus with a fixed pin, token styling, scope heads,
+  and a separate static-flow assignment chain. Added reproducible VHS sources.
+- Edit-triggered refreshes are debounced and superseded refresh timers cancelled.
 - Default visual focus now keeps recognized Tree-sitter statements (falling
   back to path lines) and emphasizes source-owned symbols with the colorscheme's
   `Search` background without bold. The group background is used without added
@@ -46,6 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   buffer's force setting. `on({ dim = "none" })` opts out only that track.
 - One-shot dim colors, `dim_hl`, and `max_dim_lines` are no longer accepted;
   configure styles and limits through `setup()` or the buffer dim API.
+
+### Migration
+- `visible_context` and `preserve_scope_heads` are deprecated and ignored;
+  replace them with `highlights` rules. Merge all desired rules into one table.
+- Use `highlights = { line = true }` to keep the previous line-only visuals.
+- Move one-shot dim styles to `set_buffer_dim(style)` or `setup({ dim = style })`;
+  only `dim = "none"` remains valid for activations. Move one-shot `dim_hl` and
+  `max_dim_lines` to `setup()`.
+- Commands with mode, direction, scope, or source values now activate one-shot
+  tracks instead of changing setup defaults.
+- Legacy source and flow aliases remain supported with session-scoped warnings;
+  prefer `sources` and `flow_settings`. Unknown options now fail visibly.
 
 ## [0.4.0] - 2026-07-30
 

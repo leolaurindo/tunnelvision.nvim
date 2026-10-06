@@ -323,6 +323,9 @@ and `N` mappings are unchanged.
 
 ### Multicursor activation
 
+Native multicursor integration targets Neovim 0.13; final stable-release
+verification is still pending ([issue #7](https://github.com/leolaurindo/tunnelvision.nvim/issues/7)).
+
 On Neovim 0.13, `on()`, `retarget()`, `add()`, and `pin()` use the primary cursor
 plus secondary cursors from the `nvim.multicursor` extmark namespace. A secondary
 cursor overlapping the primary is counted once. Replacing clears tracks once
@@ -379,11 +382,14 @@ replaced.
 
 ## Compatibility and Project
 
-Legacy options remain supported. Deprecated setup inputs produce one aggregated
-warning per Neovim session; deprecated API/command use warns at most once per
-session. `notify = false` suppresses these warnings. Modern fields win conflicts.
-Unknown options fail with a visible error before configuration or tracks change.
-New configuration should use the composable forms:
+Version 0.5 includes breaking changes. Legacy source and flow aliases remain
+supported, but `visible_context` and `preserve_scope_heads` are ignored, and
+one-shot dim styles are rejected; see the replacements below. Deprecated setup
+inputs produce one aggregated warning per Neovim session; deprecated API/command
+use warns at most once per session. `notify = false` suppresses these warnings.
+Modern fields win conflicts. Unknown options fail with a visible error before
+configuration or tracks change. Read `:help tunnelvision-migration` for the full
+migration guide. New configuration should use the composable forms:
 
 | Old | New |
 | --- | --- |
