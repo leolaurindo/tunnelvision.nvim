@@ -85,8 +85,8 @@ Call `require("tunnelvision").setup()` first so `:TunnelVision` is available.
   :TunnelVision prev-track
   :TunnelVision off
 
-Use |:TunnelVision| with subcommands. `on` focuses one symbol and replaces
-existing tracks; `add` keeps them and tracks another symbol. `mode`,
+Use |:TunnelVision| with subcommands. `on` uses `primary_action` (replace by
+default); `add` keeps existing tracks. Native cursors activate as a batch. `mode`,
 `direction`, `scope`, and `source` with arguments activate a new track without
 changing setup defaults. Without an argument, they report the active setting
 (or setup default when inactive). Use `:TunnelVision status` to inspect the
@@ -97,10 +97,11 @@ active buffer configuration.
                                                         *:TunnelVision*
 
   :TunnelVision on
-      Replace all tracks with the symbol under cursor (the original behavior).
+      Use primary_action: replace tracks by default, or add when set to "add".
+      Activate a track for each native cursor (primary only before Neovim 0.13).
 
   :TunnelVision add
-      Add the symbol under cursor without removing other tracks.
+      Add targets at all native cursors without removing other tracks.
 
   :TunnelVision pin
       Add a fixed track even with a dynamic mode. One-shot highlights apply.
@@ -109,7 +110,8 @@ active buffer configuration.
       Remove the track under cursor, or the most recently added track.
 
   :TunnelVision retarget
-      Compatibility alias for :TunnelVision on.
+      Always replace tracks with targets at all native cursors, independently
+      of primary_action.
 
   :TunnelVision off
       Clear all tracks in the current buffer.
@@ -160,19 +162,20 @@ active buffer configuration.
       Show active-buffer state, mode, source chain, and tracked symbols.
 
   :TunnelVision mode [static|flow|dynamic|dynamic_flow]
-      With a value, replace tracks with one track in that mode. Without a value,
+      With a value, use the configured on action in that mode. Without a value,
       show the active mode (or setup default when inactive).
 
   :TunnelVision direction [forward|backward|both]
-      With a value, replace tracks with one flow track in that direction.
+      With a value, use the configured on action with flow in that direction.
+      Preserve dynamic_flow when active.
       Without a value, show the active direction (or setup default).
 
   :TunnelVision scope [function|buffer]
-      With a value, replace tracks with one track using that search scope.
+      With a value, use the configured on action with that search scope.
       Without a value, show the active scope (or setup default).
 
   :TunnelVision source [value]
-      With a value, replace tracks with one track using that source chain.
+      With a value, use the configured on action with that source chain.
       Without a value, show the active chain (or setup default).
 
       Supported command values include:
@@ -195,6 +198,7 @@ active buffer configuration.
 
 Default shape >lua
   require("tunnelvision").setup({
+    primary_action = "retarget",
     mode = "static",
     scope = "function",
     sources = { "lsp", "treesitter", "word" },
@@ -213,6 +217,7 @@ Default shape >lua
 <
 
 Options >
+  primary_action                retarget | add (on action, independent of mode)
   mode                          static | flow | dynamic | dynamic_flow
   scope                         function | buffer
   sources                       ordered source fallback chain
@@ -225,7 +230,7 @@ Options >
   highlights                    visual contexts and positive styles
   dim                           nil, "none", highlight group, #RRGGBB, or table
   max_dim_lines                 skip dimming in very large buffers
-  notify                        enable plugin notifications
+  notify                        enable notices; invalid-option errors stay visible
 <
 
 By default, `dim = nil` derives TunnelVision's dim style from your colorscheme's
@@ -298,8 +303,10 @@ From `require("tunnelvision")` >
   get_source() / set_source(source)
 <
 
-`on(opts)` replaces every track in the buffer with the symbol under the cursor.
-`add(opts)` keeps existing tracks and adds one. `pin(opts)` adds a fixed track
+`on(opts)` dispatches through primary_action: "retarget" (default) replaces
+tracks; "add" keeps them. `retarget(opts)` always replaces; `add(opts)` always
+keeps existing tracks. Each activates all native cursors, or only an explicitly
+supplied `cursor`. `pin(opts)` adds fixed tracks
 even when the requested mode is `dynamic` or `dynamic_flow`, converting it to
 `static` or `flow`. All three accept one-shot overrides such as `scope`,
 `sources`, `mode`, `flow_settings`, and `highlights`; a supplied non-empty
@@ -308,17 +315,23 @@ even when the requested mode is `dynamic` or `dynamic_flow`, converting it to
 requests it. One-shot dim colors, `dim_hl`, and `max_dim_lines` are rejected.
 Each track styles its own ranges; newer tracks override conflicting style
 attributes. The focused union shares one buffer-wide dim layer. `next`/`prev`
-navigate the union of all track occurrences. `retarget(opts?)` is retained as a
-compatibility alias for `on(opts?)`.
+navigate the union of all track occurrences.
 `next_track`/`prev_track` select the track at the cursor (the most recently added
 match if tracks overlap), falling back to the latest track when the cursor is
 outside tracked occurrences and path lines. `dynamic_flow` moves and recomputes
 flow; `pin({ mode = "flow" })` and `pin({ mode = "dynamic_flow" })` create
 pinned flow tracks.
-`on_many(positions, opts)` accepts (1,0)-indexed current-buffer positions;
-with dynamic mode, all but the last position are pinned. Neovim 0.13's
-cursor-enumeration behavior must be verified before native multicursor
-activation or cursor creation is wired up.
+`on_many(positions, opts)` is additive and accepts (1,0)-indexed current-buffer
+positions. Every track retains the requested mode; use `pin()` for fixed tracks.
+On Neovim 0.13, native batches enumerate the primary cursor plus extmarks in
+"nvim.multicursor", converting secondary positions from (0,0) indexing.
+Primary-overlapping secondary cursors are counted once. Replacing clears tracks
+once before the batch; adding preserves existing tracks. Moving tracks follow
+secondary extmark IDs, so enumeration reordering does not swap their owners.
+Explicit positions associate with matching native cursors, otherwise with
+cursor enumeration slots (primary first). Without a corresponding cursor, a
+moving track stays at its last target. TunnelVision does not create cursors.
+Native `*`, `n`, and `N` mappings are unchanged.
 
 Example >lua
   local tv = require("tunnelvision")
@@ -553,10 +566,11 @@ Breaking change after 0.4: one-shot dim colors must move to
 `set_buffer_dim(style)` or `setup({ dim = style })`; only `on({ dim = "none" })`
 remains valid. One-shot `dim_hl` and `max_dim_lines` must move to `setup()`.
 
-`on()` intentionally keeps its original replace-one-target behavior, so existing
-mappings do not start accumulating tracks. Use `add()`, `pin()`, or `on_many()`
-when multiple tracks are wanted; `:TunnelVision retarget` still behaves like
-`:TunnelVision on`. The `dim`-related breaks above apply to the same release.
+`on()` keeps replace behavior by default; `primary_action = "add"` opts into
+accumulation. `retarget()` and `:TunnelVision retarget` always replace tracks.
+Use `add()`, `pin()`, or additive `on_many()` for multiple tracks. Dynamic batches
+now keep one moving track per cursor rather than pinning all but the last.
+The `dim`-related breaks above apply to the same release.
 
 ===============================================================================
 10. Health                                                  *tunnelvision-health*

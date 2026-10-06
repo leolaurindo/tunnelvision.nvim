@@ -78,9 +78,9 @@ See [suggested keymaps](#suggested-keymaps)
 | Mode | Behavior |
 | --- | --- |
 | `static` (default) | Pins the selected symbol. |
-| `dynamic` | Retargets one moving track as the cursor moves. |
+| `dynamic` | Retargets a moving track per cursor as cursors move. |
 | `flow` | Pins a symbol and expands its path through assignments. |
-| `dynamic_flow` | Retargets the moving track and recomputes its flow path. |
+| `dynamic_flow` | Retargets each moving track and recomputes its flow path. |
 
 ### Sources
 
@@ -186,14 +186,17 @@ still navigate the source/flow path. Structural fallbacks are quiet.
 ## Configuration
 
 `setup()` defines defaults for new tracks; existing tracks keep their options.
-`on(opts)` replaces the buffer's tracks; `add(opts)` keeps them; `pin(opts)` adds
-a fixed track even with a dynamic mode. All three accept one-shot overrides for
+`on(opts)` uses `primary_action` (replace by default); `retarget(opts)` always
+replaces the buffer's tracks; `add(opts)` keeps them; `pin(opts)` adds fixed
+tracks even with a dynamic mode. Activation uses all native cursors on Neovim
+0.13, or the primary cursor on older versions. All accept one-shot overrides for
 `mode`, `scope`, `sources`, `flow_settings`, and `highlights`. Setting
 `dim = "none"` opts that track out of dimming; omitted `dim` requests dimming.
 One-shot dim colors, `dim_hl`, and `max_dim_lines` are not accepted.
 
 | Option | Default | Notes |
 | --- | --- | --- |
+| `primary_action` | `retarget` | `on()` replaces tracks with `retarget`, or retains them with `add`. |
 | `mode` | `static` | `static`, `dynamic`, `flow`, or `dynamic_flow`. |
 | `scope` | `function` | Nearest function-like Tree-sitter scope, falling back to the full buffer; also accepts `buffer`. |
 | `sources` | `{ "lsp", "treesitter", "word" }` | Ordered source fallback chain. |
@@ -206,7 +209,7 @@ One-shot dim colors, `dim_hl`, and `max_dim_lines` are not accepted.
 | `highlights` | `{ statement = true, symbol = { bg_group = "Search" } }` | Enabled visual contexts and their positive styles. [See configs](#highlights) |
 | `dim` | `nil` | `nil` derives from `Comment`; accepts `"none"`, a highlight group, hex foreground, or style table. |
 | `max_dim_lines` | `6000` | Skip dimming in larger buffers. |
-| `notify` | `true` | Enable plugin notifications. |
+| `notify` | `true` | Enable plugin notifications; invalid-option errors remain visible. |
 
 Flow analyzers are separate from sources: sources select the initial path, then
 the first usable analyzer expands assignments. `forward` follows dependencies to
@@ -269,26 +272,21 @@ Run `:help tunnelvision-config` for the full option reference.
 :TunnelVision direction [forward|backward|both]
 ```
 
-`on` replaces all tracks with one new target, preserving the pre-existing API.
-`add` adds a track without removing other pins. `pin` adds a fixed track even
-while dynamic tracking continues and accepts the same one-shot highlight rules.
-`retarget` remains an alias for `on` for compatibility. `remove` removes the
-track under the cursor or, if none is there, the latest track; `off` clears the
-current buffer. Multiple static tracks, including flow tracks, can coexist;
-at most one moving track can coexist with pins. `next`/`prev` visit the union
-of occurrences (and unmatched custom/flow path lines). `next-track` and
-`prev-track` navigate only the track under the cursor (latest-added if tracks
-overlap); away from a tracked occurrence or path line, they use the latest track.
-`on()` uses `primary_action = "retarget"` by default; set it to `"add"` to retain
-existing tracks. Explicit `retarget()` always replaces tracks, and `add()` always
-adds. Track mode is independent of this action.
+`on` uses `primary_action = "retarget"` by default; set it to `"add"` to retain
+existing tracks. Explicit `retarget` always replaces tracks; `add` always keeps
+them; `pin` adds fixed tracks even in dynamic modes. Track mode is independent
+of this action. Native multicursor activation creates a track per cursor.
+`remove` removes the track under the primary cursor or, if none is there, the
+latest track; `off` clears the current buffer. Static and moving tracks can
+coexist. `next`/`prev` visit the union of occurrences (and unmatched custom/flow
+path lines). `next-track`/`prev-track` navigate the track under the cursor
+(latest-added if tracks overlap), or the latest track when outside tracked paths.
 
 `mode`, `direction`, `scope`, and `source` with an argument use the configured
-`on()` action for the current
-buffer's tracks with one activation; they do not change setup defaults.
-`direction` starts a flow track. Without an argument, they report the active
-configuration (or setup defaults when inactive). `refresh` recomputes active
-tracks with their original options.
+`on()` action without changing setup defaults. `direction` starts flow analysis,
+preserving `dynamic_flow` when active. Without an argument, they report the
+active configuration (or setup defaults when inactive). `refresh` recomputes
+active tracks with their original options and cursor associations.
 `status` describes the active buffer. `next`/`prev` record jumps in the
 jumplist (`<C-o>` returns), and `:TunnelVision quickfix` creates a new quickfix
 list with positions from all tracked symbols; `:colder` restores the previous
@@ -320,12 +318,25 @@ vim.keymap.set("n", "<leader>V", function()
 end, { desc = "TunnelVision word in buffer" })
 ```
 
-Use `toggle` instead of `on` in the first mapping if preferred. For scripted
-additive batch activation, `on_many({ { row, col }, ... }, opts)` accepts
-(1,0)-indexed positions in the current buffer. With a dynamic default, all but
-the last position are pinned and the last becomes the moving track. Native
-multicursor activation and cursor creation are deferred until Neovim 0.13 APIs
-can be verified; pass positions explicitly for now.
+Use `toggle` instead of `on` in the first mapping if preferred. Native `*`, `n`,
+and `N` mappings are unchanged.
+
+### Multicursor activation
+
+On Neovim 0.13, `on()`, `retarget()`, `add()`, and `pin()` use the primary cursor
+plus secondary cursors from the `nvim.multicursor` extmark namespace. A secondary
+cursor overlapping the primary is counted once. Replacing clears tracks once
+before activating the batch; adding keeps existing tracks. In `dynamic` and
+`dynamic_flow`, every cursor owns a moving track; secondary tracks follow stable
+extmark IDs, not buffer order. `pin()` makes every track fixed instead.
+TunnelVision does not create native cursors.
+
+For scripted additive batches on any supported version,
+`on_many({ { row, col }, ... }, opts)` accepts (1,0)-indexed positions and keeps
+the selected mode for every track. Moving tracks associate with matching native
+cursors when available, otherwise with cursor enumeration slots (primary first).
+A moving track with no corresponding cursor stays at its last target. Supplying
+`cursor` explicitly to `on()`, `add()`, or `pin()` targets only that position.
 
 ## Custom Sources
 
@@ -384,7 +395,8 @@ New configuration should use the composable forms:
 | `extra_keywords = { ... }` | `flow_settings = { extra_keywords = { ... } }` |
 | `dim_hl = "..."` | `dim = ...` |
 
-`on()` keeps its original replace-one-target behavior. Use `add()` to retain
+`on()` retains replace behavior by default; opt into accumulation with
+`primary_action = "add"`. Use `add()` to retain
 other tracks, `pin()` for a fixed track, or `on_many()` for additive batches.
 Explicit `retarget()` and `:TunnelVision retarget` always replace tracks, even
 with `primary_action = "add"`. `get_source()`/`set_source()` and the old

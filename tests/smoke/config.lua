@@ -251,6 +251,42 @@ return function(helpers)
     core.notify = orig_notify
   end
 
+  -- Queries report active settings, then setup defaults after off, without activating.
+  do
+    local original_notify = core.notify
+    local message
+    core.notify = function(value)
+      message = value
+    end
+    vim.cmd("TunnelVision mode flow")
+    vim.cmd("TunnelVision scope buffer")
+    vim.cmd("TunnelVision source word")
+    for _, case in ipairs({
+      { "mode", "flow", "static" },
+      { "scope", "buffer", "function" },
+      { "source", "word", "lsp,treesitter,word" },
+      { "direction", "forward", "forward" },
+    }) do
+      vim.cmd("TunnelVision " .. case[1])
+      assert_true(message == "TunnelVision " .. case[1] .. ": " .. case[2], "queries should report active settings")
+    end
+    tunnelvision.off()
+    for _, case in ipairs({
+      { "mode", "static" },
+      { "scope", "function" },
+      { "source", "lsp,treesitter,word" },
+      { "direction", "forward" },
+    }) do
+      vim.cmd("TunnelVision " .. case[1])
+      assert_true(
+        message == "TunnelVision " .. case[1] .. ": " .. case[2] and not tunnelvision.is_active(),
+        "inactive queries should report defaults without activating"
+      )
+    end
+    core.notify = original_notify
+    vim.cmd("TunnelVision source lsp,word")
+  end
+
   -- Invalid comma values fail without corrupting config
   do
     local notify_msg
