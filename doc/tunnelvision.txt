@@ -550,6 +550,27 @@ Old to new >
   direction = "both"         -> flow_settings = { direction = "both" }
   extra_keywords = { ... }    -> flow_settings = { extra_keywords = { ... } }
   dim_hl = "..."             -> dim = ...
+  visible_context = "line"   -> highlights = { line = true }
+  visible_context = "statement" -> highlights = { statement = true }
+  preserve_scope_heads = true -> highlights = { scope_head = true }
+<
+
+`visible_context` and `preserve_scope_heads` are deprecated and ignored. Their
+built-in presentation behavior moves to `highlights`; custom
+`visible_context` functions have no direct replacement. Use custom sources for
+custom path selection, or built-in highlight rules for presentation. Merge the
+new rules with any other configured `highlights` entries when migrating:
+>
+  -- Old
+  require("tunnelvision").setup({
+    visible_context = "statement",
+    preserve_scope_heads = true,
+  })
+
+  -- New
+  require("tunnelvision").setup({
+    highlights = { statement = true, scope_head = true },
+  })
 <
 
 There is intentionally no `treesitter_else_word` value. Use explicit fallback
@@ -559,7 +580,9 @@ Version 0.4 adds opt-in visual rules and reorganizes rendering internals, but no
 configuration migration is required. `setup()`, `setup({})`, legacy `source`
 values, and modern `sources` chains retained line focus in 0.4. The current
 default instead uses statement focus and theme-derived symbol emphasis with
-Comment-derived dimming. In particular, `source = "lsp_else_word"` maps to
+Comment-derived dimming. To keep previous line-only focus, configure
+`highlights = { line = true }`; existing setup calls otherwise use the new
+visual defaults. In particular, `source = "lsp_else_word"` maps to
 `sources = { "lsp", "word" }`.
 
 Breaking change after 0.4: one-shot dim colors must move to

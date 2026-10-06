@@ -394,6 +394,28 @@ New configuration should use the composable forms:
 | `direction = "both"` | `flow_settings = { direction = "both" }` |
 | `extra_keywords = { ... }` | `flow_settings = { extra_keywords = { ... } }` |
 | `dim_hl = "..."` | `dim = ...` |
+| `visible_context = "line"` | `highlights = { line = true }` |
+| `visible_context = "statement"` | `highlights = { statement = true }` |
+| `preserve_scope_heads = true` | `highlights = { scope_head = true }` |
+
+`visible_context` and `preserve_scope_heads` are deprecated and ignored. Their
+built-in visual behavior moves to `highlights`; custom `visible_context`
+functions have no direct replacement (use a custom source for custom path
+selection, or the built-in highlight rules for presentation). When migrating,
+merge rules rather than replacing unrelated `highlights` entries. For example:
+
+```lua
+-- Old
+require("tunnelvision").setup({
+  visible_context = "statement",
+  preserve_scope_heads = true,
+})
+
+-- New
+require("tunnelvision").setup({
+  highlights = { statement = true, scope_head = true },
+})
+```
 
 `on()` retains replace behavior by default; opt into accumulation with
 `primary_action = "add"`. Use `add()` to retain
@@ -403,9 +425,12 @@ with `primary_action = "add"`. `get_source()`/`set_source()` and the old
 `:Tunnelvision` spelling remain working deprecated wrappers; use
 `get_sources()`/`set_sources()` and `:TunnelVision`. `get_direction()`,
 `set_direction()`, and `add_keywords()` remain supported.
-The current default uses statement focus and theme-derived symbol emphasis with Comment-derived dimming.
-One-shot `on({ dim = color })` must move to `set_buffer_dim(color)` or
-`setup({ dim = color })`; only `on({ dim = "none" })` remains valid. Move one-shot
+The default now uses statement focus and theme-derived symbol emphasis with
+Comment-derived dimming. To keep the previous line-only focus, configure
+`highlights = { line = true }`; existing setup calls otherwise use the new
+visual defaults. One-shot `on({ dim = color })` must move to
+`set_buffer_dim(color)` or `setup({ dim = color })`; only `on({ dim = "none" })`
+remains valid. Move one-shot
 `dim_hl` and `max_dim_lines` settings to `setup()`. This is a breaking API change.
 
 Run `:checkhealth tunnelvision` to check Neovim, Tree-sitter, LSP highlighting,

@@ -1,5 +1,6 @@
 -- Configuration, command, compatibility, and status coverage.
 return function(helpers)
+  local assert_equal = helpers.assert_equal
   local assert_true = helpers.assert_true
   local assert_sources = helpers.assert_sources
   local assert_combine = helpers.assert_combine
@@ -9,29 +10,23 @@ return function(helpers)
   local core = require("tunnelvision.core")
   local config = require("tunnelvision.config")
 
-  -- Empty highlights select plugin defaults; explicit rules replace them.
-  tunnelvision.setup({ notify = false, highlights = {} })
+  -- Explicit highlight rules replace defaults; invalid values normalize safely.
   local default_rules = { statement = {}, symbol = { bg_group = "Search" } }
-  assert_true(
-    vim.deep_equal(core.state.config.highlights, default_rules),
-    "empty highlights should use visual defaults"
-  )
-
-  tunnelvision.setup({ notify = false, highlights = { symbol = true } })
-  assert_true(vim.deep_equal(core.state.config.highlights, { symbol = {} }), "symbol rule should replace defaults")
-
-  tunnelvision.setup({ notify = false, highlights = { line = false } })
-  assert_true(vim.deep_equal(core.state.config.highlights, {}), "false context should remain disabled")
-
-  tunnelvision.setup({
-    notify = false,
-    highlights = { statement = {}, line = { bold = true } },
-  })
-  assert_true(
-    vim.deep_equal(core.state.config.highlights, { statement = {}, line = { bold = true } }),
-    "enabled highlight rules should preserve empty and styled contexts"
-  )
-
+  for _, case in ipairs({
+    { {}, default_rules, "empty defaults" },
+    { { symbol = true }, { symbol = {} }, "symbol replacement" },
+    { { line = false }, {}, "disabled context" },
+    { { statement = {}, line = { bold = true } }, { statement = {}, line = { bold = true } }, "mixed styles" },
+    {
+      { line = false, symbol = "bold", statement = { fg = false, bold = "yes", bg_opacity = "0.5" } },
+      { statement = {} },
+      "invalid style fields",
+    },
+    { 42, default_rules, "invalid highlights" },
+  }) do
+    tunnelvision.setup({ notify = false, highlights = case[1] })
+    assert_equal(core.state.config.highlights, case[2], "highlight normalization: " .. case[3])
+  end
   tunnelvision.setup({
     notify = false,
     highlights = {
@@ -48,39 +43,19 @@ return function(helpers)
       },
     },
   })
-  assert_true(
-    vim.deep_equal(core.state.config.highlights, {
-      scope_head = {
-        fg = "#112233",
-        bg = 0x445566,
-        bg_group = "Search",
-        bg_opacity = 1,
-        bold = true,
-        italic = false,
-        underline = true,
-        undercurl = false,
-        strikethrough = true,
-      },
-    }),
-    "all supported highlight style fields should normalize"
-  )
-
-  tunnelvision.setup({
-    notify = false,
-    highlights = {
-      line = false,
-      symbol = "bold",
-      statement = { fg = false, bold = "yes", bg_opacity = "0.5" },
+  assert_equal(core.state.config.highlights, {
+    scope_head = {
+      fg = "#112233",
+      bg = 0x445566,
+      bg_group = "Search",
+      bg_opacity = 1,
+      bold = true,
+      italic = false,
+      underline = true,
+      undercurl = false,
+      strikethrough = true,
     },
-  })
-  assert_true(
-    vim.deep_equal(core.state.config.highlights, { statement = {} }),
-    "invalid highlight rules should be ignored"
-  )
-
-  tunnelvision.setup({ notify = false, highlights = 42 })
-  assert_true(vim.deep_equal(core.state.config.highlights, default_rules), "invalid highlights should use defaults")
-  tunnelvision.setup({ notify = false }) -- restore
+  }, "all supported highlight fields should normalize and clamp opacity")
 
   tunnelvision.setup({
     notify = false,
@@ -93,10 +68,7 @@ return function(helpers)
   })
   local merged_flow = config.normalize_activation(core.state.config, { flow_settings = { max_depth = 1 } }, 0, {})
   assert_true(merged_flow.flow_settings.direction == "backward", "one-shot flow settings preserve direction")
-  assert_true(
-    vim.deep_equal(merged_flow.flow_settings.analyzers, { "text" }),
-    "one-shot flow settings preserve analyzers"
-  )
+  assert_equal(merged_flow.flow_settings.analyzers, { "text" }, "one-shot flow settings preserve analyzers")
   assert_true(merged_flow.flow_settings.extra_keywords[1] == "keep", "one-shot flow settings preserve keywords")
   assert_true(merged_flow.flow_settings.max_depth == 1, "one-shot flow settings override selected fields")
   tunnelvision.setup({ notify = false })
@@ -155,10 +127,21 @@ return function(helpers)
   vim.api.nvim_win_set_cursor(0, { 1, 7 })
   tunnelvision.on()
   assert_true(#tunnelvision.status().tracks == 2, "add primary action should preserve tracks")
-  for _, command in ipairs({ "mode flow", "direction backward", "scope buffer", "source treesitter,word" }) do
-    local original = core.get_buf_state(first_buf).tracks[1]
-    vim.cmd("TunnelVision " .. command)
-    assert_true(core.get_buf_state(first_buf).tracks[1] == original, "one-shot commands should retain existing tracks")
+  for _, case in ipairs({
+    { "mode flow", "mode", "flow" },
+    { "direction backward", "direction", "backward" },
+    { "scope buffer", "scope", "buffer" },
+    { "source treesitter,word", "sources_label", "treesitter,word" },
+  }) do
+    tunnelvision.retarget({ symbol = "copy", cursor = { 2, 7 } })
+    local original = vim.deepcopy(core.get_buf_state(first_buf).tracks[1])
+    vim.cmd("TunnelVision " .. case[1])
+    assert_true(
+      #tunnelvision.status().tracks == 2
+        and vim.deep_equal(core.get_buf_state(first_buf).tracks[1], original)
+        and tunnelvision.status()[case[2]] == case[3],
+      "one-shot commands should preserve existing tracks and apply " .. case[1]
+    )
   end
   assert_true(core.get_mode() == "static" and core.get_scope() == "function", "commands preserve defaults")
   tunnelvision.retarget()
@@ -242,7 +225,6 @@ return function(helpers)
       notify_msg = msg
     end
     vim.cmd("TunnelVision status")
-    assert_true(notify_msg and notify_msg:find("source="), "status should use source= label")
     assert_true(
       notify_msg and notify_msg:find("source=" .. tunnelvision.status().sources_label, 1, true),
       "status should show active source label"
@@ -345,7 +327,7 @@ return function(helpers)
     assert_true(#messages == 2, "deprecated API and command use should warn once per session")
     tunnelvision.setup({ notify = false, sources = { "word" } })
     tunnelvision.on({ symbol = "value", cursor = { 1, 7 } })
-    local tracks = core.get_buf_state(first_buf).tracks
+    local tracks = vim.deepcopy(core.get_buf_state(first_buf).tracks)
     local cfg = vim.deepcopy(core.state.config)
     for _, operation in ipairs({
       function()
@@ -380,7 +362,7 @@ return function(helpers)
         "invalid options must report visible errors even with notify=false"
       )
       assert_true(
-        vim.deep_equal(core.state.config, cfg) and core.get_buf_state(first_buf).tracks == tracks,
+        vim.deep_equal(core.state.config, cfg) and vim.deep_equal(core.get_buf_state(first_buf).tracks, tracks),
         "invalid options must not change config or clear tracks"
       )
     end

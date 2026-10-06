@@ -1,7 +1,7 @@
 -- Flow analysis and analyzer coverage.
 return function(helpers)
   local assert_true = helpers.assert_true
-  local assert_ranges = helpers.assert_ranges
+  local assert_equal = helpers.assert_equal
   local new_buffer = helpers.new_buffer
   local parser_or_skip = helpers.parser_or_skip
 
@@ -64,12 +64,12 @@ return function(helpers)
     })
     vim.api.nvim_win_set_cursor(0, { 1, 7 })
     tunnelvision.on({ mode = "static" })
-    assert_ranges(core.get_buf_state(flow_range_buf).symbol_ranges, {
+    assert_equal(core.get_buf_state(flow_range_buf).symbol_ranges, {
       { line = 1, start_col = 6, end_col = 11 },
       { line = 2, start_col = 13, end_col = 18 },
     }, "static ranges should exclude unrelated identifiers on selected lines")
     tunnelvision.on({ mode = "flow" })
-    assert_ranges(core.get_buf_state(flow_range_buf).symbol_ranges, {
+    assert_equal(core.get_buf_state(flow_range_buf).symbol_ranges, {
       { line = 1, start_col = 6, end_col = 11 },
       { line = 2, start_col = 6, end_col = 10 },
       { line = 2, start_col = 13, end_col = 18 },
@@ -87,7 +87,7 @@ return function(helpers)
       scope = { start_line = 1, end_line = 3 },
       symbol = "alpha",
     })
-    assert_ranges(analysis.assignments[2].lhs, {
+    assert_equal(analysis.assignments[2].lhs, {
       { name = "beta", line = 2, start_col = 6, end_col = 10 },
     }, "text analyzer should retain exact LHS token ranges")
 

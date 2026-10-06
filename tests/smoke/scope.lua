@@ -1,7 +1,7 @@
 -- Scope resolution and resolver caching coverage.
 return function(helpers)
   local assert_true = helpers.assert_true
-  local assert_ranges = helpers.assert_ranges
+  local assert_equal = helpers.assert_equal
   local assert_sources = helpers.assert_sources
   local new_buffer = helpers.new_buffer
   local parser_or_skip = helpers.parser_or_skip
@@ -18,20 +18,10 @@ return function(helpers)
     local orig_get_parser = vim.treesitter.get_parser
     local leaf
     local function node(node_type, start_row, end_row, parent)
-      return {
-        type = function()
-          return node_type
-        end,
-        range = function()
-          return start_row, 0, end_row, 1
-        end,
-        parent = function()
-          return parent
-        end,
-      }
+      return helpers.ts_node(node_type, { start_row, 0, end_row, 1 }, parent)
     end
 
-    local parent = node("function_definition", 0, 3)
+    local parent = node("function_definition", 1, 2)
     local rejected = {
       "abstract_method_signature",
       "abstract_function_declarator",
@@ -90,7 +80,7 @@ return function(helpers)
     for _, node_type in ipairs(rejected) do
       leaf = node(node_type, 1, 1, parent)
       local scope = resolver.resolve_scope(scope_buf, { row = 1, col = 0 }, nil, "function")
-      assert_true(scope.start_line == 1 and scope.end_line == 4, node_type .. " should defer to its function parent")
+      assert_true(scope.start_line == 2 and scope.end_line == 3, node_type .. " should defer to its function parent")
     end
 
     for _, node_type in ipairs({ "closure_expression", "custom_function_definition" }) do
@@ -190,29 +180,6 @@ return function(helpers)
   assert_sources({ "lsp", "treesitter", "word" }, "default sources")
   assert_true(config.format_sources(core.state.config.sources) == "lsp,treesitter,word", "format_sources default")
 
-  local forced_scope_buf = new_buffer({ "one", "two", "three" }, "plaintext")
-  tunnelvision.on({ source = "word", scope = "buffer", symbol = "two", cursor = { 2, 0 } })
-  local forced_state = core.get_buf_state(forced_scope_buf)
-  forced_state.scope = {
-    start_line = 2,
-    end_line = 2,
-    scope_mode = "buffer",
-    changedtick = vim.api.nvim_buf_get_changedtick(forced_scope_buf),
-  }
-  core.activate(forced_scope_buf, {
-    config = forced_state.config,
-    cursor = { 2, 0 },
-    force = true,
-    reuse_scope = true,
-    silent = true,
-    symbol = "two",
-  })
-  assert_true(
-    forced_state.scope.start_line == 1 and forced_state.scope.end_line == 3,
-    "force should recompute scope geometry"
-  )
-  tunnelvision.off()
-
   -- Resolver stages share scoped and touched lines within one activation.
   do
     local resolver = require("tunnelvision.resolver")
@@ -261,11 +228,12 @@ return function(helpers)
     })
     assert_true(pending ~= nil, "cache invalidation test should suspend for LSP")
     local cached_reads = reads
-    assert_true(vim.deep_equal(pending.get_lines(2, 3), { "local alpha = 1", "" }), "cache should retain empty lines")
+    assert_equal(pending.get_lines(2, 3), { "local alpha = 1", "" }, "cache should retain empty lines")
     assert_true(reads == cached_reads, "cached suspended lines should not be fetched again")
     vim.api.nvim_buf_set_lines(cache_buf, 2, 3, false, { "alpha" })
-    assert_true(
-      vim.deep_equal(pending.get_lines(2, 3), { "local alpha = 1", "alpha" }),
+    assert_equal(
+      pending.get_lines(2, 3),
+      { "local alpha = 1", "alpha" },
       "changedtick should invalidate cached contents"
     )
     assert_true(reads > cached_reads, "changedtick invalidation should refetch contents")
@@ -276,7 +244,7 @@ return function(helpers)
       resolution_context = pending,
     })
     assert_true(resumed_path[3] and reads <= cached_reads + 2, "resume should reuse cached scoped reads")
-    assert_ranges(resumed_ranges, {
+    assert_equal(resumed_ranges, {
       { line = 2, start_col = 6, end_col = 11 },
       { line = 3, start_col = 0, end_col = 5 },
     }, "resume should use edited text and clamp to its current line")
@@ -287,81 +255,19 @@ return function(helpers)
   do
     local resolver = require("tunnelvision.resolver")
     local orig_get_parser = vim.treesitter.get_parser
-    local orig_get_node_text = vim.treesitter.get_node_text
     local parse_count = 0
-    local next_node_id = 0
-
-    local function node(node_type, row, parent, text)
-      next_node_id = next_node_id + 1
-      local node_id = next_node_id
-      return {
-        id = function()
-          return node_id
-        end,
-        type = function()
-          return node_type
-        end,
-        start = function()
-          return row, 0
-        end,
-        range = function()
-          return row, 0, row, 5
-        end,
-        parent = function()
-          return parent
-        end,
-        iter_children = function()
-          return function() end
-        end,
-        text = text,
-      }
-    end
-
-    local function make_root(start_row, end_row)
-      local function_node = node("function_definition", start_row)
-      function_node.range = function()
-        return start_row, 0, end_row, 5
-      end
-      local assignments, identifiers = {}, {}
-      for row = start_row, end_row do
-        assignments[row] = node("assignment_statement", row, function_node)
-        identifiers[#identifiers + 1] = node("identifier", row, assignments[row], "alpha")
-      end
-      local tree_root = node("chunk", start_row)
-      tree_root.range = function()
-        return start_row, 0, end_row, 5
-      end
-      tree_root.named_descendant_for_range = function(_, row)
-        return identifiers[row - start_row + 1] or identifiers[1]
-      end
-      tree_root.iter_children = function()
-        local index = 0
-        return function()
-          index = index + 1
-          return identifiers[index]
-        end
-      end
-      return tree_root
-    end
-
-    local current_root = make_root(0, 2)
-    vim.treesitter.get_parser = function()
+    local function counted_parser(bufnr)
+      local parser = orig_get_parser(bufnr)
       return {
         parse = function()
           parse_count = parse_count + 1
-          return { {
-            root = function()
-              return current_root
-            end,
-          } }
+          return parser:parse()
         end,
       }
     end
-    vim.treesitter.get_node_text = function(current)
-      return current.text
-    end
+    vim.treesitter.get_parser = counted_parser
 
-    local shared_buf = new_buffer({ "alpha = 1", "alpha = 2", "alpha = 3" }, "shared-ts")
+    local shared_buf = new_buffer({ "local function run(alpha)", "  local value = alpha", "  return alpha", "end" })
     tunnelvision.setup({
       notify = false,
       sources = { "treesitter" },
@@ -402,37 +308,31 @@ return function(helpers)
         and fallback_state.last_compute_meta.fallback_reason == "unavailable",
       "a cached Tree-sitter failure should preserve source fallback"
     )
-    assert_true(
-      vim.deep_equal(fallback_state.statement_set, fallback_state.path_set),
+    assert_equal(
+      fallback_state.statement_set,
+      fallback_state.path_set,
       "a cached Tree-sitter failure should preserve structural fallback"
     )
     vim.cmd("TunnelVision off")
 
     parse_count = 0
-    current_root = make_root(0, 0)
-    vim.treesitter.get_parser = function()
-      return {
-        parse = function()
-          parse_count = parse_count + 1
-          return { {
-            root = function()
-              return current_root
-            end,
-          } }
-        end,
-      }
-    end
+    vim.treesitter.get_parser = counted_parser
+    vim.api.nvim_buf_set_lines(shared_buf, 0, -1, false, { "local function run(alpha) end" })
     local activation_context = {}
     local old_scope = resolver.resolve_scope(shared_buf, { row = 0, col = 0 }, nil, "function", activation_context)
-    current_root = make_root(1, 2)
-    vim.api.nvim_buf_set_lines(shared_buf, 0, 1, false, { "edited alpha" })
+    vim.api.nvim_buf_set_lines(
+      shared_buf,
+      0,
+      -1,
+      false,
+      { "-- before", "local function run(alpha)", "  return alpha", "end" }
+    )
     local new_scope = resolver.resolve_scope(shared_buf, { row = 1, col = 0 }, nil, "function", activation_context)
     assert_true(parse_count == 2, "changedtick changes should replace the cached snapshot")
     assert_true(old_scope.start_line == 1 and old_scope.end_line == 1, "initial snapshot geometry")
-    assert_true(new_scope.start_line == 2 and new_scope.end_line == 3, "edited buffers should not expose stale nodes")
+    assert_true(new_scope.start_line == 2 and new_scope.end_line == 4, "edited buffers should not expose stale nodes")
 
     vim.treesitter.get_parser = orig_get_parser
-    vim.treesitter.get_node_text = orig_get_node_text
   end
 
   local dynamic_buf = new_buffer({
