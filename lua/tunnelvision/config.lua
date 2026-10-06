@@ -128,6 +128,29 @@ function M.validate_options(opts, activation)
   if opts.primary_action ~= nil and opts.primary_action ~= "retarget" and opts.primary_action ~= "add" then
     return "primary_action must be retarget or add"
   end
+  if opts.flow_settings ~= nil and type(opts.flow_settings) ~= "table" then
+    return "flow_settings must be a table"
+  end
+  if type(opts.highlights) == "table" then
+    for context, rule in pairs(opts.highlights) do
+      if not vim.tbl_contains(highlight_contexts, context) then
+        return "unknown option 'highlights." .. tostring(context) .. "'"
+      end
+      if type(rule) == "table" then
+        for key in pairs(rule) do
+          if
+            not color_style_keys[key]
+            and not boolean_style_keys[key]
+            and key ~= "fg_group"
+            and key ~= "bg_group"
+            and key ~= "bg_opacity"
+          then
+            return "unknown option 'highlights." .. context .. "." .. tostring(key) .. "'"
+          end
+        end
+      end
+    end
+  end
   if type(opts.flow_settings) == "table" then
     local fields = { direction = true, extra_keywords = true, analyzers = true, max_depth = true }
     for key in pairs(opts.flow_settings) do

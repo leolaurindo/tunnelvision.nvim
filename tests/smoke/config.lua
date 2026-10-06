@@ -68,10 +68,9 @@ return function(helpers)
   tunnelvision.setup({
     notify = false,
     highlights = {
-      unknown = true,
       line = false,
       symbol = "bold",
-      statement = { fg = false, bold = "yes", bg_opacity = "0.5", unknown = true },
+      statement = { fg = false, bold = "yes", bg_opacity = "0.5" },
     },
   })
   assert_true(
@@ -258,9 +257,7 @@ return function(helpers)
     core.notify = function(value)
       message = value
     end
-    vim.cmd("TunnelVision mode flow")
-    vim.cmd("TunnelVision scope buffer")
-    vim.cmd("TunnelVision source word")
+    tunnelvision.on({ mode = "flow", scope = "buffer", sources = { "word" } })
     for _, case in ipairs({
       { "mode", "flow", "static" },
       { "scope", "buffer", "function" },
@@ -359,6 +356,15 @@ return function(helpers)
       end,
       function()
         return tunnelvision.add({ flow_settings = { typo = true } })
+      end,
+      function()
+        return tunnelvision.setup({ highlights = { typo = true } })
+      end,
+      function()
+        return tunnelvision.on({ highlights = { symbol = { typo = true } } })
+      end,
+      function()
+        return tunnelvision.setup({ direction = "both", flow_settings = false })
       end,
       function()
         return tunnelvision.on_many({ { 2, 7 } }, { typo = true })

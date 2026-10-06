@@ -235,7 +235,7 @@ return function(helpers)
 
     core.activate(highlight_buf, {
       source = "word",
-      highlights = { unknown = true, symbol = 42, line = { bold = "yes" } },
+      highlights = { symbol = 42, line = { bold = "yes" } },
       symbol = "alpha",
       cursor = { 1, 7 },
       force = true,

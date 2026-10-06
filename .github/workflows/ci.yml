@@ -66,7 +66,17 @@ jobs:
         run: luacheck lua tests
 
       - name: Headless smoke test
-        run: nvim --headless -u NONE -l tests/smoke.lua
+        run: nvim --headless -u NONE -i NONE -l tests/smoke.lua
+
+      - name: Native multicursor input
+        run: nvim --headless -u NONE -i NONE -c 'lua dofile("tests/native.lua")'
+
+      - name: Diff whitespace
+        run: git diff --check
 
       - name: Help tags
-        run: nvim --headless -u NONE -l tests/helptags.lua
+        run: |
+          export TUNNELVISION_HELPTAGS_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TUNNELVISION_HELPTAGS_DIR"' EXIT
+          cp doc/*.txt "$TUNNELVISION_HELPTAGS_DIR/"
+          nvim --headless -u NONE -i NONE -l tests/helptags.lua
