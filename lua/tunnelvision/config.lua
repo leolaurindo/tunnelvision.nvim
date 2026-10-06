@@ -77,6 +77,76 @@ M.activation_keys = {
   "highlights",
 }
 
+local deprecated_keys = {
+  source = true,
+  direction = true,
+  extra_keywords = true,
+  dim_hl = true,
+  visible_context = true,
+  preserve_scope_heads = true,
+}
+
+function M.validate_options(opts, activation)
+  if type(opts) ~= "table" then
+    return "options must be a table"
+  end
+  local allowed = {}
+  if activation then
+    for _, key in ipairs(M.activation_keys) do
+      allowed[key] = true
+    end
+    for _, key in ipairs({
+      "symbol",
+      "cursor",
+      "pin",
+      "dim",
+      "silent",
+      "track",
+      "config",
+      "force",
+      "reuse_scope",
+      "defer_render",
+    }) do
+      allowed[key] = true
+    end
+  else
+    for key in pairs(defaults) do
+      allowed[key] = true
+    end
+    allowed.dim = true
+  end
+  for key in pairs(opts) do
+    if not allowed[key] and not deprecated_keys[key] and key ~= "max_dim_lines" then
+      return "unknown option '" .. tostring(key) .. "'"
+    end
+  end
+  if activation and (opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil) then
+    return "dim styles, dim_hl and max_dim_lines belong in setup() or buffer dim settings"
+  end
+  if opts.primary_action ~= nil and opts.primary_action ~= "retarget" and opts.primary_action ~= "add" then
+    return "primary_action must be retarget or add"
+  end
+  if type(opts.flow_settings) == "table" then
+    local fields = { direction = true, extra_keywords = true, analyzers = true, max_depth = true }
+    for key in pairs(opts.flow_settings) do
+      if not fields[key] then
+        return "unknown option 'flow_settings." .. tostring(key) .. "'"
+      end
+    end
+  end
+end
+
+function M.deprecated_inputs(opts)
+  local names = {}
+  for key in pairs(opts) do
+    if deprecated_keys[key] then
+      names[#names + 1] = key
+    end
+  end
+  table.sort(names)
+  return names
+end
+
 -- Source-helpers
 
 local function is_source_name(name, custom_sources)
@@ -105,7 +175,7 @@ local function source_step(step, custom_sources)
 end
 
 -- Legacy source mapping (deprecated, intentionally supports old source values
--- without runtime warnings).
+-- with warnings handled by the runtime).
 function M.sources_from_legacy_source(source)
   if source == "word" or source == "lsp" then
     return { source }
@@ -293,7 +363,7 @@ function M.normalize(cfg, custom_sources)
   cfg.extra_keywords = resolver.sanitize_keywords(cfg.extra_keywords)
 
   -- Compatibility: deprecated top-level flow options map into missing
-  -- flow_settings fields. New nested fields win. No runtime warnings.
+  -- flow_settings fields. New nested fields win.
   if type(cfg.flow_settings) ~= "table" then
     cfg.flow_settings = {}
   end
@@ -331,7 +401,7 @@ function M.normalize_activation(base_config, opts, custom_sources)
   end
 
   -- Compatibility: deprecated one-shot flow options fill missing
-  -- flow_settings fields. New nested fields win. No runtime warnings.
+  -- flow_settings fields. New nested fields win.
   if opts.direction ~= nil and (opts.flow_settings == nil or opts.flow_settings.direction == nil) then
     if type(cfg.flow_settings) ~= "table" then
       cfg.flow_settings = {}

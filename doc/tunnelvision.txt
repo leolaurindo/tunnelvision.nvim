@@ -521,8 +521,13 @@ through source/flow path lines only.
 ===============================================================================
 9. Migration                                            *tunnelvision-migration*
 
-Deprecated APIs remain supported and do not emit runtime deprecation warnings in
-this release. Prefer the new API for new configuration.
+Deprecated inputs remain supported; modern fields win conflicts. Setup warnings
+are aggregated once per Neovim session; deprecated API/command use warns at most
+once per session. `notify = false` suppresses warnings. Unknown options produce
+a visible error before configuration or tracks change. `get_source()` and
+`set_source()` remain compatibility wrappers; prefer `get_sources()` and
+`set_sources()`. The old `:Tunnelvision` spelling remains deprecated but working.
+`get_direction()`, `set_direction()`, and `add_keywords()` remain supported.
 
 Old to new >
   source = "word"            -> sources = { "word" }

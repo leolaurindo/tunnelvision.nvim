@@ -21,7 +21,7 @@ end
 function M.retarget(opts)
   opts = opts or {}
   local bufnr = vim.api.nvim_get_current_buf()
-  if opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil then
+  if not core.validate_options(opts, true) then
     return false
   end
   if not core.valid_target(bufnr, opts) then
@@ -160,7 +160,9 @@ function M.set_source(source)
 end
 
 function M.setup(opts)
-  core.configure(opts)
+  if not core.configure(opts) then
+    return false
+  end
   ui.setup(M)
   for bufnr, bs in pairs(core.state.bufs) do
     if bs.active then

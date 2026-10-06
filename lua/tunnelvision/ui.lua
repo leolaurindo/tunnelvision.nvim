@@ -614,7 +614,12 @@ local function ensure_commands(api)
   end
 
   for _, name in ipairs({ "TunnelVision", "Tunnelvision" }) do
-    vim.api.nvim_create_user_command(name, command, {
+    vim.api.nvim_create_user_command(name, function(opts)
+      if name == "Tunnelvision" then
+        core.warn_deprecated("use", ":Tunnelvision; use :TunnelVision")
+      end
+      command(opts)
+    end, {
       complete = complete,
       desc = "Control tunnel vision",
       nargs = "*",

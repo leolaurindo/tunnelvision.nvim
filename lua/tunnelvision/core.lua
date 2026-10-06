@@ -42,6 +42,28 @@ function M.notify(msg, level)
   end
 end
 
+local warned_deprecated = {}
+
+function M.warn_deprecated(category, message, enabled)
+  if enabled == nil then
+    enabled = state.config.notify
+  end
+  if enabled and not warned_deprecated[category] then
+    warned_deprecated[category] = true
+    vim.notify("TunnelVision: deprecated " .. message, vim.log.levels.WARN)
+  end
+end
+
+function M.validate_options(opts, activation)
+  local err = config.validate_options(opts, activation)
+  if err then
+    -- Invalid inputs must stay visible even when informational notices are disabled.
+    vim.notify("TunnelVision: " .. err, vim.log.levels.ERROR)
+    return false
+  end
+  return true
+end
+
 function M.get_buf_state(bufnr)
   local s = state.bufs[bufnr]
   if s then
@@ -109,23 +131,36 @@ M.combine = config.combine
 
 function M.configure(opts)
   opts = opts or {}
-  state.config = vim.tbl_deep_extend("force", vim.deepcopy(config.defaults), opts)
+  if not M.validate_options(opts, false) then
+    return false
+  end
+  local cfg = vim.tbl_deep_extend("force", vim.deepcopy(config.defaults), opts)
   if opts.source ~= nil and opts.sources == nil then
-    state.config.sources = nil
+    cfg.sources = nil
   end
   if opts.highlights ~= nil then
-    state.config.highlights = opts.highlights
+    cfg.highlights = opts.highlights
   end
 
   -- Compatibility: deprecated top-level flow options fill missing
-  -- flow_settings fields. New nested fields win. No runtime warnings.
+  -- flow_settings fields. New nested fields win.
   if opts.direction ~= nil and (opts.flow_settings == nil or opts.flow_settings.direction == nil) then
-    state.config.flow_settings.direction = state.config.direction
+    cfg.flow_settings.direction = cfg.direction
   end
   if opts.extra_keywords ~= nil and (opts.flow_settings == nil or opts.flow_settings.extra_keywords == nil) then
-    state.config.flow_settings.extra_keywords = state.config.extra_keywords
+    cfg.flow_settings.extra_keywords = cfg.extra_keywords
   end
-  config.normalize(state.config, state.custom_sources)
+  config.normalize(cfg, state.custom_sources)
+  state.config = cfg
+  local deprecated = config.deprecated_inputs(opts)
+  if #deprecated > 0 then
+    M.warn_deprecated(
+      "setup",
+      "setup options: " .. table.concat(deprecated, ", ") .. "; see :help tunnelvision-migration",
+      cfg.notify
+    )
+  end
+  return true
 end
 
 local function activation_config(opts)
@@ -429,12 +464,15 @@ end
 
 function M.activate(bufnr, opts)
   opts = opts or {}
-  if opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil then
-    M.notify(
-      "TunnelVision: dim styles, dim_hl and max_dim_lines belong in setup() or buffer dim settings",
-      vim.log.levels.WARN
-    )
+  if not M.validate_options(opts, true) then
     return false
+  end
+  local deprecated = config.deprecated_inputs(opts)
+  if #deprecated > 0 then
+    M.warn_deprecated(
+      "use",
+      "activation options: " .. table.concat(deprecated, ", ") .. "; see :help tunnelvision-migration"
+    )
   end
   if not M.valid_target(bufnr, opts) then
     M.notify("TunnelVision: invalid symbol or cursor", vim.log.levels.WARN)
@@ -542,7 +580,7 @@ function M.activate_many(bufnr, positions, opts)
   if type(positions) ~= "table" or type(opts or {}) ~= "table" then
     return false
   end
-  if opts and (opts.dim ~= nil and opts.dim ~= "none" or opts.dim_hl ~= nil or opts.max_dim_lines ~= nil) then
+  if not M.validate_options(opts or {}, true) then
     return false
   end
   for _, cursor in ipairs(positions) do
@@ -978,8 +1016,9 @@ end
 
 -- Compatibility API (deprecated). Returns the legacy source string when the
 -- current normalized sources can be represented by a single legacy value,
--- otherwise returns nil. No runtime deprecation warnings.
+-- otherwise returns nil.
 function M.get_source()
+  M.warn_deprecated("use", "get_source(); use get_sources()")
   return config.legacy_source_from_sources(state.config.sources)
 end
 
@@ -990,6 +1029,9 @@ end
 -- Parse a command source without changing setup defaults.
 function M.parse_source_command(value)
   if config.valid_sources[value] then
+    if value == "lsp_else_word" or value == "lsp_and_word" then
+      M.warn_deprecated("use", "source value " .. value .. "; use a source chain")
+    end
     return config.sources_from_legacy_source(value)
   end
   if config.valid_source_names[value] then
@@ -1018,8 +1060,9 @@ function M.parse_source_command(value)
 end
 
 -- Compatibility API (deprecated). Maps legacy source values to normalized
--- sources. No runtime deprecation warnings.
+-- sources.
 function M.set_source(source)
+  M.warn_deprecated("use", "set_source(); use set_sources()")
   if not config.valid_sources[source] then
     M.notify("TunnelVision: source must be lsp_else_word, lsp, lsp_and_word, or word", vim.log.levels.ERROR)
     return

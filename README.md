@@ -368,8 +368,11 @@ replaced.
 
 ## Compatibility and Project
 
-Legacy options remain supported without runtime deprecation warnings, but new
-configuration should use the composable forms:
+Legacy options remain supported. Deprecated setup inputs produce one aggregated
+warning per Neovim session; deprecated API/command use warns at most once per
+session. `notify = false` suppresses these warnings. Modern fields win conflicts.
+Unknown options fail with a visible error before configuration or tracks change.
+New configuration should use the composable forms:
 
 | Old | New |
 | --- | --- |
@@ -383,7 +386,11 @@ configuration should use the composable forms:
 
 `on()` keeps its original replace-one-target behavior. Use `add()` to retain
 other tracks, `pin()` for a fixed track, or `on_many()` for additive batches.
-The existing `:TunnelVision retarget` alias still acts like `on`.
+Explicit `retarget()` and `:TunnelVision retarget` always replace tracks, even
+with `primary_action = "add"`. `get_source()`/`set_source()` and the old
+`:Tunnelvision` spelling remain working deprecated wrappers; use
+`get_sources()`/`set_sources()` and `:TunnelVision`. `get_direction()`,
+`set_direction()`, and `add_keywords()` remain supported.
 The current default uses statement focus and theme-derived symbol emphasis with Comment-derived dimming.
 One-shot `on({ dim = color })` must move to `set_buffer_dim(color)` or
 `setup({ dim = color })`; only `on({ dim = "none" })` remains valid. Move one-shot

@@ -281,6 +281,70 @@ return function(helpers)
 
   tunnelvision.setup({ notify = false, source = "lsp_else_word" })
 
+  do
+    local messages = {}
+    local original_notify = vim.notify
+    vim.notify = function(message, level)
+      messages[#messages + 1] = { message, level }
+    end
+    tunnelvision.setup({
+      notify = true,
+      source = "word",
+      direction = "both",
+      extra_keywords = { "old" },
+      sources = { "treesitter", "word" },
+      flow_settings = { direction = "backward", extra_keywords = { "new" } },
+    })
+    assert_true(
+      #messages == 1 and messages[1][1]:find("direction, extra_keywords, source", 1, true),
+      "deprecated setup inputs should aggregate into one warning"
+    )
+    assert_sources({ "treesitter", "word" }, "modern source chain wins")
+    assert_true(
+      tunnelvision.get_direction() == "backward" and core.state.config.flow_settings.extra_keywords[1] == "new",
+      "modern flow fields win conflicts"
+    )
+    tunnelvision.setup({ notify = true, source = "word" })
+    assert_true(#messages == 1, "setup deprecations should warn once per session")
+    tunnelvision.get_source()
+    tunnelvision.set_source("word")
+    vim.cmd("Tunnelvision on")
+    assert_true(#messages == 2, "deprecated API and command use should warn once per session")
+    tunnelvision.setup({ notify = false, sources = { "word" } })
+    tunnelvision.on({ symbol = "value", cursor = { 1, 7 } })
+    local tracks = core.get_buf_state(first_buf).tracks
+    local cfg = vim.deepcopy(core.state.config)
+    for _, operation in ipairs({
+      function()
+        return tunnelvision.setup({ sources = { "lsp" }, typo = true })
+      end,
+      function()
+        return tunnelvision.on({ symbol = "copy", cursor = { 2, 7 }, typo = true })
+      end,
+      function()
+        return tunnelvision.add({ flow_settings = { typo = true } })
+      end,
+      function()
+        return tunnelvision.on_many({ { 2, 7 } }, { typo = true })
+      end,
+      function()
+        return tunnelvision.pin({ dim = "#112233" })
+      end,
+    }) do
+      local count = #messages
+      assert_true(operation() == false, "invalid options must be rejected")
+      assert_true(
+        #messages == count + 1 and messages[#messages][2] == vim.log.levels.ERROR,
+        "invalid options must report visible errors even with notify=false"
+      )
+      assert_true(
+        vim.deep_equal(core.state.config, cfg) and core.get_buf_state(first_buf).tracks == tracks,
+        "invalid options must not change config or clear tracks"
+      )
+    end
+    vim.notify = original_notify
+  end
+
   -- Documented baseline for later domains.
   tunnelvision.setup({ notify = false })
 end
