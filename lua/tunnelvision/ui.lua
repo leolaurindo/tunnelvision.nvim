@@ -41,36 +41,51 @@ local function schedule_edit_refresh(bufnr)
   state.edit_timers[bufnr] = timer
 end
 
-local function schedule_dynamic_activate(bufnr, symbol, cursor)
+local function schedule_dynamic_activate(bufnr)
   cancel_dynamic_activate(bufnr)
   local seq = state.dynamic_seq[bufnr]
-  local queued_symbol = symbol
-  local queued_cursor = { cursor[1], cursor[2] }
-  local queued_track = core.get_moving_track(bufnr)
+  local bs = core.state.bufs[bufnr]
+  local queued_tracks = {}
+  for _, track in ipairs(bs and bs.tracks or {}) do
+    if track.moving then
+      queued_tracks[#queued_tracks + 1] = track
+    end
+  end
 
   vim.defer_fn(function()
-    if state.dynamic_seq[bufnr] ~= seq or not vim.api.nvim_buf_is_valid(bufnr) then
+    if
+      state.dynamic_seq[bufnr] ~= seq
+      or not vim.api.nvim_buf_is_valid(bufnr)
+      or bufnr ~= vim.api.nvim_get_current_buf()
+    then
       return
     end
-
-    local bs = core.state.bufs[bufnr]
-    local track = core.get_moving_track(bufnr)
-    if not bs or not bs.active or track ~= queued_track then
-      return
+    local positions, ids = core.cursor_positions(bufnr)
+    for _, track in ipairs(queued_tracks) do
+      local cursor
+      for index, id in ipairs(ids) do
+        if id == track.cursor_id then
+          cursor = positions[index]
+          break
+        end
+      end
+      if not cursor and type(track.cursor_id) == "string" and track.cursor_id:match("^batch:") then
+        cursor = positions[track.cursor_index]
+      end
+      local symbol = cursor and core.symbol_at(bufnr, cursor)
+      if cursor and core.should_dynamic_retarget(bufnr, symbol, cursor, track) then
+        core.activate(bufnr, {
+          silent = true,
+          config = track.config,
+          track = track,
+          symbol = symbol,
+          cursor = cursor,
+          cursor_id = track.cursor_id,
+          cursor_index = track.cursor_index,
+          reuse_scope = true,
+        })
+      end
     end
-
-    if not core.should_dynamic_retarget(bufnr, queued_symbol, queued_cursor) then
-      return
-    end
-
-    core.activate(bufnr, {
-      silent = true,
-      config = track.config,
-      track = track,
-      symbol = queued_symbol,
-      cursor = queued_cursor,
-      reuse_scope = true,
-    })
   end, DYNAMIC_DEBOUNCE_MS)
 end
 
@@ -655,18 +670,16 @@ local function ensure_autocmds()
     end,
   })
 
-  vim.api.nvim_create_autocmd("CursorMoved", {
+  local movement_events = { "CursorMoved" }
+  if vim.fn.exists("##CmdAtom") == 1 then
+    movement_events[#movement_events + 1] = "CmdAtom"
+  end
+  vim.api.nvim_create_autocmd(movement_events, {
     group = state.augroup,
     callback = function(args)
       local bs = core.state.bufs[args.buf]
       if core.get_moving_track(args.buf) and bs and bs.active then
-        local cursor = vim.api.nvim_win_get_cursor(0)
-        local symbol = core.symbol_at(args.buf, cursor)
-        if core.should_dynamic_retarget(args.buf, symbol, cursor) then
-          schedule_dynamic_activate(args.buf, symbol, cursor)
-        else
-          cancel_dynamic_activate(args.buf)
-        end
+        schedule_dynamic_activate(args.buf)
       end
     end,
   })

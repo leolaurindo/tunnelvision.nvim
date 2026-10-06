@@ -4,6 +4,65 @@ return function(helpers)
   local tv = require("tunnelvision")
   local core = require("tunnelvision.core")
 
+  -- Explicit batches retain the selected mode for every cursor, even without native cursors.
+  for _, mode in ipairs({ "dynamic", "dynamic_flow" }) do
+    tv.setup({ notify = false, sources = { "word" }, scope = "buffer", mode = mode })
+    new_buffer({ "alpha", "beta" })
+    tv.on_many({ { 1, 0 }, { 2, 0 } })
+    local tracks = tv.status().tracks
+    assert_true(
+      #tracks == 2 and tracks[1].moving and tracks[2].moving and tracks[1].mode == mode and tracks[2].mode == mode,
+      "every explicit batch cursor must keep its moving mode"
+    )
+    tv.off()
+  end
+
+  if vim.fn.has("nvim-0.13") == 1 then
+    local native = new_buffer({ "alpha one", "beta two", "gamma three", "delta four" })
+    local ns = vim.api.nvim_create_namespace("nvim.multicursor")
+    -- Deliberately create in reverse buffer order; IDs, not enumeration order, own tracks.
+    local gamma = vim.api.nvim_buf_set_extmark(native, ns, 2, 0, {})
+    local beta = vim.api.nvim_buf_set_extmark(native, ns, 1, 0, {})
+    local overlap = vim.api.nvim_buf_set_extmark(native, ns, 0, 0, {}) -- overlap with primary
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    tv.setup({ notify = false, sources = { "word" }, scope = "buffer", mode = "dynamic" })
+    tv.pin({ symbol = "delta", cursor = { 4, 0 } })
+    tv.on()
+    local native_state = core.get_buf_state(native)
+    assert_true(#native_state.tracks == 3, "native on should replace once and deduplicate primary overlap")
+    for _, track in ipairs(native_state.tracks) do
+      assert_true(track.moving, "each native cursor must own a moving track")
+    end
+    tv.refresh() -- refresh must retain cursor ownership
+    vim.api.nvim_buf_del_extmark(native, ns, overlap)
+    vim.api.nvim_buf_set_extmark(native, ns, 3, 6, { id = beta }) -- four
+    vim.api.nvim_buf_set_extmark(native, ns, 1, 5, { id = gamma }) -- two: changes enumeration order
+    vim.api.nvim_win_set_cursor(0, { 1, 6 }) -- one
+    vim.api.nvim_exec_autocmds("CursorMoved", { buffer = native })
+    assert_true(
+      vim.wait(500, function()
+        local symbols = {}
+        for _, track in ipairs(tv.status().tracks) do
+          symbols[track.symbol] = true
+        end
+        return symbols.one and symbols.two and symbols.four
+      end),
+      "native tracks must independently follow stable cursor IDs"
+    )
+    tv.setup({ notify = false, sources = { "word" }, scope = "buffer", primary_action = "add" })
+    tv.on({ symbol = "delta", cursor = { 4, 0 } })
+    assert_true(#native_state.tracks == 4, "add primary action must preserve native moving tracks")
+    tv.pin()
+    assert_true(#native_state.tracks == 7, "native pin should add a fixed track for each cursor")
+    for index = 5, 7 do
+      assert_true(not native_state.tracks[index].moving, "native pin batch must remain fixed")
+    end
+    tv.retarget()
+    assert_true(#native_state.tracks == 3, "explicit retarget must replace the native batch under add action")
+    vim.api.nvim_buf_clear_namespace(native, ns, 0, -1)
+    tv.off()
+  end
+
   -- Track styles compose per byte; dim policy belongs to the buffer.
   tv.setup({ notify = false, sources = { "word" }, scope = "buffer", dim = "#445566" })
   local visual = new_buffer({ "alpha", "beta", "alpha beta", "outside" })

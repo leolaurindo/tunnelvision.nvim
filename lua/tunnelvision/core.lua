@@ -515,6 +515,9 @@ function M.activate(bufnr, opts)
     moving = false
     cfg.mode = (cfg.mode == "dynamic_flow" or cfg.mode == "flow") and "flow" or "static"
   end
+  local cursor_id = opts.cursor_id
+    or opts.track and opts.track.cursor_id
+    or ("primary:" .. vim.api.nvim_get_current_win())
   local track = opts.track
   local scope = resolver.resolve_scope(
     bufnr,
@@ -535,6 +538,7 @@ function M.activate(bufnr, opts)
       if
         candidate.symbol == symbol
         and candidate.moving == moving
+        and (not moving or candidate.cursor_id == cursor_id)
         and resolver.scopes_equal(candidate.scope, scope)
         and (same_occurrence or opts.force)
       then
@@ -547,15 +551,6 @@ function M.activate(bufnr, opts)
     end
   end
   if not track then
-    if moving then
-      for i = #bs.tracks, 1, -1 do
-        if bs.tracks[i].moving then
-          bs.tracks[i].request_id = nil
-          cancel_requests(bs.tracks[i])
-          table.remove(bs.tracks, i)
-        end
-      end
-    end
     track = {
       path_set = {},
       path_order = {},
@@ -571,12 +566,31 @@ function M.activate(bufnr, opts)
   cancel_requests(track)
   track.symbol, track.anchor, track.scope, track.config = symbol, anchor, scope, cfg
   track.moving = moving
+  track.cursor_id = cursor_id
+  track.cursor_index = opts.cursor_index or track.cursor_index or 1
   sync_buffer(bufnr, bs, true)
   resolve_path(bufnr, bs, track, symbol, anchor, scope, opts, cfg, keywords, context)
   return true
 end
 
-function M.activate_many(bufnr, positions, opts)
+-- Native secondary cursors are zero-indexed extmarks; the primary is separate.
+function M.cursor_positions(bufnr)
+  local positions = { vim.api.nvim_win_get_cursor(0) }
+  local ids = { "primary:" .. vim.api.nvim_get_current_win() }
+  local ns = vim.api.nvim_get_namespaces()["nvim.multicursor"]
+  if ns then
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, {})) do
+      local cursor = { mark[2] + 1, mark[3] }
+      if not vim.deep_equal(cursor, positions[1]) then
+        positions[#positions + 1] = cursor
+        ids[#ids + 1] = mark[1]
+      end
+    end
+  end
+  return positions, ids
+end
+
+function M.activate_many(bufnr, positions, opts, cursor_ids)
   if type(positions) ~= "table" or type(opts or {}) ~= "table" then
     return false
   end
@@ -589,11 +603,17 @@ function M.activate_many(bufnr, positions, opts)
     end
   end
   local changed, calls = false, {}
+  local native_positions, native_ids = M.cursor_positions(bufnr)
   for index, cursor in ipairs(positions) do
     local call = vim.tbl_extend("force", opts or {}, { cursor = cursor, defer_render = true })
-    if #positions > 1 and index < #positions and call.pin == nil then
-      call.pin = true
+    call.cursor_id = cursor_ids and cursor_ids[index] or native_ids[index] or ("batch:" .. index)
+    for native_index, native_cursor in ipairs(native_positions) do
+      if vim.deep_equal(cursor, native_cursor) then
+        call.cursor_id = native_ids[native_index]
+        break
+      end
     end
+    call.cursor_index = index
     calls[#calls + 1] = call
     changed = M.activate(bufnr, call) or changed
   end
@@ -922,8 +942,8 @@ function M.refresh(bufnr)
   end
 end
 
-function M.should_dynamic_retarget(bufnr, symbol, cursor)
-  local track = M.get_moving_track(bufnr)
+function M.should_dynamic_retarget(bufnr, symbol, cursor, track)
+  track = track or M.get_moving_track(bufnr)
   if not track or not symbol or symbol == "" then
     return false
   end

@@ -4,14 +4,23 @@ local ui = require("tunnelvision.ui")
 local M = {}
 
 function M.add(opts)
-  return core.activate(vim.api.nvim_get_current_buf(), opts)
+  opts = opts or {}
+  local bufnr = vim.api.nvim_get_current_buf()
+  if not core.validate_options(opts, true) then
+    return false
+  end
+  if opts.cursor then
+    return core.activate(bufnr, opts)
+  end
+  local positions, ids = core.cursor_positions(bufnr)
+  return core.activate_many(bufnr, positions, opts, ids)
 end
 
 function M.pin(opts)
   if opts ~= nil and type(opts) ~= "table" then
     return false
   end
-  return core.activate(vim.api.nvim_get_current_buf(), vim.tbl_extend("force", opts or {}, { pin = true }))
+  return M.add(vim.tbl_extend("force", opts or {}, { pin = true }))
 end
 
 function M.remove()
@@ -27,12 +36,29 @@ function M.retarget(opts)
   if not core.valid_target(bufnr, opts) then
     return false
   end
-  local symbol = opts.symbol or core.symbol_at(bufnr, opts.cursor or vim.api.nvim_win_get_cursor(0))
-  if not symbol or symbol == "" then
+  local positions, ids = core.cursor_positions(bufnr)
+  if opts.cursor then
+    positions, ids = { opts.cursor }, nil
+  end
+  local calls = {}
+  for index, cursor in ipairs(positions) do
+    if not core.valid_target(bufnr, vim.tbl_extend("force", opts, { cursor = cursor })) then
+      return false
+    end
+    local symbol = opts.symbol or core.symbol_at(bufnr, cursor)
+    if symbol and symbol ~= "" then
+      calls[#calls + 1] = { symbol = symbol, cursor = cursor, id = ids and ids[index] }
+    end
+  end
+  if #calls == 0 then
     return false
   end
   core.deactivate(bufnr)
-  return core.activate(bufnr, vim.tbl_extend("force", opts, { symbol = symbol }))
+  local cursors, cursor_ids = {}, {}
+  for index, call in ipairs(calls) do
+    cursors[index], cursor_ids[index] = call.cursor, call.id
+  end
+  return core.activate_many(bufnr, cursors, opts, ids and cursor_ids or nil)
 end
 
 function M.on(opts)

@@ -106,6 +106,8 @@ function M.validate_options(opts, activation)
       "force",
       "reuse_scope",
       "defer_render",
+      "cursor_id",
+      "cursor_index",
     }) do
       allowed[key] = true
     end
